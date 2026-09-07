@@ -69,6 +69,15 @@ internal sealed class AutoFsGroundItemScanner {
 			string itemName = LegacyVietnameseText.Decode(nameBytes).Trim();
 			if (string.IsNullOrWhiteSpace(itemName)) continue;
 
+			// Lọc theo bán kính. Trước đây tham số rangeMap được khai báo nhưng KHÔNG dùng ở bất kỳ dòng nào, nên
+			// mọi item trên toàn bảng 127 slot đều lọt vào danh sách ứng viên bất kể xa tới đâu, và Loot/Engine
+			// spam lệnh 78 cho tới khi nhân vật lết tới tận nơi. rangeMap <= 0 vẫn giữ nghĩa là không giới hạn.
+			double distance = GetRawDistance(rawX, rawY, centerRawX, centerRawY);
+			if (rangeMap > 0 && distance > rangeMap) {
+				result.Diagnostics.OutOfRangeCount++;
+				continue;
+			}
+
 			result.Diagnostics.PatternCount++;
 			result.Items.Add(new LootSnapshot {
 				ProcessId = processId,
@@ -93,8 +102,8 @@ internal sealed class AutoFsGroundItemScanner {
 				GroundKind = unchecked((uint)ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordKind)),
 				GroundId = groundId,
 				MemoryFingerprint = HashCode.Combine(index, groundId, internalX, internalY, rawX, rawY, itemName),
-				DistanceToCenter = GetRawDistance(rawX, rawY, centerRawX, centerRawY),
-				DistanceToPlayer = GetRawDistance(rawX, rawY, centerRawX, centerRawY),
+				DistanceToCenter = distance,
+				DistanceToPlayer = distance,
 				Source = "AutoFS-Table"
 			});
 		}
@@ -102,6 +111,8 @@ internal sealed class AutoFsGroundItemScanner {
 			int distanceCompare = left.DistanceToPlayer.CompareTo(right.DistanceToPlayer);
 			return distanceCompare != 0 ? distanceCompare : left.Index.CompareTo(right.Index);
 		});
+		// Cắt SAU khi sắp xếp để giữ đúng maxCount item GẦN NHẤT. Tham số này trước đây cũng bị bỏ qua hoàn toàn.
+		if (maxCount > 0 && result.Items.Count > maxCount) result.Items.RemoveRange(maxCount, result.Items.Count - maxCount);
 		return result;
 	}
 

@@ -5,7 +5,9 @@ using Auto.Utils;
 public sealed class Finder {
 	private const int AttackSafetyMaxItems = 128;
 	// Bán kính quét Nhặt tính từ chính nhân vật. Giữ nhỏ để lệnh nhặt không bao giờ kéo nhân vật ra khỏi bãi.
-	private const int PlayerScanRadius = 150;
+	// Đơn vị là raw: 1 ô toạ độ hiển thị = 256 raw theo trục X và 512 raw theo trục Y, nên 150 raw chưa tới nửa ô.
+	// public để Loot/Engine dùng chung đúng con số này cho chốt chặn OUT_OF_SCAN_RADIUS trong vòng lặp nhặt.
+	public const int PlayerScanRadius = 150;
 
 	private readonly Settings settings;
 	private readonly AutoFsGroundItemScanner spriteItemScanner = new();

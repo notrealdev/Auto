@@ -31,11 +31,15 @@ public static class TrainingLocationCatalog {
 
 	private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, CoordinateOption[]>>? locations;
 
-	public static string[] GetMonsters(string map) {
+	// Chặn null trước khi tra Dictionary: ComboBox đẩy null ngược về ViewModel khi ItemsSource bị Clear(),
+	// mà Dictionary.TryGetValue(null) ném ArgumentNullException chứ không trả false.
+	public static string[] GetMonsters(string? map) {
+		if (string.IsNullOrEmpty(map)) return [];
 		return GetLocations().TryGetValue(map, out IReadOnlyDictionary<string, CoordinateOption[]>? mapMonsters) ? mapMonsters.Keys.ToArray() : [];
 	}
 
-	public static CoordinateOption[] GetCoordinates(string map, string monster) {
+	public static CoordinateOption[] GetCoordinates(string? map, string? monster) {
+		if (string.IsNullOrEmpty(map) || string.IsNullOrEmpty(monster)) return [];
 		return GetLocations().TryGetValue(map, out IReadOnlyDictionary<string, CoordinateOption[]>? mapMonsters) && mapMonsters.TryGetValue(monster, out CoordinateOption[]? values) ? values : [];
 	}
 

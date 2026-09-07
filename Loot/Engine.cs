@@ -263,6 +263,20 @@ public sealed class Engine {
 					break;
 				}
 				int rawDistance = GetRawDistance(snapshot, candidate);
+				// Chốt chặn sống: item là vật tĩnh nên nhân vật đi tới thì khoảng cách phải GIẢM. Vượt bán kính quét
+				// nghĩa là đang bị kéo đi sai chỗ, phải bỏ ngay. Bộ lọc trong AutoFsGroundItemScanner chỉ chặn lúc
+				// quét, còn chỗ này chặn đúng lúc lệnh 78 đang được gửi lại mỗi RetryIntervalMilliseconds.
+				// Cần thiết vì pendingNearPickupAttempts bên dưới chỉ tăng khi rawDistance < NearRawDistance, nên
+				// giới hạn NearPickupAttemptLimit không bao giờ áp được cho item ở xa: vòng lặp sẽ chạy vô hạn.
+				if (rawDistance > Finder.PlayerScanRadius) {
+					LogLootDiagnostic(context.DropLog, $"LOOT_OUT_OF_SCAN_RADIUS | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Distance={rawDistance} | ScanRadius={Finder.PlayerScanRadius} | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={coordinate.X}/{coordinate.Y}");
+					outcome = "OUT_OF_SCAN_RADIUS";
+					break;
+				}
+				// Nhánh dưới chỉ chạy khi rawDistance >= NearRawDistance (200), mà chốt chặn ngay trên đã cắt ở
+				// PlayerScanRadius (150) nên nó KHÔNG còn với tới được. Giữ nguyên vì đây là lệnh 32 thuộc luồng
+				// AutoFS đã xác nhận; xoá là đổi hành vi luồng gốc. Nếu sau này nới PlayerScanRadius vượt 200 thì
+				// nhánh này sống lại đúng như thiết kế cũ.
 				if (rawDistance >= NearRawDistance && ! approachPrepared) {
 					if (! transport.TrySendCommand(context.GameWindow, AutoFsApproachCommand, 0, out string prepareError)) {
 						LogLootDiagnostic(context.DropLog, $"LOOT_COMMAND_FAILED | PID={context.ProcessId} | Command={AutoFsApproachCommand} | Payload=0 | Index={itemIndex} | Name={candidate.ItemNameRaw} | Reason={prepareError}");

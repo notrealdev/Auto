@@ -58,16 +58,16 @@ public sealed class AttackViewModel : ViewModelBase {
 		settings.ContinueMapId = TrainingLocationCatalog.GetMapId(selectedContinueMap);
 		settings.TeachingMapId = TrainingLocationCatalog.GetMapId(selectedTeachingMap);
 
-		RepopulateContinueMonsters(settings.ContinueMonster);
-		RepopulateTeachingMonsters(settings.TeachingMonster);
-		RepopulateTrainingMaps(settings.TrainingMap);
-
-		SelectedContinueCoordinate = FindSavedCoordinate(ContinueCoordinates, savedContinue) ?? SelectedContinueCoordinate;
-		SelectedTeachingCoordinate = FindSavedCoordinate(TeachingCoordinates, savedTeaching) ?? SelectedTeachingCoordinate;
-		SelectedTrainingCoordinate = FindSavedCoordinate(TrainingCoordinates, savedTraining) ?? SelectedTrainingCoordinate;
+		// Quái và toạ độ đã lưu được truyền THẲNG xuống cascade thay vì gán lại sau khi danh sách đã dựng xong.
+		// Nhóm Mê cung trước đây không truyền được quái đã lưu (RepopulateTrainingMaps luôn gọi cascade với null),
+		// nên mỗi lần đổi account là quái nhảy về mục đầu bảng và kéo theo toạ độ đã cấu hình bị ghi đè.
+		RepopulateContinueMonsters(settings.ContinueMonster, RestoreSavedCoordinate(savedContinue));
+		RepopulateTeachingMonsters(settings.TeachingMonster, RestoreSavedCoordinate(savedTeaching));
+		RepopulateTrainingMaps(settings.TrainingMap, settings.TrainingMonster, RestoreSavedCoordinate(savedTraining));
 
 		OpenClassPriorityCommand = new RelayCommand(_ => OpenClassPriorityDialog());
 		RequestMonsterOptionsCommand = new RelayCommand(_ => RequestMonsterOptions());
+		CaptureCenterPositionCommand = new RelayCommand(_ => GetCurrentPosition());
 	}
 
 	public Settings Settings => settings;
@@ -99,22 +99,16 @@ public sealed class AttackViewModel : ViewModelBase {
 			if (settings.UseCenterPosition == value) return;
 			settings.UseCenterPosition = value;
 			OnPropertyChanged();
-			if (value && settings.CenterX <= 0 && settings.CenterY <= 0) GetCurrentPosition();
+			// Checkbox chỉ chụp tâm LẦN ĐẦU, khớp DEV\UI\AttackPage.cs:484-487 (điều kiện centerX <= 0 || centerY <= 0).
+			// Muốn đặt lại tâm ở toạ độ khác hoặc map khác thì click vào ô Tâm bên phải - xem CaptureCenterPositionCommand.
+			if (value && (settings.CenterX <= 0 || settings.CenterY <= 0)) GetCurrentPosition();
 		}
 	}
 
-	public string Center {
-		get => $"{settings.CenterX / RawXScale}/{settings.CenterY / RawYScale}";
-		set {
-			string[] parts = value.Split('/', StringSplitOptions.TrimEntries);
-			if (parts.Length == 2 && int.TryParse(parts[0], out int x) && int.TryParse(parts[1], out int y)) {
-				settings.CenterX = x * RawXScale;
-				settings.CenterY = y * RawYScale;
-				StoreCenterMapId();
-			}
-			OnPropertyChanged();
-		}
-	}
+	// Chỉ đọc: ô Tâm trên giao diện là ô hiển thị + click để chụp lại (CaptureCenterPositionCommand), không phải ô gõ.
+	// Ô gõ số bên cạnh là Range. Bỏ hẳn đường ghi từ chữ gõ tay vì getter chia nguyên cho RawXScale, ghi ngược lại
+	// sẽ cắt cụt toạ độ (49707 -> 49664) và đóng dấu CenterMapId theo map đang đứng dù toạ độ vẫn của map cũ.
+	public string Center => $"{settings.CenterX / RawXScale}/{settings.CenterY / RawYScale}";
 
 	public int Range {
 		get => settings.Range;
@@ -266,8 +260,10 @@ public sealed class AttackViewModel : ViewModelBase {
 		set {
 			if (!SetField(ref selectedContinueMap, value)) return;
 			settings.ContinueMap = value;
-			settings.ContinueMapId = TrainingLocationCatalog.GetMapId(value);
+			// MapId ghi SAU cascade để nằm sát lần ghi RawX/RawY: engine đọc Settings từ thread khác không có khoá,
+			// đặt cạnh nhau chỉ THU HẸP cửa sổ MapId và toạ độ lệch nhau chứ không triệt tiêu được.
 			RepopulateContinueMonsters(null);
+			settings.ContinueMapId = TrainingLocationCatalog.GetMapId(value);
 		}
 	}
 
@@ -315,8 +311,8 @@ public sealed class AttackViewModel : ViewModelBase {
 		set {
 			if (!SetField(ref selectedTeachingMap, value)) return;
 			settings.TeachingMap = value;
-			settings.TeachingMapId = TrainingLocationCatalog.GetMapId(value);
 			RepopulateTeachingMonsters(null);
+			settings.TeachingMapId = TrainingLocationCatalog.GetMapId(value);
 		}
 	}
 
@@ -375,8 +371,8 @@ public sealed class AttackViewModel : ViewModelBase {
 		set {
 			if (!SetField(ref selectedTrainingMap, value)) return;
 			settings.TrainingMap = value;
-			settings.TrainingMapId = TrainingLocationCatalog.GetMapId(value);
 			RepopulateTrainingMonsters(null);
+			settings.TrainingMapId = TrainingLocationCatalog.GetMapId(value);
 		}
 	}
 
@@ -406,6 +402,11 @@ public sealed class AttackViewModel : ViewModelBase {
 	public RelayCommand OpenClassPriorityCommand { get; }
 
 	public RelayCommand RequestMonsterOptionsCommand { get; }
+
+	// Click vào ô Tâm là chụp lại vị trí nhân vật làm tâm bãi, kèm map id đang đứng.
+	// Port của DEV\UI\AttackPage.cs:234 (txtCenter.Enter += ... GetCurrentPositionClicked), bản WPF trước đây thiếu hẳn.
+	// Đây là đường DUY NHẤT để đổi tâm sau lần đầu: checkbox "Quanh điểm" chỉ chụp khi tâm còn trống.
+	public RelayCommand CaptureCenterPositionCommand { get; }
 
 	private void RequestMonsterOptions() {
 		if (game == null) return;
@@ -438,18 +439,25 @@ public sealed class AttackViewModel : ViewModelBase {
 
 	private void GetCurrentPosition() {
 		if (game == null) return;
-		settings.CenterX = game.X;
-		settings.CenterY = game.Y;
-		StoreCenterMapId();
-		OnPropertyChanged(nameof(Center));
+		if (TryCommitCenter(game.X, game.Y)) OnPropertyChanged(nameof(Center));
 	}
 
-	// Ghi lại map đang đứng cùng lúc với tâm bãi, để luồng lên bãi biết phải đi tới map nào khi nhân vật ở nơi khác.
-	// Chỉ ghi khi đọc được map thật, không ghi đè bằng 0 làm mất map đã lưu trước đó.
-	private void StoreCenterMapId() {
-		if (game == null) return;
+	// Đường ghi tâm bãi DUY NHẤT, dùng chung cho cả tick "Quanh điểm" lẫn gõ tay vào ô Tâm.
+	// Toạ độ và map id luôn phải ghi thành MỘT CẶP: ghi toạ độ mới mà giữ map id cũ thì IsOutsideTrainingArea
+	// (AccountEngineCoordinator.cs) thấy khác map và coi nhân vật luôn ở ngoài bãi, rồi kéo về map cũ.
+	// Đọc được map thật mới ghi; không đọc được thì giữ nguyên tâm cũ và ghi log để không hỏng im lặng.
+	private bool TryCommitCenter(int rawX, int rawY) {
+		if (game == null) return false;
 		GameMapInfo map = GameMapReader.Read(game.ProcessId);
-		if (map.Success && map.MapId > 0) settings.CenterMapId = map.MapId;
+		if (! map.Success || map.MapId <= 0 || rawX <= 0 || rawY <= 0) {
+			DebugLog.AddForProcess(game.ProcessId, $"Đặt tâm bãi thất bại | PID={game.ProcessId} | ĐọcMap={map.Success} | MapId={map.MapId} | TâmMuốnĐặt={rawX}/{rawY} | GiữNguyênTâmCũ={settings.CenterX}/{settings.CenterY}/{settings.CenterMapId}");
+			return false;
+		}
+		settings.CenterX = rawX;
+		settings.CenterY = rawY;
+		settings.CenterMapId = map.MapId;
+		DebugLog.AddForProcess(game.ProcessId, $"Đặt tâm bãi | PID={game.ProcessId} | Tâm={rawX}/{rawY} | MapTâm={map.MapId}");
+		return true;
 	}
 
 	// Nạp sẵn lựa chọn đã lưu vào danh sách để ComboBox có phần tử khớp mà hiển thị, rồi trả về chính mục đó.
@@ -462,52 +470,93 @@ public sealed class AttackViewModel : ViewModelBase {
 		return restored;
 	}
 
-	// Tìm lại đúng mục toạ độ ứng với giá trị đang lưu trong settings; trả null khi chưa có hoặc không còn trong danh sách.
-	private static CoordinateOption? FindSavedCoordinate(IEnumerable<CoordinateOption> options, (int RawX, int RawY) saved) {
-		if (saved.RawX <= 0 || saved.RawY <= 0) return null;
-		return options.FirstOrDefault(option => option.RawX == saved.RawX && option.RawY == saved.RawY);
+	// Dựng lại đúng mục toạ độ ứng với giá trị đang lưu trong settings; trả null khi chưa có toạ độ nào được lưu.
+	// CoordinateOption là record nên so sánh theo giá trị, dựng mới vẫn khớp Contains() của danh sách vừa nạp.
+	private static CoordinateOption? RestoreSavedCoordinate((int RawX, int RawY) saved) {
+		return saved.RawX > 0 && saved.RawY > 0 ? new CoordinateOption(saved.RawX, saved.RawY) : null;
 	}
 
-	private void RepopulateContinueMonsters(string? preferredMonster) {
+	// Các hàm Repopulate* dưới đây cố tình gán THẲNG backing field rồi tự OnPropertyChanged, KHÔNG đi qua property setter.
+	//
+	// Lý do: ViewModelBase.SetField thoát sớm khi giá trị mới bằng giá trị cũ, mà Release\Data\ToaDo\ToaDoQuai.map có
+	// cấu trúc "quái gối đầu" — quái thứ hai của một map chính là quái thứ nhất của map kế tiếp trong cùng nhóm
+	// ("Hoang Mạc" = Sa Hồn + Thiết Trùng, "Sa Mạc Thổ Thành" = Thiết Trùng + Đao Cầm). Nên khi đổi map mà đang chọn
+	// quái thứ hai, ComboBox quái nhảy về đúng tên cũ, setter thoát sớm, và cascade nạp lại toạ độ KHÔNG BAO GIỜ chạy:
+	// TrainingMapId đã sang map mới trong khi TrainingRawX/TrainingRawY vẫn là toạ độ map cũ.
+	// Đi thẳng vào field thì cascade luôn chạy, không phụ thuộc giá trị có đổi hay không.
+
+	private void RepopulateContinueMonsters(string? preferredMonster, CoordinateOption? preferredCoordinate = null) {
 		ContinueMonsters.Clear();
 		foreach (string monster in TrainingLocationCatalog.GetMonsters(selectedContinueMap)) ContinueMonsters.Add(monster);
-		SelectedContinueMonster = preferredMonster != null && ContinueMonsters.Contains(preferredMonster) ? preferredMonster : ContinueMonsters.Count > 0 ? ContinueMonsters[0] : "";
+		string chosen = preferredMonster != null && ContinueMonsters.Contains(preferredMonster) ? preferredMonster : ContinueMonsters.Count > 0 ? ContinueMonsters[0] : "";
+		selectedContinueMonster = chosen;
+		settings.ContinueMonster = chosen;
+		OnPropertyChanged(nameof(SelectedContinueMonster));
+		RepopulateContinueCoordinates(preferredCoordinate);
 	}
 
 	private void RepopulateContinueCoordinates(CoordinateOption? preferredCoordinate) {
 		ContinueCoordinates.Clear();
 		foreach (CoordinateOption coordinate in TrainingLocationCatalog.GetCoordinates(selectedContinueMap, selectedContinueMonster)) ContinueCoordinates.Add(coordinate);
-		SelectedContinueCoordinate = preferredCoordinate != null && ContinueCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : ContinueCoordinates.Count > 0 ? ContinueCoordinates[0] : null;
+		CoordinateOption? chosen = preferredCoordinate != null && ContinueCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : ContinueCoordinates.Count > 0 ? ContinueCoordinates[0] : null;
+		selectedContinueCoordinate = chosen;
+		settings.ContinueCoordinate = chosen?.Display ?? "";
+		settings.ContinueRawX = chosen?.RawX ?? 0;
+		settings.ContinueRawY = chosen?.RawY ?? 0;
+		OnPropertyChanged(nameof(SelectedContinueCoordinate));
 	}
 
-	private void RepopulateTeachingMonsters(string? preferredMonster) {
+	private void RepopulateTeachingMonsters(string? preferredMonster, CoordinateOption? preferredCoordinate = null) {
 		TeachingMonsters.Clear();
 		foreach (string monster in TrainingLocationCatalog.GetMonsters(selectedTeachingMap)) TeachingMonsters.Add(monster);
-		SelectedTeachingMonster = preferredMonster != null && TeachingMonsters.Contains(preferredMonster) ? preferredMonster : TeachingMonsters.Count > 0 ? TeachingMonsters[0] : "";
+		string chosen = preferredMonster != null && TeachingMonsters.Contains(preferredMonster) ? preferredMonster : TeachingMonsters.Count > 0 ? TeachingMonsters[0] : "";
+		selectedTeachingMonster = chosen;
+		settings.TeachingMonster = chosen;
+		OnPropertyChanged(nameof(SelectedTeachingMonster));
+		RepopulateTeachingCoordinates(preferredCoordinate);
 	}
 
 	private void RepopulateTeachingCoordinates(CoordinateOption? preferredCoordinate) {
 		TeachingCoordinates.Clear();
 		foreach (CoordinateOption coordinate in TrainingLocationCatalog.GetCoordinates(selectedTeachingMap, selectedTeachingMonster)) TeachingCoordinates.Add(coordinate);
-		SelectedTeachingCoordinate = preferredCoordinate != null && TeachingCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : TeachingCoordinates.Count > 0 ? TeachingCoordinates[0] : null;
+		CoordinateOption? chosen = preferredCoordinate != null && TeachingCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : TeachingCoordinates.Count > 0 ? TeachingCoordinates[0] : null;
+		selectedTeachingCoordinate = chosen;
+		settings.TeachingCoordinate = chosen?.Display ?? "";
+		settings.TeachingRawX = chosen?.RawX ?? 0;
+		settings.TeachingRawY = chosen?.RawY ?? 0;
+		OnPropertyChanged(nameof(SelectedTeachingCoordinate));
 	}
 
-	private void RepopulateTrainingMaps(string? preferredMap) {
+	private void RepopulateTrainingMaps(string? preferredMap, string? preferredMonster = null, CoordinateOption? preferredCoordinate = null) {
 		TrainingMaps.Clear();
 		foreach (string map in TrainingLocationCatalog.MazeMaps.GetValueOrDefault(selectedTrainingGroup) ?? []) TrainingMaps.Add(map);
-		SelectedTrainingMap = preferredMap != null && TrainingMaps.Contains(preferredMap) ? preferredMap : TrainingMaps.Count > 0 ? TrainingMaps[0] : "";
+		string chosen = preferredMap != null && TrainingMaps.Contains(preferredMap) ? preferredMap : TrainingMaps.Count > 0 ? TrainingMaps[0] : "";
+		selectedTrainingMap = chosen;
+		settings.TrainingMap = chosen;
+		OnPropertyChanged(nameof(SelectedTrainingMap));
+		RepopulateTrainingMonsters(preferredMonster, preferredCoordinate);
+		settings.TrainingMapId = TrainingLocationCatalog.GetMapId(chosen);
 	}
 
-	private void RepopulateTrainingMonsters(string? preferredMonster) {
+	private void RepopulateTrainingMonsters(string? preferredMonster, CoordinateOption? preferredCoordinate = null) {
 		TrainingMonsters.Clear();
 		foreach (string monster in TrainingLocationCatalog.GetMonsters(selectedTrainingMap)) TrainingMonsters.Add(monster);
-		SelectedTrainingMonster = preferredMonster != null && TrainingMonsters.Contains(preferredMonster) ? preferredMonster : TrainingMonsters.Count > 0 ? TrainingMonsters[0] : "";
+		string chosen = preferredMonster != null && TrainingMonsters.Contains(preferredMonster) ? preferredMonster : TrainingMonsters.Count > 0 ? TrainingMonsters[0] : "";
+		selectedTrainingMonster = chosen;
+		settings.TrainingMonster = chosen;
+		OnPropertyChanged(nameof(SelectedTrainingMonster));
+		RepopulateTrainingCoordinates(preferredCoordinate);
 	}
 
 	private void RepopulateTrainingCoordinates(CoordinateOption? preferredCoordinate) {
 		TrainingCoordinates.Clear();
 		foreach (CoordinateOption coordinate in TrainingLocationCatalog.GetCoordinates(selectedTrainingMap, selectedTrainingMonster)) TrainingCoordinates.Add(coordinate);
-		SelectedTrainingCoordinate = preferredCoordinate != null && TrainingCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : TrainingCoordinates.Count > 0 ? TrainingCoordinates[0] : null;
+		CoordinateOption? chosen = preferredCoordinate != null && TrainingCoordinates.Contains(preferredCoordinate) ? preferredCoordinate : TrainingCoordinates.Count > 0 ? TrainingCoordinates[0] : null;
+		selectedTrainingCoordinate = chosen;
+		settings.TrainingCoordinate = chosen?.Display ?? "";
+		settings.TrainingRawX = chosen?.RawX ?? 0;
+		settings.TrainingRawY = chosen?.RawY ?? 0;
+		OnPropertyChanged(nameof(SelectedTrainingCoordinate));
 	}
 
 	private void OpenClassPriorityDialog() {

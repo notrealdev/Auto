@@ -18,11 +18,19 @@
 					<CheckBox Margin="0,0,0,8" Content="Tự lên bãi" IsChecked="{Binding EnableReturnToTraining}" />
 					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
 						<CheckBox Margin="0,0,10,0" Content="Quanh điểm" IsChecked="{Binding UseCenterPosition}" />
+						<!--
+							Ô Tâm: chỉ hiển thị, MỖI lần click là chụp lại tâm bãi tại chỗ đang đứng.
+							Bắt PreviewMouseLeftButtonDown chứ KHÔNG phải GotFocus: GotFocus chỉ bắn khi ô chuyển từ
+							mất focus sang có focus, nên click lần thứ hai trở đi lúc ô đang giữ focus sẽ không bắn gì.
+							IsReadOnly + OneWay để không có đường ghi nào từ chữ gõ tay. Ô gõ số là ô Range bên phải.
+						-->
 						<TextBox
 							Width="65"
 							Margin="0,0,6,0"
+							IsReadOnly="True"
+							PreviewMouseLeftButtonDown="CenterTextBox_PreviewMouseLeftButtonDown"
 							Style="{StaticResource NumericTextBox}"
-							Text="{Binding Center, UpdateSourceTrigger=LostFocus}" />
+							Text="{Binding Center, Mode=OneWay}" />
 						<TextBox
 							Width="55"
 							Style="{StaticResource NumericTextBox}"
