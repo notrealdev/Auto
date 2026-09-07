@@ -38,6 +38,11 @@ public sealed class Engine {
 	private bool outsideAreaAbortLogged;
 	private string lastWalkFailure = "";
 	private DateTime nextOutsideAreaWalkUtc = DateTime.MinValue;
+	// Dùng lại một danh sách cho mọi lượt quét thay vì cấp phát mới mỗi 20ms.
+	private readonly List<AutoFsEntity> eliteBuffer = new();
+	// Mỗi tên quái thủ lĩnh chỉ ghi log một lần cho tới khi tắt Đánh, nếu không thì mỗi 20ms lại một dòng.
+	private readonly HashSet<string> loggedEliteNames = new(StringComparer.Ordinal);
+	private bool eliteNoSafeCornerLogged;
 
 	internal Engine(Settings settings, AutoFsAttackTransport transport, AutoFsActionGate actionGate) {
 		this.settings = settings;
@@ -51,6 +56,17 @@ public sealed class Engine {
 	public bool HasRecentAttack(TimeSpan maximumAge) {
 		long ticks = Interlocked.Read(ref lastAttackPostedUtcTicks);
 		return ticks > 0 && DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc) <= maximumAge;
+	}
+
+	// Giai đoạn A của tính năng tránh quái thủ lĩnh: mới chỉ PHÁT HIỆN và ghi log, chưa đổi hành vi đánh hay đi.
+	// In kèm Hp và Level để đối chiếu giả thuyết "boss có thanh máu rất to" — AutoFS không dùng thanh máu để
+	// nhận diện (grep MaxHp toàn AutoSource cho 0 kết quả) nên đây là dữ liệu mới, chưa có gì để so.
+	private void LogDetectedElites(int currentProcessId, Action<string>? currentTargetMovementLog) {
+		if (currentTargetMovementLog == null || eliteBuffer.Count == 0) return;
+		foreach (AutoFsEntity elite in eliteBuffer) {
+			if (!loggedEliteNames.Add(elite.Name)) continue;
+			currentTargetMovementLog($"ELITE_DETECTED | PID={currentProcessId} | Name={elite.Name} | Hp={elite.Hp} | Level={elite.Level} | Raw={elite.RawX}/{elite.RawY} | ToPlayer={elite.Distance:F0} | ToCenter={elite.DistanceToCenter:F0} | Range={settings.Range} | AvoidRadius={settings.EliteAvoidRadius}");
+		}
 	}
 
 	public string GetDiagnosticState() {
@@ -97,6 +113,9 @@ public sealed class Engine {
 			outsideAreaAbortLogged = false;
 			lastWalkFailure = "";
 			nextOutsideAreaWalkUtc = DateTime.MinValue;
+			eliteBuffer.Clear();
+			loggedEliteNames.Clear();
+			eliteNoSafeCornerLogged = false;
 		}
 		Interlocked.Exchange(ref lastAttackPostedUtcTicks, 0);
 		cancellation?.Cancel();
@@ -160,6 +179,11 @@ public sealed class Engine {
 				currentTargetMovementLog = targetMovementLog;
 			}
 
+			// Stop() chỉ Cancel() chứ không Wait() worker, mà thân vòng lặp dưới đây không kiểm token lần nào.
+			// Thiếu chốt này thì lượt đang chạy vẫn gửi được lệnh đi bộ tới góc quanh tâm bãi, và vì client tự đi hết
+			// đường nên nhân vật còn đi ngược về tâm một đoạn sau khi người dùng đã tắt Đánh rồi mới dừng.
+			if (token.IsCancellationRequested) break;
+
 			if (!currentManualInput && currentProcessId > 0 && currentWindow != IntPtr.Zero && currentGame != null) {
 				try {
 					actionGate.TryRunAttack(() => {
@@ -168,10 +192,14 @@ public sealed class Engine {
 							reader = new MemoryReader(currentProcessId);
 							readerProcessId = currentProcessId;
 						}
-						IReadOnlyList<AutoFsEntity> candidates = scanner.Scan(reader, settings, out int playerX, out int playerY, out int playerLifecycleStatus, preferredTargetIndex: preferredTargetIndex);
+						eliteBuffer.Clear();
+						IReadOnlyList<AutoFsEntity> candidates = scanner.Scan(reader, settings, out int playerX, out int playerY, out int playerLifecycleStatus, preferredTargetIndex: preferredTargetIndex, eliteCollector: eliteBuffer);
+						LogDetectedElites(currentProcessId, currentTargetMovementLog);
 						if (preferredTargetIndex >= 0 && candidates.Any(candidate => candidate.IsCurrentTarget && candidate.Index != preferredTargetIndex)) preferredTargetIndex = -1;
 						AutoFsEntity? target = candidates.FirstOrDefault();
-						if (target == null) {
+						if (TryRetreatFromElites(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog)) {
+							lastLoggedTargetIndex = -1;
+						} else if (target == null) {
 							lastLoggedTargetIndex = -1;
 							TryWanderTrainingCorners(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog);
 						} else if (!transport.TrySend(currentWindow, target.Index, out string error)) {
@@ -216,6 +244,61 @@ public sealed class Engine {
 			}
 		}
 		reader?.Dispose();
+	}
+
+	// Giai đoạn C: nhân vật đang đứng trong vùng cấm quanh thủ lĩnh thì BỎ đánh lượt này và đi ra góc sạch nhất.
+	// Trả về true nghĩa là lượt này do luồng lùi chiếm, nơi gọi không được gửi lệnh đánh.
+	//
+	// Đi 4 góc quanh tâm bãi chứ không tính vector ngược hướng: 4 góc luôn nằm trong range/3*1.42 quanh tâm nên không
+	// bao giờ đẩy nhân vật ra khỏi bãi rồi giằng co với chốt NO_TARGET_CORNER_ABORT, và tái dùng đúng đường đi đã chạy ổn.
+	// BẮT BUỘC dùng AutoFsMovementCommand.TryWalkTo (lệnh đi bộ không gắn cờ) — TryMoveTo chỉ dành cho sửa đồ và lên bãi.
+	//
+	// Không cần nhớ vị trí thủ lĩnh đã khuất tầm: mẫu PID 22292 ngày 2026-09-07 cho thấy client stream entity vào khi
+	// còn cách 1598 raw và chưa vào khi cách 2410 raw, tức ngưỡng stream xa hơn hẳn bán kính vùng cấm 500. Một con nằm
+	// trong vùng cấm thì luôn đang được stream, không có chuyện chớp tắt gây giằng co.
+	private bool TryRetreatFromElites(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int playerLifecycleStatus, Action<string>? currentTargetMovementLog) {
+		if (!settings.DoNotAttackBoss || settings.EliteAvoidRadius <= 0 || eliteBuffer.Count == 0) return false;
+		if (playerX <= 0 || playerY <= 0) return false;
+		bool aroundPoint = settings.TrainingEnabled || settings.TeachingEnabled || settings.ContinueEnabled || settings.UseCenterPosition;
+		if (!aroundPoint) return false;
+		if (currentGame.ReturnToTrainingAutomation.IsBusy || currentGame.ConfiguredTrainingMovementAutomation.IsBusy || currentGame.WeaponRepairAutomation.IsBusy) return false;
+
+		List<(int X, int Y)> elites = eliteBuffer.Select(elite => (elite.RawX, elite.RawY)).ToList();
+		if (!EliteAvoidance.IsNearAnyElite(playerX, playerY, elites, settings.EliteAvoidRadius)) return false;
+
+		// Đã trong vùng cấm: từ đây trở đi luôn chiếm lượt, kể cả khi chưa tới hạn đi hay không tìm được góc sạch.
+		// Nếu trả false ở các nhánh dưới thì nơi gọi sẽ quay ra đánh chính con quái cạnh thủ lĩnh.
+		(int centerX, int centerY) = AutoFsEntityScanner.GetCenter(settings, playerX, playerY);
+		if (centerX <= 0 || centerY <= 0) return true;
+		if (playerLifecycleStatus == AutoFsBusyLifecycleStatus) return true;
+
+		int range = Math.Max(settings.Range, 1);
+		int corner = EliteAvoidance.PickSafestCorner(centerX, centerY, range / 3, elites, settings.EliteAvoidRadius);
+		if (corner < 0) {
+			// Mọi góc đều bẩn: đứng im còn hơn giằng qua giằng lại giữa các góc đều nằm trong vùng cấm.
+			if (!eliteNoSafeCornerLogged) {
+				eliteNoSafeCornerLogged = true;
+				currentTargetMovementLog?.Invoke($"ELITE_NO_SAFE_CORNER | PID={currentProcessId} | Player={playerX}/{playerY} | Center={centerX}/{centerY} | Elites={elites.Count} | Radius={settings.EliteAvoidRadius} | Range={range} | Lý do=Cả 4 góc đều trong vùng cấm, đứng im");
+			}
+			return true;
+		}
+		eliteNoSafeCornerLogged = false;
+
+		DateTime now = DateTime.UtcNow;
+		if (now < nextOutsideAreaWalkUtc) return true;
+		(int destinationX, int destinationY) = EliteAvoidance.GetCorner(centerX, centerY, range / 3, corner);
+		if (!AutoFsMovementCommand.TryWalkTo(currentGame, destinationX, destinationY, out string walkResult)) {
+			if (!string.Equals(lastWalkFailure, walkResult, StringComparison.Ordinal)) {
+				lastWalkFailure = walkResult;
+				currentTargetMovementLog?.Invoke($"ELITE_RETREAT FAIL | PID={currentProcessId} | Player={playerX}/{playerY} | Corner={corner} | Destination={destinationX}/{destinationY} | {walkResult}");
+			}
+			return true;
+		}
+		lastWalkFailure = "";
+		nextOutsideAreaWalkUtc = now.AddMilliseconds(OutsideAreaWalkIntervalMilliseconds);
+		(int nearestX, int nearestY) = elites.OrderBy(elite => EliteAvoidance.Distance(playerX, playerY, elite.X, elite.Y)).First();
+		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.EliteAvoidRadius} | Corner={corner} | Destination={destinationX}/{destinationY} | {walkResult}");
+		return true;
 	}
 
 	// Port khối "Quanh điểm, không còn ứng viên" của AutoFS (VectorFactory.cs:4523-4640, bản đã bóc lớp làm rối):

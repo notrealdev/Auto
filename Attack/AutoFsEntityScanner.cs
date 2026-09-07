@@ -34,7 +34,9 @@ internal sealed class AutoFsEntityScanner {
 	// playerLifecycleStatus là ô LifecycleStatus của chính nhân vật, đưa ra ngoài chỉ để đo: AutoFS chặn bước đi bằng
 	// SplitDisk() = "ô trạng thái nhân vật == 3" (WindowQueue.cs:26253, đọc O_Player + 464 của client cũ) và hiện
 	// CHƯA xác định được ô tương ứng trên client này. Ghi kèm vào log đi 4 góc để đối chiếu sau.
-	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, out int playerX, out int playerY, out int playerLifecycleStatus, bool includeAllTargetTypes = false, int preferredTargetIndex = -1) {
+	// eliteCollector: truyền vào một danh sách rỗng để nhận thêm mọi quái thủ lĩnh/boss quanh tâm bãi. Bỏ trống thì
+	// bước gom bị tắt hoàn toàn, không tốn thêm lần đọc bộ nhớ nào — các overload cũ giữ nguyên hành vi.
+	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, out int playerX, out int playerY, out int playerLifecycleStatus, bool includeAllTargetTypes = false, int preferredTargetIndex = -1, List<AutoFsEntity>? eliteCollector = null) {
 		playerX = 0;
 		playerY = 0;
 		playerLifecycleStatus = -1;
@@ -52,6 +54,7 @@ internal sealed class AutoFsEntityScanner {
 		bool configuredTrainingMode = HasConfiguredTrainingMode(settings);
 		(int centerX, int centerY) = GetCenter(settings, playerX, playerY);
 		List<AutoFsEntity> entities = new();
+		List<(int X, int Y)> elitePositions = new();
 
 		for (int index = AutoFsClientProfile.FirstEntityIndex; index <= AutoFsClientProfile.LastEntityIndex; index++) {
 			IntPtr entityBase = GetEntityBase(tableBase, index, layout.EntityStride);
@@ -61,20 +64,58 @@ internal sealed class AutoFsEntityScanner {
 			int type = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.EntityType));
 			bool acceptedType = includeAllTargetTypes
 				? type == AutoFsClientProfile.MonsterType || type == AutoFsClientProfile.PlayerType
-				: (configuredTrainingMode || settings.AttackMonsters) && type == AutoFsClientProfile.MonsterType;
+				// "Chỉ đánh Boss" là luồng song song với "Đánh quái", không phụ thuộc: bật nó thì quái vẫn được nhận vào
+				// dù "Đánh quái" đang tắt. Ngược lại "Không đánh Boss" chỉ là bộ lọc trừ nên không tự mở luồng nào.
+				: (configuredTrainingMode || settings.AttackMonsters || settings.OnlyAttackBoss) && type == AutoFsClientProfile.MonsterType;
 			if (!acceptedType) continue;
 
 			byte[] nameBytes = ReadName(reader, entityBase);
 			if (nameBytes.Length == 0) continue;
 			string name = LegacyVietnameseText.Decode(nameBytes);
-			string requiredName = GetRequiredName(settings, type);
-			byte[] requiredSignature = GetRequiredSignature(settings, type);
-			if (requiredSignature.Length > 0 && !nameBytes.AsSpan().SequenceEqual(requiredSignature)) continue;
-			if (requiredSignature.Length == 0 && requiredName.Length > 0 && !string.Equals(name, requiredName, StringComparison.OrdinalIgnoreCase)) continue;
 
+			// Đọc toạ độ TRƯỚC bộ lọc tên. Hai phép lọc độc lập nhau nên tập kết quả không đổi, nhưng nhờ vậy
+			// nhánh gom quái thủ lĩnh ngay dưới có sẵn toạ độ mà không phải đọc bộ nhớ thêm lần nữa.
 			int x = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.RawX));
 			int y = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.RawY));
 			if (x <= 0 || y <= 0) continue;
+
+			// Gom riêng quái thủ lĩnh/boss TRƯỚC bộ lọc tên. Lý do: khi người dùng chọn đích danh một loại quái thì
+			// "Sa Hồn ( cuồng )" không khớp "Sa Hồn" và bị loại ngay ở hai dòng dưới, nên không gom ở đây thì auto
+			// hoàn toàn không biết chúng nằm đâu để mà tránh — nó chỉ vô tình không đánh thôi.
+			bool isElite = type == AutoFsClientProfile.MonsterType && EliteAvoidance.IsEliteName(nameBytes);
+
+			if (isElite) {
+				double eliteToCenter = GetMapDistance(centerX, centerY, x, y);
+				// Nới rộng hơn Range để thấy cả con vừa ra khỏi bãi mà vùng cấm của nó còn liếm vào trong bãi.
+				if (eliteToCenter <= Math.Max(settings.Range, 1) + Math.Max(settings.EliteAvoidRadius, 0)) {
+					elitePositions.Add((x, y));
+					if (eliteCollector != null) {
+						int eliteHp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
+						int eliteLevel = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Level));
+						eliteCollector.Add(new AutoFsEntity(index, type, status, name, nameBytes, eliteLevel, eliteHp, x, y, GetMapDistance(playerX, playerY, x, y), eliteToCenter, centerX, centerY, index == currentTargetIndex));
+					}
+				}
+			}
+
+			// Bộ lọc Boss, port từ AutoFS (VectorFactory.cs:3345-3432). Hai ô này dùng CHUNG một phép thử tên, chỉ
+			// đảo chiều nhau; AutoFS không có danh sách tên boss riêng nào cả.
+			// includeAllTargetTypes là đường quét để LIỆT KÊ danh sách quái cho ComboBox, không phải chọn mục tiêu;
+			// lọc ở đó thì tên thủ lĩnh biến mất khỏi danh sách chọn.
+			if (!includeAllTargetTypes && type == AutoFsClientProfile.MonsterType) {
+				if (settings.OnlyAttackBoss && !isElite) continue;
+				if (settings.DoNotAttackBoss && isElite) continue;
+			}
+
+			string requiredName = GetRequiredName(settings, type);
+			byte[] requiredSignature = GetRequiredSignature(settings, type);
+			// "Chỉ đánh Boss" phải bỏ qua bộ lọc tên, nếu không thì ô này không bao giờ chọn được con nào: tên thủ
+			// lĩnh luôn có hậu tố dạng "( cuồng )" nên không khớp tên gốc trong ComboBox. AutoFS cũng nhảy thẳng tới
+			// đoạn tính khoảng cách (nhãn IL_2433, VectorFactory.cs:3519) mà không so tên.
+			bool bypassNameFilter = settings.OnlyAttackBoss && type == AutoFsClientProfile.MonsterType;
+			if (!bypassNameFilter) {
+				if (requiredSignature.Length > 0 && !nameBytes.AsSpan().SequenceEqual(requiredSignature)) continue;
+				if (requiredSignature.Length == 0 && requiredName.Length > 0 && !string.Equals(name, requiredName, StringComparison.OrdinalIgnoreCase)) continue;
+			}
 
 			double distanceToCenter = GetMapDistance(centerX, centerY, x, y);
 			if ((configuredTrainingMode || settings.UseCenterPosition) && distanceToCenter > Math.Max(settings.Range, 1)) continue;
@@ -87,6 +128,14 @@ internal sealed class AutoFsEntityScanner {
 			int hp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
 			int level = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Level));
 			entities.Add(new AutoFsEntity(index, type, status, name, nameBytes, level, hp, x, y, distanceToPlayer, distanceToCenter, centerX, centerY, index == currentTargetIndex));
+		}
+
+		// Vùng cấm quanh thủ lĩnh: loại nốt QUÁI THƯỜNG đứng trong bán kính. Đây mới là chỗ xử lý đúng vấn đề — bỏ
+		// riêng con thủ lĩnh thì auto vẫn bị đám quái thường đứng sát nó kéo thẳng vào ổ.
+		// Bật/tắt bằng chính ô "Không đánh Boss" (chốt với chủ dự án 2026-09-07), không có công tắc riêng.
+		// includeAllTargetTypes là đường liệt kê cho ComboBox nên không lọc.
+		if (!includeAllTargetTypes && settings.DoNotAttackBoss && settings.EliteAvoidRadius > 0 && elitePositions.Count > 0) {
+			entities.RemoveAll(entity => entity.Type == AutoFsClientProfile.MonsterType && EliteAvoidance.IsNearAnyElite(entity.RawX, entity.RawY, elitePositions, settings.EliteAvoidRadius));
 		}
 
 		// Giữ nguyên quái đang target (game tự báo qua CurrentTargetIndex) cho tới khi nó chết/rời danh sách ứng viên,

@@ -129,6 +129,32 @@ public sealed class AttackViewModel : ViewModelBase {
 		}
 	}
 
+	// Hai ô Boss loại trừ nhau: bật ô này thì ô kia tự tắt. Bỏ tick cả hai là hợp lệ — nghĩa là không lọc gì,
+	// đánh cả quái thường lẫn thủ lĩnh.
+	public bool OnlyAttackBoss {
+		get => settings.OnlyAttackBoss;
+		set {
+			if (settings.OnlyAttackBoss == value) return;
+			settings.OnlyAttackBoss = value;
+			OnPropertyChanged();
+			if (!value) return;
+			settings.DoNotAttackBoss = false;
+			OnPropertyChanged(nameof(DoNotAttackBoss));
+		}
+	}
+
+	public bool DoNotAttackBoss {
+		get => settings.DoNotAttackBoss;
+		set {
+			if (settings.DoNotAttackBoss == value) return;
+			settings.DoNotAttackBoss = value;
+			OnPropertyChanged();
+			if (!value) return;
+			settings.OnlyAttackBoss = false;
+			OnPropertyChanged(nameof(OnlyAttackBoss));
+		}
+	}
+
 	public ObservableCollection<MonsterOption> Monsters { get; } = [MonsterOption.All];
 
 	public MonsterOption SelectedMonster {

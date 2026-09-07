@@ -163,7 +163,7 @@ public static class DebugLog {
 		// "rời trạng thái chết" phải liệt kê riêng: chuỗi đó không chứa cụm "Nhân vật chết" nên trước đây rơi xuống auto-runtime.log.
 		else if (text.Contains("Nhân vật chết", StringComparison.OrdinalIgnoreCase) || text.Contains("Về thành", StringComparison.OrdinalIgnoreCase) || text.Contains("Xử lý khi chết", StringComparison.OrdinalIgnoreCase) || text.Contains("rời trạng thái chết", StringComparison.OrdinalIgnoreCase)) dedicatedPath = deathLogPath;
 		else if (text.Contains("Auto Đánh AutoFS", StringComparison.OrdinalIgnoreCase) || text.Contains("TARGET_SELECTED", StringComparison.OrdinalIgnoreCase) || text.Contains("CURRENT_TARGET_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = attackLogPath;
-		else if (text.Contains("NO_TARGET_CORNER_", StringComparison.OrdinalIgnoreCase) || text.Contains("Đổi map", StringComparison.OrdinalIgnoreCase)) dedicatedPath = movementLogPath;
+		else if (text.Contains("NO_TARGET_CORNER_", StringComparison.OrdinalIgnoreCase) || text.Contains("ELITE_", StringComparison.OrdinalIgnoreCase) || text.Contains("Đổi map", StringComparison.OrdinalIgnoreCase)) dedicatedPath = movementLogPath;
 		else if (text.Contains("BUFF_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = buffLogPath;
 		else if (text.Contains("HEARTBEAT_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = heartbeatLogPath;
 		else if (text.Contains("ANTI_AFK_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = coordinationRecoveryLogPath;

@@ -37,7 +37,7 @@
 							Text="{Binding Range, UpdateSourceTrigger=LostFocus}"
 							controls:NumericInputBehavior.IsEnabled="True" />
 					</StackPanel>
-					<StackPanel Orientation="Horizontal">
+					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
 						<CheckBox Margin="0,0,10,0" Content="Đánh quái" IsChecked="{Binding AttackMonsters}" />
 						<ComboBox
 							x:Name="MonsterComboBox"
@@ -45,6 +45,10 @@
 							DropDownOpened="MonsterComboBox_DropDownOpened"
 							ItemsSource="{Binding Monsters}"
 							SelectedItem="{Binding SelectedMonster}" />
+					</StackPanel>
+					<StackPanel Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Chỉ đánh Boss" IsChecked="{Binding OnlyAttackBoss}" />
+						<CheckBox Content="Không đánh Boss" IsChecked="{Binding DoNotAttackBoss}" />
 					</StackPanel>
 				</StackPanel>
 			</Border>

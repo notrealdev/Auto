@@ -69,8 +69,15 @@ internal sealed class AutoFsOrderQueue {
 			InvalidateActiveCommand();
 			return SendWhenNeeded(game, map.MapId, transition.Approach.RawX, transition.Approach.RawY, $"PortalRecovery20s={transition.FromMapId}->{transition.ToMapId}", out detail);
 		}
-		// Sau một chu kỳ retry không đổi map, quay lại điểm tiếp cận nếu nhân vật đã lệch khỏi cổng.
-		if (crossingPortal && approachDistance > ArrivalDistance && DateTime.UtcNow - lastCommandUtc >= TimeSpan.FromMilliseconds(RetryIntervalMilliseconds)) {
+		// Quay lại điểm tiếp cận khi nhân vật đã lệch khỏi cổng VÀ thật sự đứng yên.
+		// Trước đây chốt này chỉ đếm 800ms kể từ lệnh vào cổng, không xét nhân vật có đang đi hay không. Với tuyến mà
+		// điểm cổng nằm xa điểm tiếp cận thì nhân vật vừa rời điểm tiếp cận là approachDistance vượt ArrivalDistance
+		// ngay, rồi 800ms sau bị gọi ngược — không bao giờ đi hết quãng đường tới cổng.
+		// Đo trên Data/Maps: 98 tuyến, trung vị Approach<->Far = 1.93 ô, tối đa 8.85 ô, trong khi ArrivalDistance chỉ
+		// 1.5 ô. Tuyến 20->32 (4.78 ô) kẹt vô hạn, log back-to-training.log 2026-09-08 01:43-01:50.
+		// ShouldRetry chỉ trả true khi toạ độ KHÔNG đổi suốt 800ms, nên nhân vật đang đi thì không bị gọi ngược nữa.
+		// Trường hợp tới được cổng mà map không đổi vẫn có PortalRecovery20s ở khối ngay trên lo.
+		if (crossingPortal && approachDistance > ArrivalDistance && ShouldRetry(game)) {
 			ResetPortalAttempt();
 			InvalidateActiveCommand();
 			return SendWhenNeeded(game, map.MapId, transition.Approach.RawX, transition.Approach.RawY, $"ReApproach={transition.FromMapId}->{transition.ToMapId}", out detail);

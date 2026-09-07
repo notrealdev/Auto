@@ -81,6 +81,16 @@ public sealed class Settings {
 
 	public int TrainingRawY { get; set; } = 113653;
 
+	// Bộ lọc mục tiêu theo quái thủ lĩnh/boss, port từ AutoFS (VectorFactory.cs:3345-3432). Hai cờ loại trừ nhau.
+	// DoNotAttackBoss còn kiêm luôn công tắc cơ chế NÉ (vùng cấm + chủ động lùi) — chốt với chủ dự án 2026-09-07,
+	// cố ý rộng hơn AutoFS vốn chỉ lọc mục tiêu chứ không né.
+	public bool OnlyAttackBoss { get; set; }
+	public bool DoNotAttackBoss { get; set; } = true;
+
+	// Bán kính vùng cấm quanh thủ lĩnh/boss, raw trục X cùng thang với Range (1 ô ≈ 256 raw); trục Y đã được quy đổi
+	// trong EliteAvoidance.Distance. <= 0 nghĩa là tắt né nhưng vẫn lọc mục tiêu.
+	public int EliteAvoidRadius { get; set; } = 500;
+
 	public int Range { get; set; } = 1200;
 
 	public int CenterX { get; set; }

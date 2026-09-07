@@ -43,6 +43,10 @@ public static class AccountEngineCoordinator {
 			RefreshMapState(game, accountLog);
 
 			bool attackEnabled = game.AttackSettings.Enabled;
+			// Giữ riêng giá trị ô checkbox: attackEnabled bên dưới bị AND thêm layout.AttackReady, nên dùng nó để
+			// khoá Sửa đồ là sai — Attack rớt readiness một nhịp sẽ kéo Sửa đồ chết theo dù người dùng vẫn bật Đánh.
+			// Sửa đồ đã có cổng readiness riêng là layout.RepairReady.
+			bool attackConfigured = attackEnabled;
 			bool lootEnabled = game.LootSettings.Enabled;
 			bool repairConfigured = game.BasicSettings.EnableWeaponRepair;
 			bool repairEnabled = repairConfigured;
@@ -92,7 +96,14 @@ public static class AccountEngineCoordinator {
 				}
 			}
 
-			game.WeaponRepairMonitor.SetEnabled(masterEnabled && repairConfigured);
+			// Monitor độ bền tắt theo ô Đánh: luật là "bật Đánh -> đồ hỏng -> đi sửa", nên tắt Đánh thì không có gì để
+			// theo dõi. Không tắt thì nó vẫn xếp yêu cầu sửa, mà yêu cầu đó không ai thực hiện được (repairBusy đòi
+			// attackConfigured), rồi hai chốt HasPendingRepairRequest/RequiresExclusiveControl bên dưới khoá luôn Nhặt.
+			// Cả hai chốt đó đều đã AND sẵn cờ enabled của monitor nên tắt ở đây là vô hiệu hoá được cả hai.
+			// Bật Đánh trở lại thì SetEnabled(true) tự đặt lịch kiểm tra ngay, không phải chờ chu kỳ.
+			game.WeaponRepairMonitor.SetEnabled(masterEnabled && repairConfigured && attackConfigured);
+			// Tham số thứ ba là competingEnginesEnabled ("có engine nào đang tranh chấp cần tạm giữ để đọc độ bền"),
+			// KHÔNG phải công tắc bật/tắt monitor — công tắc là SetEnabled ngay trên. Giữ nguyên nghĩa gốc.
 			if (!game.WeaponRepairAutomation.IsBusy) game.WeaponRepairMonitor.Tick(game.ProcessId, game.BasicSettings.WeaponDurabilityThreshold, masterEnabled && (attackEnabled || lootEnabled), accountLog);
 			if (repairConfigured && !layout.RepairReady) game.WeaponRepairMonitor.ReportUnavailableTransport(layout.DescribeUnavailable(RuntimeSubsystem.MovementTransport, RuntimeSubsystem.Map, RuntimeSubsystem.Shop, RuntimeSubsystem.RepairTransport), accountLog);
 
@@ -199,6 +210,11 @@ public static class AccountEngineCoordinator {
 				game.ConfiguredTrainingMovementAutomation.Cancel();
 			}
 
+			// Sửa đồ dừng theo ĐÚNG ô checkbox Đánh, không theo attackEnabled: state Returning của nó đi thẳng về
+			// tâm bãi nên tắt Đánh mà để chạy tiếp thì nhân vật vẫn tự di chuyển. Huỷ giữa chuyến có thể để nhân vật
+			// đứng lại ở NPC. Dùng attackConfigured để một nhịp rớt layout.AttackReady không giết luôn luồng Sửa đồ.
+			if (!attackConfigured) game.WeaponRepairAutomation.Cancel(game);
+
 			bool returnToTrainingBusy = attackEnabled && !repairPriority && game.ReturnToTrainingAutomation.Tick(game, snapshot, manualInputActive, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, returnToTrainingBusy);
 			if (returnToTrainingBusy) {
@@ -220,7 +236,7 @@ public static class AccountEngineCoordinator {
 				return;
 			}
 
-			bool repairBusy = game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
+			bool repairBusy = attackConfigured && game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, repairBusy);
 			if (repairBusy) {
 				game.AttackEngine.Stop();

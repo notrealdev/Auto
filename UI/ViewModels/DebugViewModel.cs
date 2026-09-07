@@ -11,6 +11,7 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolSelectedAccountIdentity = "Thông tin account/PID";
 	private const string ToolClientAddressAudit = "Thông tin địa chỉ client";
 	private const string ToolInventoryInfo = "Thông tin túi đồ";
+	private const string ToolEliteMonsterInfo = "Thông tin quái thủ lĩnh";
 	private const string ToolImmediateSale = "Bán ngay (shop đang mở)";
 	private const string ToolImmediateShopRepair = "Sửa ngay (shop đang mở)";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
@@ -44,6 +45,7 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolSelectedAccountIdentity,
 		ToolClientAddressAudit,
 		ToolInventoryInfo,
+		ToolEliteMonsterInfo,
 		ToolImmediateSale,
 		ToolImmediateShopRepair,
 		ToolImmediateRepair
@@ -74,6 +76,9 @@ public sealed class DebugViewModel : ViewModelBase {
 				return;
 			case ToolInventoryInfo:
 				StartInventoryInfo();
+				return;
+			case ToolEliteMonsterInfo:
+				StartEliteMonsterInfo();
 				return;
 			case ToolImmediateSale:
 				StartImmediateSale();
@@ -111,6 +116,19 @@ public sealed class DebugViewModel : ViewModelBase {
 		int processId = game.ProcessId;
 		AccountInfoText = $"PID={processId} | Đang đọc túi đồ...";
 		string result = await Task.Run(() => InventoryInfoProbe.Run(processId));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
+	// Liệt kê quái quanh nhân vật kèm phán quyết thủ lĩnh/boss và byte thô của tên, chỉ đọc bộ nhớ.
+	private async void StartEliteMonsterInfo() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang quét quái quanh nhân vật...";
+		string result = await Task.Run(() => EliteMonsterProbe.Run(processId));
 		DebugLog.AddDebugForProcess(processId, result);
 		AccountInfoText = $"PID={processId} | {result}";
 	}
