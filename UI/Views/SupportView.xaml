@@ -1,0 +1,47 @@
+<UserControl
+	x:Class="Auto.UI.Views.SupportView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:controls="clr-namespace:Auto.UI.Controls"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:SupportViewModel}"
+	mc:Ignorable="d">
+
+	<Border Style="{StaticResource CardBorder}">
+		<StackPanel>
+			<CheckBox Margin="0,0,0,10" Content="Buff hỗ trợ 3 hệ" IsChecked="{Binding BuffThreeSystems}" />
+			<Grid Margin="0,0,0,10">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="80" />
+					<ColumnDefinition Width="Auto" />
+				</Grid.ColumnDefinitions>
+				<CheckBox Grid.Column="0" Margin="0,0,10,0" Content="Chủ khi HP ≤" IsChecked="{Binding HealOwner}" />
+				<TextBox
+					Grid.Column="1"
+					Margin="0,0,6,0"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding HealOwnerHpPercent, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock Grid.Column="2" Style="{StaticResource FieldLabel}" Text="%" />
+			</Grid>
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="80" />
+					<ColumnDefinition Width="Auto" />
+				</Grid.ColumnDefinitions>
+				<CheckBox Grid.Column="0" Margin="0,0,10,0" Content="Đệ khi HP ≤" IsChecked="{Binding HealPet}" />
+				<TextBox
+					Grid.Column="1"
+					Margin="0,0,6,0"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding HealPetHpPercent, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock Grid.Column="2" Style="{StaticResource FieldLabel}" Text="%" />
+			</Grid>
+		</StackPanel>
+	</Border>
+</UserControl>

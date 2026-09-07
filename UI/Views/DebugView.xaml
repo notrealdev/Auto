@@ -1,0 +1,54 @@
+<UserControl
+	x:Class="Auto.UI.Views.DebugView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:DebugViewModel}"
+	mc:Ignorable="d">
+
+	<Border Style="{StaticResource CardBorder}">
+		<StackPanel>
+			<CheckBox Margin="0,0,0,10" Content="Bật debug" IsChecked="{Binding EnableDebugLogging}" />
+
+			<Grid Margin="0,0,0,10">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="*" />
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="Auto" />
+				</Grid.ColumnDefinitions>
+				<ComboBox
+					Grid.Column="0"
+					Margin="0,0,8,0"
+					ItemsSource="{Binding Tools}"
+					SelectedItem="{Binding SelectedTool}" />
+				<Button
+					Grid.Column="1"
+					Margin="0,0,8,0"
+					Padding="10,4"
+					Command="{Binding RunToolCommand}"
+					Content="Chạy" />
+				<Button
+					Grid.Column="2"
+					Padding="10,4"
+					Command="{Binding ClearOutputCommand}"
+					Content="Clear" />
+			</Grid>
+
+			<TextBox
+				Height="160"
+				Padding="8,8"
+				AcceptsReturn="True"
+				FontFamily="Consolas"
+				IsReadOnly="True"
+				Style="{StaticResource NumericTextBox}"
+				Text="{Binding AccountInfoText, Mode=OneWay}"
+				TextAlignment="Left"
+				TextWrapping="NoWrap"
+				VerticalContentAlignment="Top"
+				VerticalScrollBarVisibility="Auto"
+				HorizontalScrollBarVisibility="Auto" />
+		</StackPanel>
+	</Border>
+</UserControl>

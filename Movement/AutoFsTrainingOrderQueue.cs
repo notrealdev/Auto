@@ -70,8 +70,10 @@ internal sealed class AutoFsTrainingOrderQueue {
 			InvalidateActiveCommand();
 			return SendWhenNeeded(game, map.MapId, transition.Approach.RawX, transition.Approach.RawY, $"PortalRecovery20s={transition.FromMapId}->{transition.ToMapId}", out detail);
 		}
-		// Sau một chu kỳ retry không đổi map, quay lại điểm tiếp cận nếu nhân vật đã lệch khỏi cổng.
-		if (crossingPortal && approachDistance > ArrivalDistance && DateTime.UtcNow - lastCommandUtc >= TimeSpan.FromMilliseconds(RetryIntervalMilliseconds)) {
+		// Sau một chu kỳ retry KHÔNG còn tiến độ (vị trí không đổi), mới quay lại điểm tiếp cận nếu nhân vật đã lệch khỏi cổng.
+		// Trước đây chỉ xét thời gian trôi qua (800ms) mà không xét tiến độ thực, khiến nhân vật đang đi đúng hướng ra cổng
+		// bị kéo lùi lặp lại vô hạn vì approachDistance luôn > ArrivalDistance ngay khi vừa rời điểm Approach.
+		if (crossingPortal && approachDistance > ArrivalDistance && ShouldRetry(game)) {
 			ResetPortalAttempt();
 			InvalidateActiveCommand();
 			return SendWhenNeeded(game, map.MapId, transition.Approach.RawX, transition.Approach.RawY, $"ReApproach={transition.FromMapId}->{transition.ToMapId}", out detail);

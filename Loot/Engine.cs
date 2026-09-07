@@ -1,6 +1,8 @@
 namespace Auto.Loot;
 
 using Auto.Attack;
+using Auto.Movement;
+using Auto.Runtime;
 using Auto.Utils;
 
 public sealed class Engine {
@@ -25,6 +27,7 @@ public sealed class Engine {
 	private Task? worker;
 	private int processId;
 	private IntPtr gameWindow;
+	private GameWindow? game;
 	private bool manualInputActive;
 	private LootSnapshot? pendingCandidate;
 	private int pendingItemIndex;
@@ -82,6 +85,7 @@ public sealed class Engine {
 			cancellation = workerCancellation;
 			processId = 0;
 			gameWindow = IntPtr.Zero;
+			game = null;
 			manualInputActive = false;
 			startedLogged = false;
 			lastError = "";
@@ -92,18 +96,20 @@ public sealed class Engine {
 			log = null;
 			dropLog = null;
 		}
+		finder.InvalidatePotionCounts();
 		cancellation?.Cancel();
 	}
 
-	public bool Tick(GameSnapshot snapshot, IntPtr gameWindowHandle, bool manualInputActive, Action<string>? log = null, Action<string>? dropLog = null) {
-		if (! settings.Enabled || ! snapshot.Success || snapshot.ProcessId <= 0 || gameWindowHandle == IntPtr.Zero) {
+	public bool Tick(GameSnapshot snapshot, GameWindow game, bool manualInputActive, Action<string>? log = null, Action<string>? dropLog = null) {
+		if (! settings.Enabled || ! snapshot.Success || snapshot.ProcessId <= 0 || game.Handle == IntPtr.Zero) {
 			Stop();
 			return false;
 		}
 
 		lock (syncRoot) {
 			processId = snapshot.ProcessId;
-			gameWindow = gameWindowHandle;
+			gameWindow = game.Handle;
+			this.game = game;
 			this.manualInputActive = manualInputActive;
 			this.log = log;
 			this.dropLog = dropLog;
@@ -145,6 +151,7 @@ public sealed class Engine {
 				}
 
 				lastError = "";
+				LogScanSummary(result, context.DropLog);
 				LogScanRejections(result, context.DropLog);
 				RemoveExpiredFailedCoordinates(DateTime.UtcNow, context.DropLog, context.ProcessId);
 				if (actionGate.IsLootSuspended) {
@@ -170,6 +177,7 @@ public sealed class Engine {
 			}
 		} finally {
 			ClearPending();
+			finder.InvalidatePotionCounts();
 			lock (syncRoot) {
 				if (workerCancellation != null && workerCancellation.Token == token) {
 					workerCancellation.Dispose();
@@ -287,6 +295,9 @@ public sealed class Engine {
 				}
 			}
 		} finally {
+			// Item rời khỏi ô dưới đất nghĩa là số lượng trong túi có thể đã đổi: xoá cache để lượt lọc sau đọc lại.
+			// Cố ý không cộng thẳng vào cache: SLOT_LEFT cũng xảy ra khi người khác nhặt mất, cộng thẳng sẽ đếm thừa.
+			if (outcome.StartsWith("SLOT_LEFT", StringComparison.Ordinal)) finder.InvalidatePotionCounts();
 			if (token.IsCancellationRequested) outcome = "CANCELLED";
 			else if (! settings.Enabled) outcome = "LOOT_DISABLED";
 			else if (IsManualInputActive()) outcome = "MANUAL_INPUT_PRIORITY";
@@ -296,7 +307,7 @@ public sealed class Engine {
 	}
 
 	private WorkerContext GetWorkerContext() {
-		lock (syncRoot) return new(processId, gameWindow, manualInputActive, log, dropLog);
+		lock (syncRoot) return new(processId, gameWindow, game, manualInputActive, log, dropLog);
 	}
 
 	private bool IsManualInputActive() {
@@ -410,7 +421,8 @@ public sealed class Engine {
 			lock (syncRoot) {
 				if (! loggedFilterDecisions.Add(item.MemoryFingerprint)) continue;
 			}
-			LootFilterDecision decision = Finder.EvaluateFilter(item, settings);
+			LootFilterDecision decision = finder.EvaluateFilter(item);
+			foreach (string diagnostic in finder.ConsumePotionCountDiagnostics()) currentDropLog(diagnostic);
 			currentDropLog($"LOOT_FILTER | PID={item.ProcessId} | Index={item.Index} | Name={item.ItemNameRaw} | Record=0x{item.Address.ToInt64():X8} | GroundType={item.GroundType} | GroundKind={item.GroundKind} | Group={decision.Classification.Group} | AutoFsCategory={AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw)} | Color={decision.Classification.Color} | AttributeClass={decision.Classification.AttributeClass} | QualityA={item.QualityCodeA} | QualityB={item.QualityCodeB} | Accepted={decision.Accepted} | Reason={decision.Reason} | Raw={item.RawX}/{item.RawY} | Internal={item.InternalX}/{item.InternalY} | EuclideanDistance={item.DistanceToPlayer:F0}");
 		}
 	}
@@ -487,6 +499,6 @@ public sealed class Engine {
 		currentLog?.Invoke($"Auto Nhặt AutoFS FAIL | PID={currentProcessId} | {error}");
 	}
 
-	private readonly record struct WorkerContext(int ProcessId, IntPtr GameWindow, bool ManualInputActive, Action<string>? Log, Action<string>? DropLog);
+	private readonly record struct WorkerContext(int ProcessId, IntPtr GameWindow, GameWindow? Game, bool ManualInputActive, Action<string>? Log, Action<string>? DropLog);
 	private readonly record struct GroundSlotReading(bool Matches, int GroundId, int RawX, int RawY, string Reason);
 }

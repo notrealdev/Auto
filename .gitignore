@@ -16,3 +16,6 @@
 /.tools
 /artifacts
 /.analysis
+/Debug
+/Resource
+/Release

@@ -1,0 +1,59 @@
+<Window
+	x:Class="Auto.UI.Views.ClassPriorityDialog"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	Title="Cài đặt ưu tiên đánh theo hệ"
+	Width="260"
+	Height="200"
+	d:DataContext="{d:DesignInstance Type=vm:ClassPriorityDialogViewModel}"
+	Background="{StaticResource Brush.Background}"
+	ResizeMode="NoResize"
+	ShowInTaskbar="False"
+	WindowStartupLocation="CenterOwner"
+	mc:Ignorable="d">
+
+	<Grid Margin="16">
+		<Grid.RowDefinitions>
+			<RowDefinition Height="Auto" />
+			<RowDefinition Height="Auto" />
+			<RowDefinition Height="Auto" />
+			<RowDefinition Height="*" />
+			<RowDefinition Height="Auto" />
+		</Grid.RowDefinitions>
+
+		<CheckBox
+			Grid.Row="0"
+			Margin="0,0,0,8"
+			Content="Đạo Sĩ"
+			IsChecked="{Binding Taoist}" />
+		<CheckBox
+			Grid.Row="1"
+			Margin="0,0,0,8"
+			Content="Dị Nhân"
+			IsChecked="{Binding Summoner}" />
+		<CheckBox
+			Grid.Row="2"
+			Margin="0,0,0,8"
+			Content="Giáp Sĩ"
+			IsChecked="{Binding Warrior}" />
+
+		<StackPanel
+			Grid.Row="4"
+			HorizontalAlignment="Right"
+			Orientation="Horizontal">
+			<Button
+				Width="72"
+				Margin="0,0,8,0"
+				Command="{Binding AcceptCommand}"
+				Content="Đồng ý"
+				Style="{StaticResource AccentButton}" />
+			<Button
+				Width="72"
+				Command="{Binding CancelCommand}"
+				Content="Hủy" />
+		</StackPanel>
+	</Grid>
+</Window>

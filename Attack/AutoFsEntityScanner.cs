@@ -4,6 +4,7 @@ using Auto.Runtime;
 using Auto.Utils;
 
 internal sealed class AutoFsEntityScanner {
+	private const int AutoFsMaximumPlayerDistance = 9999;
 
 	public static int ReadCurrentTargetIndex(int processId) {
 		try {
@@ -26,13 +27,17 @@ internal sealed class AutoFsEntityScanner {
 	}
 
 	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, bool includeAllTargetTypes = false) {
-		return Scan(reader, settings, out _, out _, includeAllTargetTypes);
+		return Scan(reader, settings, out _, out _, out _, includeAllTargetTypes);
 	}
 
-	// Quét target và trả về tọa độ hiện tại để nhánh Quanh điểm bám đúng vòng tìm quái của AutoFS
-	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, out int playerX, out int playerY, bool includeAllTargetTypes = false, int preferredTargetIndex = -1) {
+	// Quét target và trả về tọa độ hiện tại để nhánh Quanh điểm bám đúng vòng tìm quái của AutoFS.
+	// playerLifecycleStatus là ô LifecycleStatus của chính nhân vật, đưa ra ngoài chỉ để đo: AutoFS chặn bước đi bằng
+	// SplitDisk() = "ô trạng thái nhân vật == 3" (WindowQueue.cs:26253, đọc O_Player + 464 của client cũ) và hiện
+	// CHƯA xác định được ô tương ứng trên client này. Ghi kèm vào log đi 4 góc để đối chiếu sau.
+	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, out int playerX, out int playerY, out int playerLifecycleStatus, bool includeAllTargetTypes = false, int preferredTargetIndex = -1) {
 		playerX = 0;
 		playerY = 0;
+		playerLifecycleStatus = -1;
 		RuntimeLayout layout = RuntimeLayoutResolver.Resolve(reader.ProcessId);
 		if (! layout.Get(RuntimeSubsystem.Entity).Available) return Array.Empty<AutoFsEntity>();
 		IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
@@ -42,6 +47,7 @@ internal sealed class AutoFsEntityScanner {
 		IntPtr playerBase = IntPtr.Add(tableBase, layout.PlayerRecordOffset);
 		playerX = reader.ReadInt32(IntPtr.Add(playerBase, AutoFsClientProfile.RawX));
 		playerY = reader.ReadInt32(IntPtr.Add(playerBase, AutoFsClientProfile.RawY));
+		playerLifecycleStatus = reader.ReadInt32(IntPtr.Add(playerBase, AutoFsClientProfile.LifecycleStatus));
 		int currentTargetIndex = reader.ReadInt32(IntPtr.Add(moduleBase, GameAddresses.Globals.CurrentTargetIndex));
 		bool configuredTrainingMode = HasConfiguredTrainingMode(settings);
 		(int centerX, int centerY) = GetCenter(settings, playerX, playerY);
@@ -73,12 +79,19 @@ internal sealed class AutoFsEntityScanner {
 			double distanceToCenter = GetMapDistance(centerX, centerY, x, y);
 			if ((configuredTrainingMode || settings.UseCenterPosition) && distanceToCenter > Math.Max(settings.Range, 1)) continue;
 			double distanceToPlayer = GetMapDistance(playerX, playerY, x, y);
+			// AutoFS chặn trên khoảng cách tới nhân vật trước khi nạp vào danh sách ứng viên (VectorFactory.cs, cả hai
+			// nhánh lọc tên đều là "if (num28 >= 0) { if (num28 <= 9999) { ... list.Add ... } }").
+			// Khi tắt Quanh điểm thì đây là chặn duy nhất, không có nó thì auto bám cả quái ở đầu kia bản đồ.
+			if (distanceToPlayer > AutoFsMaximumPlayerDistance) continue;
 
 			int hp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
 			int level = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Level));
 			entities.Add(new AutoFsEntity(index, type, status, name, nameBytes, level, hp, x, y, distanceToPlayer, distanceToCenter, centerX, centerY, index == currentTargetIndex));
 		}
 
+		// Giữ nguyên quái đang target (game tự báo qua CurrentTargetIndex) cho tới khi nó chết/rời danh sách ứng viên,
+		// không chọn lại quái gần nhất mỗi chu kỳ nữa — luồng tự đổi target thủ công (preferredTargetIndex) đã bị bỏ,
+		// nên không còn lý do phải luôn ưu tiên chọn lại theo khoảng cách mỗi lần quét.
 		entities.Sort((left, right) => {
 			int leftPriority = left.Index == preferredTargetIndex ? 2 : (left.IsCurrentTarget ? 1 : 0);
 			int rightPriority = right.Index == preferredTargetIndex ? 2 : (right.IsCurrentTarget ? 1 : 0);
@@ -123,13 +136,15 @@ internal sealed class AutoFsEntityScanner {
 		}
 	}
 
+	// Khớp đúng công thức khoảng cách của AutoFS gốc (VectorFactory.cs): Euclid thô trên tọa độ raw, không có hệ số quy đổi trục.
 	private static double GetMapDistance(int firstX, int firstY, int secondX, int secondY) {
 		long deltaX = (long)firstX - secondX;
 		long deltaY = (long)firstY - secondY;
 		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
 	}
 
-	private static (int X, int Y) GetCenter(Settings settings, int playerX, int playerY) {
+	// Nội bộ (không private) để Loot\Engine.cs dùng lại đúng logic xác định tâm bãi khi cần đưa nhân vật về sau khi nhặt.
+	internal static (int X, int Y) GetCenter(Settings settings, int playerX, int playerY) {
 		if (settings.TrainingEnabled && settings.TrainingRawX > 0 && settings.TrainingRawY > 0) return (settings.TrainingRawX, settings.TrainingRawY);
 		if (settings.TeachingEnabled && settings.TeachingRawX > 0 && settings.TeachingRawY > 0) return (settings.TeachingRawX, settings.TeachingRawY);
 		if (settings.ContinueEnabled && settings.ContinueRawX > 0 && settings.ContinueRawY > 0) return (settings.ContinueRawX, settings.ContinueRawY);

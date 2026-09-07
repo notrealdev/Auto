@@ -3,6 +3,7 @@ namespace Auto.Repair;
 using Auto.Movement;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using Auto.DebugTools;
 using Auto.Runtime;
 using Auto.Sale;
 using Auto.Utils;
@@ -34,6 +35,9 @@ public sealed class WeaponRepairAutomation {
 	private int doctorRawY;
 	private int returnRawX;
 	private int returnRawY;
+	private int returnMapId;
+	private readonly AutoFsTrainingOrderQueue returnOrderQueue = new();
+	private DateTime nextReturnLogUtc;
 	private int doctorClickAttempts;
 	private int menuProfileIndex;
 	private int repairClickAttempts;
@@ -110,7 +114,8 @@ public sealed class WeaponRepairAutomation {
 
 		if (!snapshot.Success) return true;
 		GameMapInfo currentMap = GameMapReader.Read(game.ProcessId);
-		if (!currentMap.Success || currentMap.MapId != mapId) {
+		// Bỏ qua kiểm tra đổi map khi đang quay lại bãi: bước này có thể chủ động qua cổng nếu bãi khác map lúc bắt đầu Sửa đồ.
+		if (state != RepairState.Returning && (!currentMap.Success || currentMap.MapId != mapId)) {
 			if (debugMode && state == RepairState.PausedAtDoctor) return true;
 			string currentMapDetail = currentMap.Success ? currentMap.MapId.ToString() : "UNKNOWN:" + currentMap.FailureReason;
 			return AbortAndRetry(game, $"Map thay đổi trong lúc sửa đồ | Map={mapId}->{currentMapDetail}", log);
@@ -326,16 +331,15 @@ public sealed class WeaponRepairAutomation {
 				} else {
 					log?.Invoke("Sửa đồ | không gửi ESC vì phiên shop/xác nhận sửa chưa được chứng minh đầy đủ.");
 				}
-				BeginReturn(game, snapshot, log);
+				BeginReturn(game, log);
 				break;
 			case RepairState.Returning:
-				if (GetDistance(snapshot.X, snapshot.Y, returnRawX, returnRawY) <= 1.0) return Complete(game, log);
-				ObserveNavigationProgress(snapshot.X, snapshot.Y, returnRawX, returnRawY);
-				if (DateTime.UtcNow >= nextMoveRefreshUtc && HasNavigationStalled()) {
-					nextMoveRefreshUtc = DateTime.UtcNow.AddMilliseconds(StuckDetectionMilliseconds);
-					if (!TryAutoFsMovement(game, returnRawX, returnRawY, out string moveResult)) return Fail(game, "Không thể tiếp tục quay lại bãi | " + moveResult, log);
-					lastMovementUtc = DateTime.UtcNow;
-					log?.Invoke($"Sửa đồ | đứng yên 8 giây, đã gửi lại nguyên tuyến về bãi | Đích={returnRawX}/{returnRawY} | {moveResult}");
+				bool arrivedAtTraining = returnOrderQueue.Tick(game, snapshot, returnMapId, returnRawX, returnRawY, out string returnDetail);
+				if (arrivedAtTraining) return Complete(game, log);
+				bool returnPortalRecovery = returnDetail.StartsWith("PortalRecovery20s=", StringComparison.Ordinal);
+				if (returnPortalRecovery || DateTime.UtcNow >= nextReturnLogUtc) {
+					nextReturnLogUtc = DateTime.UtcNow.AddSeconds(10);
+					log?.Invoke($"Sửa đồ | quay lại bãi | {returnDetail}");
 				}
 				break;
 		}
@@ -357,7 +361,7 @@ public sealed class WeaponRepairAutomation {
 			: "FAIL | " + reading.FailureReason;
 		if (! string.Equals(lastSaleTriggerState, stateText, StringComparison.Ordinal)) {
 			lastSaleTriggerState = stateText;
-			log?.Invoke("SALE_TRIGGER | " + stateText);
+			log?.Invoke("REPAIR_SALE_TRIGGER | " + stateText);
 		}
 		if (reading.Triggered) saleRequestPending = true;
 	}
@@ -372,8 +376,16 @@ public sealed class WeaponRepairAutomation {
 		mapId = map.MapId;
 		doctorRawX = map.DoctorRawX;
 		doctorRawY = map.DoctorRawY;
-		returnRawX = game.AttackSettings.UseCenterPosition && game.AttackSettings.CenterX > 0 ? game.AttackSettings.CenterX : snapshot.X;
-		returnRawY = game.AttackSettings.UseCenterPosition && game.AttackSettings.CenterY > 0 ? game.AttackSettings.CenterY : snapshot.Y;
+		// Lấy đúng Map/X/Y của bãi đã cấu hình (không chỉ toạ độ thô) để bước quay lại bãi có thể qua cổng nếu Sửa đồ xảy ra ở map khác bãi.
+		if (ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out int configuredMapId, out int configuredRawX, out int configuredRawY)) {
+			returnMapId = configuredMapId;
+			returnRawX = configuredRawX;
+			returnRawY = configuredRawY;
+		} else {
+			returnMapId = map.MapId;
+			returnRawX = snapshot.X;
+			returnRawY = snapshot.Y;
+		}
 		if (!TryAutoFsMovement(game, doctorRawX, doctorRawY, out string routeResult)) {
 			log?.Invoke("Sửa đồ FAIL | Không khởi tạo được tuyến nội bộ tới Đại Phu | " + routeResult);
 			Reset();
@@ -385,7 +397,7 @@ public sealed class WeaponRepairAutomation {
 		lastLoggedState = RepairState.Idle;
 		nextMoveRefreshUtc = DateTime.UtcNow.AddMilliseconds(StuckDetectionMilliseconds);
 		nextProgressLogUtc = DateTime.UtcNow.AddSeconds(10);
-		log?.Invoke($"Sửa đồ bắt đầu | Map={map.MapId} | ĐạiPhu={map.DoctorRawX}/{map.DoctorRawY} | QuayLại={returnRawX}/{returnRawY}");
+		log?.Invoke($"Sửa đồ bắt đầu | Map={map.MapId} | ĐạiPhu={map.DoctorRawX}/{map.DoctorRawY} | QuayLại=Map{returnMapId}/{returnRawX}/{returnRawY}");
 		log?.Invoke("Sửa đồ | đã gửi lệnh di chuyển AutoFS tới Đại Phu | " + routeResult);
 		return true;
 	}
@@ -414,9 +426,16 @@ public sealed class WeaponRepairAutomation {
 		if (GetDistance(lastObservedRawX, lastObservedRawY, rawX, rawY) >= MinimumObservedMovement) {
 			lastObservedRawX = rawX;
 			lastObservedRawY = rawY;
+		}
+		// Mốc chống kẹt phải tính theo TIẾN ĐỘ tới đích, không phải "có nhúc nhích hay không". Trước đây bất kỳ dịch chuyển
+		// nhỏ nào cũng làm mới lastMovementUtc, nên nhân vật đi qua đi lại tại chỗ vẫn được coi là đang tiến triển:
+		// HasNavigationStalled() không bao giờ đúng và tuyến tới Đại Phu không bao giờ được gửi lại (kẹt 2 phút trong
+		// repair.log 16:56:12-16:57:53, khoảng cách chỉ dao động 20-21). bestNavigationDistance vốn đã tính sẵn cho mục
+		// đích này nhưng chưa từng được dùng để quyết định.
+		if (distance <= bestNavigationDistance - MinimumNavigationProgress) {
+			bestNavigationDistance = distance;
 			lastMovementUtc = DateTime.UtcNow;
 		}
-		if (distance <= bestNavigationDistance - MinimumNavigationProgress) bestNavigationDistance = distance;
 	}
 
 	private bool HasNavigationStalled() => (DateTime.UtcNow - lastMovementUtc).TotalMilliseconds >= StuckDetectionMilliseconds;
@@ -536,19 +555,19 @@ public sealed class WeaponRepairAutomation {
 		nextActionUtc = DateTime.UtcNow.AddMilliseconds(350);
 	}
 
-	private void BeginReturn(GameWindow game, GameSnapshot snapshot, Action<string>? log) {
+	// Dùng AutoFsTrainingOrderQueue (có định tuyến qua cổng) thay vì di chuyển thẳng cùng-map, vì Sửa đồ có thể xảy ra ở map khác bãi đã cấu hình.
+	private void BeginReturn(GameWindow game, Action<string>? log) {
 		interactionLocked = false;
-		bool invalidReturnPoint = returnRawX <= 0 || returnRawY <= 0;
-		string result = "";
-		if (invalidReturnPoint || !TryAutoFsMovement(game, returnRawX, returnRawY, out result)) {
-			log?.Invoke("Sửa đồ hoàn tất nhưng không thể quay lại bãi | " + (invalidReturnPoint ? "Tâm bãi không hợp lệ." : result));
+		bool invalidReturnPoint = returnRawX <= 0 || returnRawY <= 0 || returnMapId <= 0;
+		if (invalidReturnPoint) {
+			log?.Invoke("Sửa đồ hoàn tất nhưng không thể quay lại bãi | Tâm bãi không hợp lệ.");
 			Complete(game, log);
 			return;
 		}
-		InitializeNavigation(snapshot.X, snapshot.Y, returnRawX, returnRawY);
+		returnOrderQueue.Reset();
+		nextReturnLogUtc = DateTime.MinValue;
 		state = RepairState.Returning;
-		nextMoveRefreshUtc = DateTime.UtcNow.AddMilliseconds(StuckDetectionMilliseconds);
-		log?.Invoke("Sửa đồ | đã gửi lệnh di chuyển AutoFS để quay lại bãi | " + result);
+		log?.Invoke($"Sửa đồ | bắt đầu quay lại bãi theo tuyến AutoFS | Map={returnMapId} | Đích={returnRawX}/{returnRawY}");
 	}
 
 	private static bool TryAutoFsMovement(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
@@ -663,6 +682,8 @@ public sealed class WeaponRepairAutomation {
 		nextMoveRefreshUtc = DateTime.MinValue;
 		nextProgressLogUtc = DateTime.MinValue;
 		nextDoctorEntityLogUtc = DateTime.MinValue;
+		nextReturnLogUtc = DateTime.MinValue;
+		returnOrderQueue.Reset();
 		shopOpened = false;
 		interactionLocked = false;
 		repairConfirmationObserved = false;

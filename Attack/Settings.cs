@@ -87,6 +87,10 @@ public sealed class Settings {
 
 	public int CenterY { get; set; }
 
+	// Map ghi nhận lúc đặt tâm bãi. Không có trường này thì luồng lên bãi không biết tâm thuộc map nào,
+	// nên đứng ở map khác vẫn đem toạ độ ra trừ nhau và không thể đi xuyên map về đúng bãi.
+	public int CenterMapId { get; set; }
+
 	public bool UseCenterPosition { get; set; }
 
 	public int MinHpPercent { get; set; } = 30;

@@ -1,0 +1,22 @@
+<UserControl
+	x:Class="Auto.UI.Views.InfoView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:InfoViewModel}"
+	mc:Ignorable="d">
+
+	<Border Style="{StaticResource CardBorder}">
+		<StackPanel>
+			<TextBlock Style="{StaticResource SectionLabel}" Text="Ctrl + A" />
+			<TextBlock
+				MaxWidth="440"
+				HorizontalAlignment="Left"
+				Foreground="{StaticResource Brush.TextPrimary}"
+				Text="Bấm Ctrl + A khi cửa sổ game đang foreground sẽ bật/tắt &quot;Tự động đánh&quot; cho đúng tài khoản đó, không đổi các checkbox Tân thủ/Thành thị/Mê cung."
+				TextWrapping="Wrap" />
+		</StackPanel>
+	</Border>
+</UserControl>

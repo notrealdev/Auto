@@ -1,0 +1,119 @@
+﻿<ResourceDictionary
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+	<!-- Mọi số đo (cỡ chữ, lề, kích thước control) nằm ở UI/Resources/Sizes.xaml. File này chỉ giữ màu. -->
+
+	<!-- Nền thanh title bar tự vẽ (trên cùng, chứa icon + tên app + nút minimize/maximize/close) -->
+	<Color x:Key="Color.TitleBar">#101010</Color>
+	<!-- Nền tổng của Grid gốc (khoảng trống giữa/quanh các block) -->
+	<Color x:Key="Color.Background">#131313</Color>
+	<!-- Nền các block/card (CardBorder), nền TextBox/ComboBox/CheckBox, nền nút Button thường -->
+	<Color x:Key="Color.Surface">#111316</Color>
+	<!-- Nền pill tab chưa chọn, nền popup dropdown ComboBox, nền hover của Button/nút title bar -->
+	<Color x:Key="Color.SurfaceElevated">#1F2430</Color>
+	<!-- Viền mặc định của: block/card, TextBox, ComboBox, popup dropdown, pill tab chưa chọn, thumb scrollbar -->
+	<Color x:Key="Color.Border">#484b4d</Color>
+	<!-- Viền + đổ bóng khi focus của: TextBox, ComboBox, checkbox (hover/focus) -->
+	<Color x:Key="Color.BorderFocus">#33373a</Color>
+	<!-- Màu nhấn (accent): nền checkbox khi checked, nền AccentButton, nền pill tab đang chọn -->
+	<Color x:Key="Color.Accent">#33373a</Color>
+	<!-- Accent khi hover: AccentButton hover, pill tab hover -->
+	<Color x:Key="Color.AccentHover">#5470FF</Color>
+	<!-- Accent khi nhấn giữ (pressed): AccentButton pressed -->
+	<Color x:Key="Color.AccentPressed">#2E46D0</Color>
+	<!-- Accent mờ: nền Button thường khi pressed, nền ComboBoxItem highlight, nền hàng account đang chọn -->
+	<Color x:Key="Color.AccentMuted">#232A45</Color>
+	<!-- Chữ chính (sáng nhất): SectionLabel, nội dung CheckBox/Button/ComboBox/TextBox, tab đang/chưa chọn, dấu check -->
+	<Color x:Key="Color.TextPrimary">#E6E8EE</Color>
+	<!-- Chữ phụ (mờ hơn): FieldLabel, viền CheckBox lúc off, mũi tên ComboBox, dòng Vitals account -->
+	<Color x:Key="Color.TextSecondary">#B4BACC</Color>
+	<!-- Chữ khi control bị disable (Button/CheckBox/TextBox/ComboBox) -->
+	<Color x:Key="Color.TextDisabled">#5A5F6B</Color>
+	<!-- Màu báo thành công (hiện chưa dùng ở style nào, để dành) -->
+	<Color x:Key="Color.Success">#3DDC84</Color>
+	<!-- Màu báo lỗi/nguy hiểm (hiện chưa dùng ở style nào, để dành) -->
+	<Color x:Key="Color.Danger">#FF5C5C</Color>
+	<!-- Màu cảnh báo (hiện chưa dùng ở style nào, để dành) -->
+	<Color x:Key="Color.Warning">#FFB74D</Color>
+
+	<!-- Label chính đầu mỗi nhóm (SectionLabel, vd "Vật phẩm", "Cài đặt PK") -->
+	<Color x:Key="Color.LabelSection">#E6E8EE</Color>
+	<!-- Label phụ cạnh input/select (FieldLabel, vd "Map:", "%", "giây") -->
+	<Color x:Key="Color.LabelField">#B4BACC</Color>
+	<!-- Chữ nhãn đứng cạnh CheckBox (nội dung CheckBox.Content) -->
+	<Color x:Key="Color.CheckboxLabel">#E6E8EE</Color>
+
+	<!-- Checkbox: nền ô vuông khi off -->
+	<Color x:Key="Color.CheckboxBackground">#111316</Color>
+	<!-- Checkbox: viền ô vuông khi off -->
+	<Color x:Key="Color.CheckboxBorder">#B4BACC</Color>
+	<!-- Checkbox: nền + viền ô vuông khi checked (dùng chung 1 màu xanh cho cả 2) -->
+	<Color x:Key="Color.CheckboxChecked">#5470FF</Color>
+	<!-- Checkbox: màu dấu tích khi checked -->
+	<Color x:Key="Color.CheckboxCheckmark">#FFFFFF</Color>
+
+	<!-- Select/ComboBox: nền -->
+	<Color x:Key="Color.SelectBackground">#111316</Color>
+	<!-- Select/ComboBox: viền mặc định -->
+	<Color x:Key="Color.SelectBorder">#484B4D</Color>
+	<!-- Select/ComboBox: viền khi focus -->
+	<Color x:Key="Color.SelectBorderFocus">#33373A</Color>
+	<!-- Select/ComboBox: màu mũi tên + item highlight trong popup -->
+	<Color x:Key="Color.SelectArrow">#B4BACC</Color>
+	<Color x:Key="Color.SelectItemHover">#232A45</Color>
+	<!-- Select/ComboBox: nền popup dropdown -->
+	<Color x:Key="Color.SelectPopupBackground">#1F2430</Color>
+
+	<!-- Input/textarea (TextBox): viền dùng chung 1 biến cho mọi trạng thái -->
+	<Color x:Key="Color.InputBorder">#484B4D</Color>
+
+	<!-- Main tab (TabRadioButton): nền tab chưa chọn -->
+	<Color x:Key="Color.TabBackground">#1F2430</Color>
+	<!-- Main tab: viền tab chưa chọn -->
+	<Color x:Key="Color.TabBorder">#484B4D</Color>
+	<!-- Main tab: nền khi hover -->
+	<Color x:Key="Color.TabBackgroundHover">#5470FF</Color>
+	<!-- Main tab: nền khi đang chọn -->
+	<Color x:Key="Color.TabBackgroundSelected">#33373A</Color>
+	<!-- Main tab: chữ trên tab -->
+	<Color x:Key="Color.TabText">#E6E8EE</Color>
+
+	<SolidColorBrush x:Key="Brush.Background" Color="{StaticResource Color.Background}" />
+	<SolidColorBrush x:Key="Brush.TitleBar" Color="{StaticResource Color.TitleBar}" />
+	<SolidColorBrush x:Key="Brush.Surface" Color="{StaticResource Color.Surface}" />
+	<SolidColorBrush x:Key="Brush.SurfaceElevated" Color="{StaticResource Color.SurfaceElevated}" />
+	<SolidColorBrush x:Key="Brush.Border" Color="{StaticResource Color.Border}" />
+	<SolidColorBrush x:Key="Brush.BorderFocus" Color="{StaticResource Color.BorderFocus}" />
+	<SolidColorBrush x:Key="Brush.Accent" Color="{StaticResource Color.Accent}" />
+	<SolidColorBrush x:Key="Brush.AccentHover" Color="{StaticResource Color.AccentHover}" />
+	<SolidColorBrush x:Key="Brush.AccentPressed" Color="{StaticResource Color.AccentPressed}" />
+	<SolidColorBrush x:Key="Brush.AccentMuted" Color="{StaticResource Color.AccentMuted}" />
+	<SolidColorBrush x:Key="Brush.TextPrimary" Color="{StaticResource Color.TextPrimary}" />
+	<SolidColorBrush x:Key="Brush.TextSecondary" Color="{StaticResource Color.TextSecondary}" />
+	<SolidColorBrush x:Key="Brush.TextDisabled" Color="{StaticResource Color.TextDisabled}" />
+	<SolidColorBrush x:Key="Brush.Success" Color="{StaticResource Color.Success}" />
+	<SolidColorBrush x:Key="Brush.Danger" Color="{StaticResource Color.Danger}" />
+	<SolidColorBrush x:Key="Brush.Warning" Color="{StaticResource Color.Warning}" />
+
+	<SolidColorBrush x:Key="Brush.LabelSection" Color="{StaticResource Color.LabelSection}" />
+	<SolidColorBrush x:Key="Brush.LabelField" Color="{StaticResource Color.LabelField}" />
+	<SolidColorBrush x:Key="Brush.CheckboxLabel" Color="{StaticResource Color.CheckboxLabel}" />
+	<SolidColorBrush x:Key="Brush.CheckboxBackground" Color="{StaticResource Color.CheckboxBackground}" />
+	<SolidColorBrush x:Key="Brush.CheckboxBorder" Color="{StaticResource Color.CheckboxBorder}" />
+	<SolidColorBrush x:Key="Brush.CheckboxChecked" Color="{StaticResource Color.CheckboxChecked}" />
+	<SolidColorBrush x:Key="Brush.CheckboxCheckmark" Color="{StaticResource Color.CheckboxCheckmark}" />
+	<SolidColorBrush x:Key="Brush.SelectBackground" Color="{StaticResource Color.SelectBackground}" />
+	<SolidColorBrush x:Key="Brush.SelectBorder" Color="{StaticResource Color.SelectBorder}" />
+	<SolidColorBrush x:Key="Brush.SelectBorderFocus" Color="{StaticResource Color.SelectBorderFocus}" />
+	<SolidColorBrush x:Key="Brush.SelectArrow" Color="{StaticResource Color.SelectArrow}" />
+	<SolidColorBrush x:Key="Brush.SelectItemHover" Color="{StaticResource Color.SelectItemHover}" />
+	<SolidColorBrush x:Key="Brush.SelectPopupBackground" Color="{StaticResource Color.SelectPopupBackground}" />
+	<SolidColorBrush x:Key="Brush.InputBorder" Color="{StaticResource Color.InputBorder}" />
+	<SolidColorBrush x:Key="Brush.TabBackground" Color="{StaticResource Color.TabBackground}" />
+	<SolidColorBrush x:Key="Brush.TabBorder" Color="{StaticResource Color.TabBorder}" />
+	<SolidColorBrush x:Key="Brush.TabBackgroundHover" Color="{StaticResource Color.TabBackgroundHover}" />
+	<SolidColorBrush x:Key="Brush.TabBackgroundSelected" Color="{StaticResource Color.TabBackgroundSelected}" />
+	<SolidColorBrush x:Key="Brush.TabText" Color="{StaticResource Color.TabText}" />
+
+</ResourceDictionary>

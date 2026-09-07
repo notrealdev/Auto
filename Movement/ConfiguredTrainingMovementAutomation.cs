@@ -10,29 +10,45 @@ public sealed class ConfiguredTrainingMovementAutomation {
 	private TrainingDestination destination;
 	private string destinationKey = "";
 	private DateTime nextProgressLogUtc;
+	private string lastUnresolvedLine = "";
 
 	public bool IsBusy => state == MovementState.Moving;
+
+	// Dùng chung cho các luồng khác (vd. Sửa đồ) cần biết đúng Map/X/Y của bãi đã cấu hình, không chỉ toạ độ thô.
+	public static bool TryResolveTrainingPoint(GameWindow game, out int mapId, out int rawX, out int rawY) {
+		if (TryResolveDestination(game, 0, out TrainingDestination destination)) {
+			mapId = destination.MapId;
+			rawX = destination.RawX;
+			rawY = destination.RawY;
+			return true;
+		}
+		mapId = 0;
+		rawX = 0;
+		rawY = 0;
+		return false;
+	}
 
 	public bool Tick(GameWindow game, GameSnapshot snapshot, bool manualInputActive, Action<string>? log) {
 		if (!snapshot.Success) return IsBusy;
 		GameMapInfo map = GameMapReader.Read(game.ProcessId);
 		if (!map.Success) return IsBusy;
-		if (!TryResolveDestination(game, map.MapId, out TrainingDestination configuredDestination)) {
+		if (! TryResolveDestination(game, map.MapId, out TrainingDestination configuredDestination)) {
+			LogUnresolvedDestination(game, map.MapId, log);
 			Reset();
 			return false;
 		}
+		lastUnresolvedLine = "";
 		if (!string.Equals(destinationKey, configuredDestination.Key, StringComparison.Ordinal)) {
 			Reset();
 			destination = configuredDestination;
 			destinationKey = configuredDestination.Key;
 		}
-		// Không kéo nhân vật về tâm khi vẫn đang đứng trong phạm vi bãi đã cấu hình.
-		if (map.MapId == destination.MapId && IsInsideTrainingArea(game.AttackSettings, snapshot, destination)) {
+		// Luồng này chỉ có nhiệm vụ đưa nhân vật LÊN đúng map bãi, không giữ nhân vật ở giữa bãi.
+		// Đang đứng đúng map bãi thì dừng hẳn: trước đây nhánh này còn so khoảng cách với Range (đơn vị raw, 1200 raw chỉ
+		// khoảng 4,7 ô X / 2,3 ô Y) nên vừa đánh nhau ra khỏi bán kính là bị bắn lệnh di chuyển có cờ kéo về tâm mỗi 5 giây.
+		if (map.MapId == destination.MapId) {
 			state = MovementState.Completed;
 			orderQueue.Reset();
-			return false;
-		}
-		if (state == MovementState.Completed && map.MapId == destination.MapId) {
 			return false;
 		}
 		if (state != MovementState.Moving) Start(game, map.MapId, log);
@@ -82,6 +98,19 @@ public sealed class ConfiguredTrainingMovementAutomation {
 		orderQueue.Reset();
 	}
 
+	// Trước đây nhánh này im lặng hoàn toàn, nên một account không có đích quay về vẫn kẹt ngoài phạm vi mà không dòng log nào.
+	// Chỉ ghi lại khi nội dung đổi để không lặp mỗi vòng tick.
+	private void LogUnresolvedDestination(GameWindow game, int mapId, Action<string>? log) {
+		Settings settings = game.AttackSettings;
+		string reason = ! settings.EnableReturnToTraining ? "Tắt Tự lên bãi"
+			: ! settings.TrainingEnabled && ! settings.TeachingEnabled && ! settings.ContinueEnabled ? "Chưa bật chế độ bãi nào (Mê cung/Thành thị/Tân thủ thôn)"
+			: "Toạ độ bãi không hợp lệ";
+		string line = $"Lên bãi chưa có đích | PID={game.ProcessId} | Map={mapId} | Lý do={reason} | BãiĐãLưu={game.SavedTrainingMapId}";
+		if (string.Equals(line, lastUnresolvedLine, StringComparison.Ordinal)) return;
+		lastUnresolvedLine = line;
+		log?.Invoke(line);
+	}
+
 	private static bool TryResolveDestination(GameWindow game, int currentMapId, out TrainingDestination destination) {
 		Settings settings = game.AttackSettings;
 		if (! settings.EnableReturnToTraining) {
@@ -110,13 +139,6 @@ public sealed class ConfiguredTrainingMovementAutomation {
 
 	private static bool IsValid(int mapId, int rawX, int rawY) => mapId > 0 && rawX > 0 && rawY > 0;
 
-	// Đối chiếu tọa độ hiện tại với đúng tâm và bán kính quét ban đầu của tab Đánh.
-	private static bool IsInsideTrainingArea(Settings settings, GameSnapshot snapshot, TrainingDestination destination) {
-		long deltaX = (long)snapshot.X - destination.RawX;
-		long deltaY = (long)snapshot.Y - destination.RawY;
-		long range = Math.Max(settings.Range, 1);
-		return deltaX * deltaX + deltaY * deltaY <= range * range;
-	}
 	private enum MovementState { Idle, Moving, Completed }
 	private readonly record struct TrainingDestination(string ModeName, string MapName, string MonsterName, int MapId, int RawX, int RawY) {
 		public string Key => $"{ModeName}|{MapId}|{RawX}|{RawY}|{MonsterName}";

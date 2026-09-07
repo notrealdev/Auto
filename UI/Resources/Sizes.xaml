@@ -1,0 +1,35 @@
+<ResourceDictionary
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+	<!--
+		File cấu hình KÍCH THƯỚC toàn app. Colors.xaml chỉ giữ màu, không đặt số đo ở đó.
+		Muốn chỉnh giao diện to/nhỏ thì sửa đúng trong file này, không sửa rải rác trong Styles.xaml hay từng View.
+	-->
+
+	<!-- Cỡ chữ toàn app: FontSize kế thừa xuống mọi control con qua Window style, chỉ cần đổi 1 chỗ này. -->
+	<sys:Double x:Key="Size.FontSize">12</sys:Double>
+
+	<!-- Lề ngoài cùng: khoảng cách từ viền cửa sổ (và title bar) tới các block -->
+	<Thickness x:Key="Size.WindowGutter">14</Thickness>
+	<!-- Khoảng cách từ viền mỗi block tới nội dung bên trong nó -->
+	<Thickness x:Key="Size.CardPadding">16</Thickness>
+	<!-- Khoảng hở dọc giữa 2 block liền nhau -->
+	<Thickness x:Key="Size.CardSpacing">0,0,0,12</Thickness>
+
+	<!-- Riêng cho hàng tiêu đề Expander (CollapsibleCard): trục ngang giữ bằng Size.CardPadding cho thẳng hàng với
+	     nội dung bên trong khi xổ ra, trục dọc để nhỏ hơn vì tiêu đề chỉ có 1 dòng chữ, không cần cao như Card thường. -->
+	<Thickness x:Key="Size.ExpanderHeaderPadding">16,8</Thickness>
+
+	<!-- Chiều cao chuẩn cho Select/ComboBox, lấy mốc từ block "Tân thủ thôn" -->
+	<sys:Double x:Key="Size.SelectHeight">28</sys:Double>
+
+	<!-- Checkbox: cạnh ô vuông (dùng cho cả Width lẫn Height nên ô luôn vuông) -->
+	<sys:Double x:Key="Size.CheckboxBox">13</sys:Double>
+	<!-- Checkbox: khoảng hở giữa ô vuông và chữ đứng cạnh nó -->
+	<Thickness x:Key="Size.CheckboxLabelGap">0,0,5,0</Thickness>
+	<!-- Checkbox: lề của dấu tích bên trong ô vuông; càng lớn thì dấu tích càng nhỏ so với ô -->
+	<Thickness x:Key="Size.CheckboxMarkInset">2</Thickness>
+
+</ResourceDictionary>

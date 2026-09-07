@@ -49,6 +49,7 @@ public class GameWindow {
 	public Auto.Loot.Engine LootEngine { get; }
 	public Auto.Support.Settings SupportSettings { get; } = new();
 	internal Auto.Support.Engine SupportEngine { get; }
+	internal Auto.Support.PassiveBuffEngine PassiveBuffEngine { get; }
 	internal InventorySaleEngine InventorySaleEngine { get; }
 	internal AutoFsAttackTransport AutoFsTransport { get; }
 	internal AutoFsActionGate AutoFsActionGate { get; }
@@ -82,6 +83,7 @@ public class GameWindow {
 		AttackEngine = new Engine(AttackSettings, AutoFsTransport, AutoFsActionGate);
 		LootEngine = new Auto.Loot.Engine(LootSettings, AutoFsTransport, AutoFsActionGate);
 		SupportEngine = new Auto.Support.Engine(SupportSettings, AutoFsTransport);
+		PassiveBuffEngine = new Auto.Support.PassiveBuffEngine(SupportSettings, AutoFsTransport);
 		InventorySaleEngine = new InventorySaleEngine(LootSettings, AutoFsTransport);
 		LowHpReturnTalismanEngine = new LowHpReturnTalismanEngine(BasicSettings, AutoFsTransport);
 		AutoAdvertiseEngine = new Auto.Market.AutoAdvertiseEngine(MarketSettings, AutoFsTransport);

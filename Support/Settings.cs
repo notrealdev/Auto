@@ -1,7 +1,8 @@
 namespace Auto.Support;
 
 public sealed class Settings {
-	public bool BuffThreeSystems { get; set; }
+	// Bật ô này là bật toàn bộ skill hỗ trợ bị động, không tách từng skill. Mặc định bật.
+	public bool BuffThreeSystems { get; set; } = true;
 
 
 	public bool HealOwner { get; set; }

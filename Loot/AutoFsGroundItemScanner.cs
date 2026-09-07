@@ -1,6 +1,5 @@
 namespace Auto.Loot;
 
-using System.Drawing;
 using Auto.Utils;
 
 internal sealed class AutoFsGroundItemScanner {

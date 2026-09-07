@@ -4,9 +4,12 @@ using Auto.Utils;
 
 public sealed class Finder {
 	private const int AttackSafetyMaxItems = 128;
+	// Bán kính quét Nhặt tính từ chính nhân vật. Giữ nhỏ để lệnh nhặt không bao giờ kéo nhân vật ra khỏi bãi.
+	private const int PlayerScanRadius = 150;
 
 	private readonly Settings settings;
 	private readonly AutoFsGroundItemScanner spriteItemScanner = new();
+	private readonly InventoryPotionCounter potionCounter = new();
 
 	public Finder(Settings settings) {
 		this.settings = settings;
@@ -34,18 +37,22 @@ public sealed class Finder {
 		}
 
 		try {
-			int centerX = GetCenterX(snapshot);
-			int centerY = GetCenterY(snapshot);
-			int maxRange = Math.Max(settings.Range, 1);
+			// Quét quanh chính nhân vật với bán kính nhỏ cố định, không dùng tâm bãi nữa.
+			// Trước đây quét quanh tâm bãi với bán kính 1.5 lần phạm vi đánh (1800 khi đánh 1200), nên một item nằm
+			// ngoài phạm vi đánh vẫn được nhận và lệnh nhặt kéo nhân vật ra khỏi bãi. Bán kính 150 nhỏ hơn ngưỡng 200
+			// mà AutoFS dùng cho lệnh 9 (AGENTS.md "Confirmed AutoFS Loot Flow"), nên item chỉ được nhận khi đã ở sát nhân vật.
+			int centerX = snapshot.X;
+			int centerY = snapshot.Y;
+			int maxRange = PlayerScanRadius;
 
 			result.Success = true;
 			result.CenterRawX = centerX;
 			result.CenterRawY = centerY;
-			result.Range = 0;
+			result.Range = maxRange;
 
 			AddSpriteItemCandidates(snapshot, result, centerX, centerY, maxRange);
 			result.ObservedItems.AddRange(result.Candidates);
-			result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item), settings));
+			result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item)));
 
 			result.Candidates.Sort(CompareCandidates);
 
@@ -57,20 +64,26 @@ public sealed class Finder {
 		}
 	}
 
-	public static LootFilterDecision EvaluateFilter(LootSnapshot item, Settings settings) {
+	public LootFilterDecision EvaluateFilter(LootSnapshot item) {
 		ItemClassification classification = ItemGroupClassifier.Classify(item);
-		bool accepted = ShouldPick(item, classification, settings);
-		return new LootFilterDecision(classification, accepted, DescribeFilterReason(item, classification, settings, accepted));
+		bool accepted = ShouldPick(item, classification);
+		return new LootFilterDecision(classification, accepted, DescribeFilterReason(item, classification, accepted));
 	}
 
+	public void InvalidatePotionCounts() => potionCounter.Invalidate();
+
+	public string[] ConsumePotionCountDiagnostics() => potionCounter.ConsumeDiagnostics();
+
 	// Áp dụng category đã biết trước item riêng để checkbox category luôn có quyền quyết định
-	private static bool ShouldPick(LootSnapshot snapshot, ItemClassification item, Settings settings) {
+	private bool ShouldPick(LootSnapshot snapshot, ItemClassification item) {
 		if (item.Group != ItemGroup.Normal) return false;
 		string itemName = ItemGroupClassifier.NormalizeName(snapshot.ItemNameRaw);
 		if (GetExclusionReason(itemName, item, settings).Length > 0) return false;
 		bool explicitlySelected = IsExactItemSelected(settings, itemName);
 		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(itemName);
 		if (specialCategory != AutoFsSpecialItemCategory.None) return IsSelected(settings, GetSelectionName(specialCategory));
+		// Ngưỡng số lượng đặt TRƯỚC nhánh explicitlySelected: gõ tay tên dược phẩm vào ô "Vật phẩm" cũng không vượt được giới hạn.
+		if (GetPotionLimitReason(snapshot, itemName).Length > 0) return false;
 		bool allowed = explicitlySelected
 			? true
 			: item.AttributeClass switch {
@@ -88,6 +101,31 @@ public sealed class Finder {
 			if (potionName.Contains(groundName, StringComparison.OrdinalIgnoreCase) || groundName.Contains(potionName, StringComparison.OrdinalIgnoreCase)) return enabled;
 		}
 		return true;
+	}
+
+	// Trả về lý do chặn khi nhặt chồng item này sẽ làm tổng vượt ngưỡng, chuỗi rỗng nghĩa là cho nhặt.
+	// Luật chốt với chủ dự án 2026-09-07: cộng SỐ TRONG TÚI + SỐ CHỒNG DƯỚI ĐẤT, tổng > ngưỡng thì không nhặt.
+	// Ví dụ ngưỡng 10: có 9 gặp chồng x1 -> tổng 10, nhặt; có 9 gặp chồng x5 -> tổng 14, không nhặt.
+	// Đánh đổi đã báo và chủ dự án đã chốt: nếu bãi chỉ rơi chồng x5 thì nhân vật đứng yên ở 9 viên, không lên nữa.
+	// Chỉ áp cho đúng 6 loại trong popup "Dược Phẩm" và so khớp BẰNG NHAU sau chuẩn hoá - cố tình khác
+	// IsPotionNameAllowed (bao hàm 2 chiều), vì đếm nhầm sang item khác sẽ âm thầm ngừng nhặt, lỗi rất khó chẩn đoán.
+	private string GetPotionLimitReason(LootSnapshot snapshot, string itemName) {
+		int limit = settings.PotionQuantityLimit;
+		if (limit <= 0) return "";
+		string key = InventoryPotionCounter.ToKey(itemName);
+		if (key.Length == 0) return "";
+		bool isKnownPotion = false;
+		foreach ((string name, _) in settings.PotionNameSelections) {
+			if (! string.Equals(InventoryPotionCounter.ToKey(name), key, StringComparison.Ordinal)) continue;
+			isKnownPotion = true;
+			break;
+		}
+		// Không phải dược phẩm trong danh sách thì không đọc túi lần nào - đây là chỗ giữ cho vòng quét không phát sinh chi phí.
+		if (! isKnownPotion) return "";
+		if (! potionCounter.TryGetCount(snapshot.ProcessId, key, out int count)) return "";
+		int stack = AutoFsSpecialItemClassifier.GetGroundStackCount(snapshot.ItemNameRaw);
+		if (count + stack <= limit) return "";
+		return $"MEDICINE_QUANTITY_LIMIT_{key}_{count}+{stack}/{limit}";
 	}
 
 	private static bool IsSelected(Settings settings, string name) => settings.ItemSelections.TryGetValue(name, out bool enabled) && enabled;
@@ -131,12 +169,16 @@ public sealed class Finder {
 		return color switch { ItemColor.White => settings.PickWhite, ItemColor.Blue => settings.PickBlue, ItemColor.Green => settings.PickGreen, ItemColor.Yellow => settings.PickYellow, ItemColor.Orange => settings.PickOrange, _ => settings.PickOtherColor };
 	}
 
-	private static string DescribeFilterReason(LootSnapshot snapshot, ItemClassification item, Settings settings, bool accepted) {
-		string exclusionReason = GetExclusionReason(ItemGroupClassifier.NormalizeName(snapshot.ItemNameRaw), item, settings);
+	private string DescribeFilterReason(LootSnapshot snapshot, ItemClassification item, bool accepted) {
+		string itemName = ItemGroupClassifier.NormalizeName(snapshot.ItemNameRaw);
+		string exclusionReason = GetExclusionReason(itemName, item, settings);
 		if (exclusionReason.Length > 0) return exclusionReason;
 		if (accepted) return "ALLOWED";
 		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(snapshot.ItemNameRaw);
 		if (specialCategory != AutoFsSpecialItemCategory.None) return $"AUTOFS_{specialCategory.ToString().ToUpperInvariant()}_DISABLED";
+		// Phải đứng trước nhánh MEDICINE_DISABLED bên dưới, nếu không log sẽ báo là checkbox bị tắt trong khi thật ra là chạm ngưỡng.
+		string potionLimitReason = GetPotionLimitReason(snapshot, itemName);
+		if (potionLimitReason.Length > 0) return potionLimitReason;
 		return item.Group switch {
 			ItemGroup.Normal when item.AttributeClass == 1 => "MEDICINE_DISABLED",
 			ItemGroup.Normal when item.AttributeClass == 3 => "FRAGMENT_GEM_DISABLED",
@@ -177,21 +219,6 @@ public sealed class Finder {
 		}
 	}
 
-	private int GetCenterX(GameSnapshot snapshot) {
-		if (settings.UseCenterPosition && settings.CenterX > 0) {
-			return settings.CenterX;
-		}
-
-		return snapshot.X;
-	}
-
-	private int GetCenterY(GameSnapshot snapshot) {
-		if (settings.UseCenterPosition && settings.CenterY > 0) {
-			return settings.CenterY;
-		}
-
-		return snapshot.Y;
-	}
 
 	private static double GetRawDistance(int rawX1, int rawY1, int rawX2, int rawY2) {
 		long deltaX = rawX1 - rawX2;
@@ -245,7 +272,7 @@ public sealed class LootFindResult {
 
 		string ignoredPreview = string.IsNullOrWhiteSpace(HandledIgnoredPreview) ? "" : " | IgnoredFirst=" + HandledIgnoredPreview;
 		string spritePreview = string.IsNullOrWhiteSpace(SpriteRejectedPreview) ? "" : " | SpriteFirst=" + SpriteRejectedPreview;
-		return $"Find Loot | CenterRaw={CenterRawX}/{CenterRawY} | Range=UNLIMITED | Rows={ReadCount} | ReadFail={ReadFailedCount} | GroundPointers={SpriteGroundPointerCount} | CoordinateReadFail={SpriteCoordinateReadFailureCount} | Rejected={RejectedCount} | OutOfRange={OutOfRangeCount} | Sprite={SpriteCandidateCount} | SpriteRaw={SpritePatternCount} | SpriteOut={SpriteOutOfRangeCount} | SpriteStale={SpriteStaleCount} | SpriteBad={SpriteBadCount} | SpriteDup={SpriteDuplicateCount} | SpriteNoName={SpriteNameRejectedCount} | SpriteRegions={SpriteReadableRegionCount} | Startup={StartupIgnoredCount} | Handled={HandledIgnoredCount} | Accepted={Candidates.Count}{ignoredPreview}{spritePreview}";
+		return $"Find Loot | CenterRaw={CenterRawX}/{CenterRawY} | Range={Range} | Rows={ReadCount} | ReadFail={ReadFailedCount} | GroundPointers={SpriteGroundPointerCount} | CoordinateReadFail={SpriteCoordinateReadFailureCount} | Rejected={RejectedCount} | OutOfRange={OutOfRangeCount} | Sprite={SpriteCandidateCount} | SpriteRaw={SpritePatternCount} | SpriteOut={SpriteOutOfRangeCount} | SpriteStale={SpriteStaleCount} | SpriteBad={SpriteBadCount} | SpriteDup={SpriteDuplicateCount} | SpriteNoName={SpriteNameRejectedCount} | SpriteRegions={SpriteReadableRegionCount} | Startup={StartupIgnoredCount} | Handled={HandledIgnoredCount} | Accepted={Candidates.Count}{ignoredPreview}{spritePreview}";
 	}
 }
 

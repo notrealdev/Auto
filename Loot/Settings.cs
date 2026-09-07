@@ -17,6 +17,8 @@ public sealed class Settings {
 	public int SaleQuantityThreshold { get; set; } = 32;
 	public bool EnableSaleRemainingStrengthThreshold { get; set; } = true;
 	public int SaleRemainingStrengthThreshold { get; set; } = 30;
+	// Ngưỡng số lượng cho từng loại dược phẩm: đủ ngần này rồi thì ngừng nhặt riêng loại đó. <= 0 nghĩa là tắt giới hạn.
+	public int PotionQuantityLimit { get; set; } = 10;
 	public bool PickWhite { get; set; }
 	public bool PickBlue { get; set; }
 	public bool PickGreen { get; set; } = true;

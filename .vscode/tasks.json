@@ -1,5 +1,11 @@
 {
 	"version": "2.0.0",
+	"options": {
+		"shell": {
+			"executable": "powershell.exe",
+			"args": ["-NoProfile", "-Command"]
+		}
+	},
 	"tasks": [
 		{
 			"label": "build",
@@ -36,6 +42,33 @@
 				"${workspaceFolder}/Auto.csproj"
 			],
 			"problemMatcher": "$msCompile"
+		},
+		{
+			"label": "Auto release",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy", "Bypass",
+				"-File", "${workspaceFolder}\\Build-Release.ps1"
+			],
+			"options": { "cwd": "D:\\G\\Auto" },
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Auto beta",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy", "Bypass",
+				"-File", "${workspaceFolder}\\Build-Release.ps1",
+				"-Beta"
+			],
+			"options": { "cwd": "D:\\G\\Auto" },
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }

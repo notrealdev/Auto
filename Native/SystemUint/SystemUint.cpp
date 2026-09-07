@@ -19,8 +19,19 @@ namespace {
 	constexpr WPARAM UseInventoryItemCommand = 310;
 	constexpr WPARAM BeginScriptCommand = 311;
 	constexpr WPARAM SendChatCommand = 312;
-	constexpr WPARAM ExecuteScriptCommand = 22;
 	constexpr WPARAM AppendScriptByteCommand = 34;
+	// AutoFS dùng cặp 310/311 cho gói skill bị động, nhưng DEV auto đã cấp hai số đó cho dùng vật phẩm và reset chat,
+	// nên tính năng này lấy số mới 313 để không phá Hồi thành phù lẫn Tự Rao.
+	constexpr WPARAM PassiveBuffCommand = 313;
+	// Kiểm tra toàn bộ địa chỉ client trong một lượt. lParam = -1 trả về số mục, lParam = chỉ số trả mã kết quả của mục đó.
+	// Chỉ đọc bộ nhớ và so chữ ký, không gọi hàm nào của game nên an toàn để chạy lúc khởi động.
+	constexpr WPARAM AuditAddressCommand = 320;
+	// Đi bộ tới toạ độ raw bằng đúng nguyên thủy mà luồng nhặt đồ dùng (PickupMovementFunction mode 3), thay vì
+	// CoordinateOpcode 0x9F của lệnh 0/5/32 — 0x9F gắn cờ lên màn hình, mode 3 thì không (chủ dự án xác nhận
+	// 2026-09-06: nhân vật đi tới chỗ đồ rơi lúc nhặt không hiện cờ).
+	// Toạ độ X gửi trước qua MovementXCommand ở dạng RAW (không chia 32), rồi chốt bằng lệnh này với Y raw.
+	constexpr WPARAM WalkToCommand = 321;
+	constexpr int AuditEntryCount = 28;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
 
@@ -44,6 +55,7 @@ namespace {
 	using ResetPickupFunction = void(__thiscall*)(void*);
 	using PickupMovementFunction = void(__thiscall*)(void*, int, int, int, int);
 	using CastSkillFunction = void(__cdecl*)(int, int, int);
+	using PassiveBuffFunction = void(__thiscall*)(void*, int);
 	using PickupFunction = void(__cdecl*)(int, int);
 	using ReturnToTownFunction = void(__thiscall*)(void*, int);
 	using SaleFunction = int(__thiscall*)(void*, int, void*, int);
@@ -51,15 +63,21 @@ namespace {
 	using GenericDispatchFunction = int(__thiscall*)(void*, int, void*, int);
 	using QueryFunction = int(__thiscall*)(void*, int, uintptr_t, uintptr_t);
 	using InventoryCoordinateFunction = void(__cdecl*)(int*, int*);
-	using ScriptExecuteFunction = int(__thiscall*)(void*, const char*);
-	using ChatSendFunction = int(__cdecl*)(int, const char*, int, int);
+	using ChannelCodeFromIndexFunction = const char*(__cdecl*)(int);
+	using ChannelTypeFromIndexFunction = int(__cdecl*)(int);
+	using ChatGateFunction = int(__cdecl*)(const char*, int, const char*, int);
+	using ChatPackFunction = int(__cdecl*)(char*, int, const char*, int);
+	using ChatEncodeFunction = int(__cdecl*)(char*, int);
+	using ChannelActivateFunction = void(__cdecl*)(int, int);
+	using ChatSendFunction = void(__cdecl*)(int, const char*, int, int);
 	constexpr uint8_t AttackWriterSignature[] = {
 		0xC7, 0x81, 0x94, 0xD7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x89, 0xB9, 0x98, 0xD7, 0x00, 0x00,
 		0xC6, 0x81, 0xA0, 0xD7, 0x00, 0x00, 0x01
 	};
+	// Sửa: byte thật tại RVA đã xác nhận (cả dump 2026-08-12 và 2026-08-28) có prologue 55 8B EC đứng trước, chữ ký cũ thiếu 3 byte này nên luôn safe-reject kể cả trên client trước bản cập nhật hôm nay.
 	constexpr uint8_t ResetPickupFunctionSignature[] = {
-		0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1
 	};
 	constexpr uint8_t GroundCoordinateConverterSignature[] = {
 		0x55, 0x8B, 0xEC, 0xFF, 0x75, 0x0C, 0xFF, 0x75, 0x08, 0xFF, 0x71, 0x3C
@@ -70,17 +88,65 @@ namespace {
 	constexpr uint8_t PickupFunctionSignature[] = {
 		0x55, 0x8B, 0xEC, 0x8B, 0x0D
 	};
+	// 9 byte đầu chỉ là prologue chung nên không phân biệt được hàm nào; nay lấy trọn 0x27 byte đầu của
+	// 0x001A7810, gồm cả hai CALL tương đối và lệnh cmp [ecx+0xC40], 0 đặc trưng. Đoạn này khớp đúng 1 lần
+	// trong toàn bộ vùng ảnh Game.exe đã map của crash dump 2026-09-06.
 	constexpr uint8_t ReturnToTownFunctionSignature[] = {
-		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C, 0x89, 0x4D, 0xFC
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C, 0x89, 0x4D, 0xFC,
+		0x8B, 0x45, 0xFC, 0x50, 0xE8, 0xFE, 0xE6, 0xE9, 0xFF,
+		0x83, 0xC4, 0x04, 0x8B, 0x4D, 0xFC, 0xE8, 0x43, 0x0B, 0xEA, 0xFF,
+		0x8B, 0x4D, 0xFC, 0x83, 0xB9, 0x40, 0x0C, 0x00, 0x00, 0x00
 	};
+	// Chữ ký cũ chỉ có 3 byte prologue nên không phân biệt được hàm nào; việc xác thực thật nằm ở call site,
+	// mà call site lại lệch sau mỗi lần client cập nhật. Nay dùng 28 byte cố định đầu hàm, đã kiểm là duy nhất.
 	constexpr uint8_t InventoryCoordinateFunctionSignature[] = {
-		0x55, 0x8B, 0xEC
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08,
+		0xC7, 0x45, 0xFC, 0x00, 0x00, 0x00, 0x00,
+		0xC7, 0x45, 0xF8, 0x00, 0x00, 0x00, 0x00,
+		0x8D, 0x45, 0xF8, 0x50,
+		0x8D, 0x4D, 0xFC, 0x51
 	};
-	constexpr uint8_t ScriptExecuteFunctionSignature[] = {
-		0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00, 0x89, 0x4D, 0xF0
+	// Đoạn dựng và gửi gói cast opcode 0xB5 độ dài 11, nằm ở CastSendSiteOffset trong hàm cast.
+	constexpr uint8_t CastSendSiteSignature[] = {
+		0xC6, 0x45, 0xF0, 0xB5,
+		0x89, 0x45, 0xF7,
+		0x85, 0xC9, 0x74, 0x15,
+		0x8B, 0x01, 0x8D, 0x55, 0xEC, 0x52, 0x8D, 0x55, 0xF0,
+		0xC7, 0x45, 0xEC, 0x0B, 0x00, 0x00, 0x00,
+		0x52, 0x51, 0xFF, 0x50, 0x20
+	};
+	// Byte thật đọc từ dump 2026-08-28 đã phân tích bằng Ghidra cho từng hàm trong chuỗi gửi chat của client.
+	constexpr uint8_t ChannelCodeFromIndexSignature[] = {
+		0x55, 0x8B, 0xEC, 0x83, 0x3D, 0x74, 0x51, 0x8F, 0x00, 0x00, 0x74, 0x50
+	};
+	constexpr uint8_t ChannelTypeFromIndexSignature[] = {
+		0x55, 0x8B, 0xEC, 0x83, 0x3D, 0x74, 0x51, 0x8F, 0x00, 0x00, 0x74, 0x2D
+	};
+	constexpr uint8_t ChatGateFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x08, 0x04, 0x00, 0x00
+	};
+	constexpr uint8_t ChatPackFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C, 0x83, 0x7D, 0x08, 0x00
+	};
+	constexpr uint8_t ChatEncodeFunctionSignature[] = {
+		0xFF, 0x25, 0x4C, 0x31, 0x85, 0x00
+	};
+	constexpr uint8_t ChannelActivateFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xAD, 0xAC, 0x82, 0x00
 	};
 	constexpr uint8_t ChatSendFunctionSignature[] = {
 		0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x74, 0x01, 0x00, 0x00
+	};
+	// Đoạn dựng và gửi gói opcode 0x72 độ dài 5 nằm ở PassiveBuffSendSiteOffset trong hàm skill bị động.
+	// Bốn byte toán hạng global đứng ngay trước đoạn này nên không đưa vào chữ ký; phần dưới đây là mã cố định.
+	constexpr uint8_t PassiveBuffSendSiteSignature[] = {
+		0x89, 0x75, 0xF9,
+		0xC6, 0x45, 0xF8, 0x72,
+		0x5F, 0x5E,
+		0x85, 0xC9, 0x74, 0x15,
+		0x8B, 0x01, 0x8D, 0x55, 0x08, 0x52, 0x8D, 0x55, 0xF8,
+		0xC7, 0x45, 0x08, 0x05, 0x00, 0x00, 0x00,
+		0x52, 0x51, 0xFF, 0x50, 0x20
 	};
 
 	bool IsExecutableAddress(const void* address) {
@@ -99,6 +165,24 @@ namespace {
 	}
 
 
+	// Địa chỉ có đọc được không, dùng cho các mục audit là con trỏ dữ liệu chứ không phải mã lệnh.
+	bool IsReadableAddress(const void* address) {
+		MEMORY_BASIC_INFORMATION information{};
+		if (address == nullptr || VirtualQuery(address, &information, sizeof(information)) != sizeof(information)) {
+			return false;
+		}
+		if (information.State != MEM_COMMIT || (information.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+			return false;
+		}
+		DWORD readable = information.Protect & 0xFF;
+		return readable == PAGE_READONLY ||
+			readable == PAGE_READWRITE ||
+			readable == PAGE_WRITECOPY ||
+			readable == PAGE_EXECUTE_READ ||
+			readable == PAGE_EXECUTE_READWRITE ||
+			readable == PAGE_EXECUTE_WRITECOPY;
+	}
+
 	bool HasSupportedGameImage(uint8_t* gameBase) {
 		if (gameBase == nullptr) {
 			return false;
@@ -113,13 +197,6 @@ namespace {
 			ntHeaders->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
 			ntHeaders->OptionalHeader.SizeOfImage >= GameClientAddresses::MinimumSupportedImageSize;
 	}
-
-	// Xác nhận một call E8 module-relative vẫn trỏ tới đúng hàm đã phân tích trên client hiện tại.
-	bool IsRelativeCallTarget(uint8_t* callSite, const void* target) {
-		return callSite != nullptr && target != nullptr && *callSite == 0xE8 &&
-			reinterpret_cast<const void*>(callSite + 5 + *reinterpret_cast<int32_t*>(callSite + 1)) == target;
-	}
-
 
 	bool ContainsAttackWriterSignature(const uint8_t* function) {
 		constexpr size_t ScanLength = 0x100;
@@ -312,6 +389,32 @@ namespace {
 		return true;
 	}
 
+	// Đi bộ thường tới một toạ độ raw. Dùng chung hàm và cùng chữ ký với luồng nhặt đồ, chỉ khác là không chọn
+	// vật phẩm và không gọi pickup sau đó.
+	// Trả false khi bất kỳ chốt an toàn nào không đạt, để phía C# ghi log đúng lý do thay vì báo thành công suông.
+	bool TryDispatchWalkTo(int rawY) {
+		int rawX = pendingMovementX;
+		if (rawX <= 0 || rawY <= 0) {
+			return false;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		auto movement = reinterpret_cast<PickupMovementFunction>(gameBase + GameClientAddresses::PickupMovementFunctionRva);
+		void* entityTable = *reinterpret_cast<void**>(gameBase + GameClientAddresses::EntityTableRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(movement)) ||
+			entityTable == nullptr ||
+			memcmp(reinterpret_cast<void*>(movement), PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature)) != 0) {
+			return false;
+		}
+		void* playerEntity = reinterpret_cast<uint8_t*>(entityTable) +
+			GameClientAddresses::PlayerEntityIndex * GameClientAddresses::EntityStride;
+		movement(playerEntity, 3, rawX, rawY, 0);
+		pendingMovementX = 0;
+		return true;
+	}
+
 	bool TryDispatchPortal(int rawY) {
 		int rawX = pendingMovementX;
 		if (rawX <= 0 || rawY <= 0) {
@@ -389,37 +492,72 @@ namespace {
 	}
 
 	// Thi triển skill bằng chuỗi action mode 5 và cast wrapper tương ứng AutoFS.
-	bool TryDispatchCastSkill(int skillId) {
+	// Trả 1 khi đã gọi được. Các mã 30..35 tách riêng từng bước kiểm tra vì runtime 2026-09-03 trả 0 chung chung
+	// nên không phân biệt được RVA nào đã lệch sau bản client 2026-08-28.
+	int TryDispatchCastSkill(int skillId) {
 		if (skillId <= 0 || skillId > UINT16_MAX) {
-			return false;
+			return 30;
 		}
 
 		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
 		if (!HasSupportedGameImage(gameBase)) {
-			return false;
+			return 31;
 		}
 		auto buffAction = reinterpret_cast<PickupMovementFunction>(gameBase + GameClientAddresses::BuffActionFunctionRva);
 		auto castSkill  = reinterpret_cast<CastSkillFunction>(gameBase + GameClientAddresses::CastSkillFunctionRva);
 		void* entityTable = *reinterpret_cast<void**>(gameBase + GameClientAddresses::EntityTableRva);
 		if (!IsExecutableAddress(reinterpret_cast<void*>(buffAction)) ||
-			!IsExecutableAddress(reinterpret_cast<void*>(castSkill)) ||
-			entityTable == nullptr) {
-			return false;
+			!IsExecutableAddress(reinterpret_cast<void*>(castSkill))) {
+			return 32;
+		}
+		if (entityTable == nullptr) {
+			return 33;
 		}
 
-		// Xác nhận hai RVA bằng chính call graph của function skill cấp cao đã phân tích.
-		auto buffActionCall = gameBase + GameClientAddresses::BuffActionCallRva;
-		auto castSkillCall  = gameBase + GameClientAddresses::CastSkillCallRva;
-		if (*buffActionCall != 0xE8 || *castSkillCall != 0xE8 ||
-			buffActionCall + 5 + *reinterpret_cast<int32_t*>(buffActionCall + 1) != reinterpret_cast<uint8_t*>(buffAction) ||
-			castSkillCall + 5 + *reinterpret_cast<int32_t*>(castSkillCall + 1) != reinterpret_cast<uint8_t*>(castSkill)) {
-			return false;
+		// Xác thực bằng chữ ký byte của chính hai hàm thay vì call site, vì call site lệch sau mỗi lần client cập nhật.
+		if (memcmp(reinterpret_cast<void*>(buffAction), PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature)) != 0) {
+			return 34;
+		}
+		auto castSendSite = gameBase + GameClientAddresses::CastSkillFunctionRva + GameClientAddresses::CastSendSiteOffset;
+		if (memcmp(castSendSite, CastSendSiteSignature, sizeof(CastSendSiteSignature)) != 0) {
+			return 35;
 		}
 		void* playerEntity = reinterpret_cast<uint8_t*>(entityTable) +
 			GameClientAddresses::PlayerEntityIndex * GameClientAddresses::EntityStride;
 		buffAction(playerEntity, 5, skillId, 0, 0);
 		castSkill(skillId, 0, 0);
-		return true;
+		return 1;
+	}
+
+	// Bật một skill hỗ trợ bị động của hệ Dị Nhân bằng đúng hàm client dựng gói opcode 0x72 độ dài 5.
+	// Trả 1 khi đã gọi được, các giá trị 20..24 chỉ đúng bước bị từ chối để log phía C# khoanh vùng được nguyên nhân.
+	int TryDispatchPassiveBuff(int skillId) {
+		if (skillId <= 0 || skillId > GameClientAddresses::PassiveBuffMaximumSkillId) {
+			return 20;
+		}
+
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 21;
+		}
+		auto sender = reinterpret_cast<PassiveBuffFunction>(gameBase + GameClientAddresses::PassiveBuffFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(sender))) {
+			return 22;
+		}
+		// Xác nhận đúng hàm bằng chính đoạn dựng gói bên trong nó, tránh gọi nhầm sau khi client đổi bố cục.
+		auto sendSite = gameBase + GameClientAddresses::PassiveBuffFunctionRva + GameClientAddresses::PassiveBuffSendSiteOffset;
+		if (memcmp(sendSite, PassiveBuffSendSiteSignature, sizeof(PassiveBuffSendSiteSignature)) != 0) {
+			return 23;
+		}
+		void* entityTable = *reinterpret_cast<void**>(gameBase + GameClientAddresses::EntityTableRva);
+		if (entityTable == nullptr) {
+			return 24;
+		}
+
+		void* playerEntity = reinterpret_cast<uint8_t*>(entityTable) +
+			GameClientAddresses::PlayerEntityIndex * GameClientAddresses::EntityStride;
+		sender(playerEntity, skillId);
+		return 1;
 	}
 
 	// Chuyển lựa chọn xử lý khi chết của AutoFS vào cùng handler popup của game.
@@ -470,7 +608,10 @@ namespace {
 	}
 
 	// Dùng item bằng bảy trường descriptor mà dispatcher client hiện tại đọc, gồm loại inventory ở trường cuối.
-	bool TryDispatchInventoryItem(uint32_t packedItem) {
+	// Trả mã lý do riêng cho từng nhánh từ chối để log C# chỉ ra đúng bước hỏng thay vì chỉ thấy Return=0.
+	// 1 = đã gửi, 10 = mô tả vật phẩm sai, 11 = chưa lấy được context game, 12 = vtable manager lệch,
+	// 13 = InventoryRoot bằng 0, 14 = slot không còn đúng vật phẩm, 15 = chữ ký hàm tọa độ lệch, 16 = bước prepare bị từ chối.
+	int TryDispatchInventoryItem(uint32_t packedItem) {
 		int memoryIndex = static_cast<int>(packedItem & 0x3F);
 		int container = static_cast<int>((packedItem >> 6) & 0x1F);
 		int expectedItemId = static_cast<int>(packedItem >> 11);
@@ -487,41 +628,42 @@ namespace {
 			slotCount = GameClientAddresses::InventoryExtendedSlotCount;
 		}
 		if (memoryIndex < 0 || memoryIndex >= slotCount || expectedItemId <= 0) {
-			return false;
+			return 10;
 		}
 		uint8_t* gameBase = nullptr;
 		void* manager = nullptr;
 		if (!TryGetGameContext(gameBase, manager)) {
-			return false;
+			return 11;
 		}
 		auto managerVtable = *reinterpret_cast<uint8_t***>(manager);
 		if (managerVtable == nullptr || *reinterpret_cast<void**>(manager) != gameBase + GameClientAddresses::ExpectedManagerVtableRva) {
-			return false;
+			return 12;
 		}
 		void* inventoryRoot = *reinterpret_cast<void**>(gameBase + GameClientAddresses::InventoryRootRva);
 		if (inventoryRoot == nullptr) {
-			return false;
+			return 13;
 		}
 		void* inventoryObject = reinterpret_cast<uint8_t*>(inventoryRoot) + GameClientAddresses::InventoryObjectOffset;
 		auto slotList = *reinterpret_cast<int**>(reinterpret_cast<uint8_t*>(inventoryObject) + slotListPointerOffset);
 		if (slotList == nullptr || slotList[memoryIndex] != expectedItemId) {
-			return false;
+			return 14;
 		}
 		auto query = reinterpret_cast<QueryFunction>(
 			*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(managerVtable) + GameClientAddresses::PrepareMethodVtableOffset));
 		auto dispatch = reinterpret_cast<GenericDispatchFunction>(
 			*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(managerVtable) + GameClientAddresses::DialogOptionMethodVtableOffset));
 		auto getCoordinates = reinterpret_cast<InventoryCoordinateFunction>(gameBase + GameClientAddresses::InventoryCoordinateFunctionRva);
-		auto coordinateCall = gameBase + GameClientAddresses::InventoryCoordinateCallRva;
 		if (!IsExecutableAddress(reinterpret_cast<void*>(query)) ||
 			!IsExecutableAddress(reinterpret_cast<void*>(dispatch)) ||
 			!IsExecutableAddress(reinterpret_cast<void*>(getCoordinates)) ||
-			memcmp(reinterpret_cast<void*>(getCoordinates), InventoryCoordinateFunctionSignature, sizeof(InventoryCoordinateFunctionSignature)) != 0 ||
-			!IsRelativeCallTarget(coordinateCall, reinterpret_cast<void*>(getCoordinates))) {
-			return false;
+			memcmp(reinterpret_cast<void*>(getCoordinates), InventoryCoordinateFunctionSignature, sizeof(InventoryCoordinateFunctionSignature)) != 0) {
+			return 15;
 		}
-		if (query(manager, GameClientAddresses::InventoryUsePrepareOpcode, container, 0) != 0) {
-			return false;
+		// Bước prepare bị client từ chối. Mã 16 cũ gộp mọi lý do nên không biết client trả giá trị gì;
+		// nay trả 4096 + giá trị thật để log phía C# phân biệt được "không cho dùng lúc này" với "sai vtable slot".
+		int prepareResult = query(manager, GameClientAddresses::InventoryUsePrepareOpcode, container, 0);
+		if (prepareResult != 0) {
+			return 4096 + (prepareResult & 0xFFF);
 		}
 		int coordinateX = 0;
 		int coordinateY = 0;
@@ -538,63 +680,230 @@ namespace {
 		int packedCoordinates = static_cast<int>((static_cast<uint32_t>(coordinateX) & 0xFFFFU) |
 			((static_cast<uint32_t>(coordinateY) & 0xFFFFU) << 16));
 		dispatch(manager, GameClientAddresses::InventoryUseOpcode, descriptor, packedCoordinates);
+		return 1;
+	}
+
+	// Xóa nội dung chat đang chờ sau mỗi lần gửi để lần gửi sau luôn bắt đầu từ buffer rỗng.
+	void ResetPendingScript() {
+		pendingScriptLength = 0;
+		pendingScript[0] = '\0';
+	}
+
+	// Gửi chat theo đúng chuỗi hàm mà binding Chat(kênh, nội dung) FUN_004637c0 của client tự thực hiện.
+	bool TryDispatchChat(int channelIndex) {
+		if (channelIndex < 0 || pendingScriptLength == 0 || pendingScriptLength > MaximumScriptLength) {
+			ResetPendingScript();
+			return false;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			ResetPendingScript();
+			return false;
+		}
+		auto channelCodeFromIndex = reinterpret_cast<ChannelCodeFromIndexFunction>(gameBase + GameClientAddresses::ChannelCodeFromIndexRva);
+		auto channelTypeFromIndex = reinterpret_cast<ChannelTypeFromIndexFunction>(gameBase + GameClientAddresses::ChannelTypeFromIndexRva);
+		auto chatGate = reinterpret_cast<ChatGateFunction>(gameBase + GameClientAddresses::ChatGateFunctionRva);
+		auto chatPack = reinterpret_cast<ChatPackFunction>(gameBase + GameClientAddresses::ChatPackFunctionRva);
+		auto chatEncode = reinterpret_cast<ChatEncodeFunction>(gameBase + GameClientAddresses::ChatEncodeFunctionRva);
+		auto channelActivate = reinterpret_cast<ChannelActivateFunction>(gameBase + GameClientAddresses::ChannelActivateFunctionRva);
+		auto sendChat = reinterpret_cast<ChatSendFunction>(gameBase + GameClientAddresses::ChatSendFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(channelCodeFromIndex)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(channelTypeFromIndex)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(chatGate)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(chatPack)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(chatEncode)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(channelActivate)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(sendChat))) {
+			ResetPendingScript();
+			return false;
+		}
+		if (memcmp(reinterpret_cast<void*>(channelCodeFromIndex), ChannelCodeFromIndexSignature, sizeof(ChannelCodeFromIndexSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(channelTypeFromIndex), ChannelTypeFromIndexSignature, sizeof(ChannelTypeFromIndexSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(chatGate), ChatGateFunctionSignature, sizeof(ChatGateFunctionSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(chatPack), ChatPackFunctionSignature, sizeof(ChatPackFunctionSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(chatEncode), ChatEncodeFunctionSignature, sizeof(ChatEncodeFunctionSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(channelActivate), ChannelActivateFunctionSignature, sizeof(ChannelActivateFunctionSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(sendChat), ChatSendFunctionSignature, sizeof(ChatSendFunctionSignature)) != 0) {
+			ResetPendingScript();
+			return false;
+		}
+		pendingScript[pendingScriptLength] = '\0';
+		int messageLength = static_cast<int>(pendingScriptLength);
+		const char* channelCode = channelCodeFromIndex(channelIndex);
+		if (channelCode == nullptr || channelCode[0] == '\0') {
+			ResetPendingScript();
+			return false;
+		}
+		int channelType = channelTypeFromIndex(channelIndex);
+		if (channelType == -1) {
+			ResetPendingScript();
+			return false;
+		}
+		if (chatGate(pendingScript, messageLength, channelCode, channelType) == 0) {
+			ResetPendingScript();
+			return false;
+		}
+		char packet[GameClientAddresses::ChatPacketBufferSize]{};
+		int packetLength = chatPack(packet, static_cast<int>(GameClientAddresses::ChatPacketBufferSize), pendingScript, messageLength);
+		packetLength = chatEncode(packet, packetLength);
+		if (packetLength <= 0) {
+			ResetPendingScript();
+			return false;
+		}
+		channelActivate(channelIndex, 1);
+		sendChat(channelType, packet, packetLength, -1);
+		ResetPendingScript();
 		return true;
 	}
 
-	// Thực thi script bằng cùng context và call graph mà hàm Chat của client đang dùng.
-	bool TryExecutePendingScript() {
-		if (pendingScriptLength == 0 || pendingScriptLength > MaximumScriptLength) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
-		}
-		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
-		if (!HasSupportedGameImage(gameBase)) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
-		}
-		auto executeScript = reinterpret_cast<ScriptExecuteFunction>(gameBase + GameClientAddresses::ScriptExecuteFunctionRva);
-		auto executeCall = gameBase + GameClientAddresses::ScriptExecuteCallRva;
-		if (!IsExecutableAddress(reinterpret_cast<void*>(executeScript)) ||
-			memcmp(reinterpret_cast<void*>(executeScript), ScriptExecuteFunctionSignature, sizeof(ScriptExecuteFunctionSignature)) != 0 ||
-			!IsRelativeCallTarget(executeCall, reinterpret_cast<void*>(executeScript))) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
-		}
-		pendingScript[pendingScriptLength] = '\0';
-		int result = executeScript(gameBase + GameClientAddresses::ScriptContextRva, pendingScript);
-		pendingScriptLength = 0;
-		pendingScript[0] = '\0';
-		return result != 0;
+	// Mã kết quả của một mục audit. Ba giá trị đầu là đạt, giá trị 4 là chưa kết luận được, còn lại là lệch.
+	// 1 = khớp chữ ký byte, 2 = con trỏ dữ liệu hợp lệ, 3 = vtable khớp, 4 = con trỏ đang rỗng nên chưa kết luận,
+	// 10 = vùng nhớ không thực thi được, 11 = chữ ký byte lệch, 12 = con trỏ rỗng, 13 = vùng nhớ không đọc được,
+	// 14 = vtable không đúng địa chỉ mong đợi, 20 = ảnh Game.exe không được hỗ trợ, 0 = chỉ số ngoài phạm vi.
+	uint32_t GetGameImageSize(uint8_t* gameBase) {
+		auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(gameBase);
+		auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS32*>(gameBase + dosHeader->e_lfanew);
+		return ntHeaders->OptionalHeader.SizeOfImage;
 	}
 
-	// Gửi nội dung qua đúng FUN_004b85d0 mà handler chat hiện tại gọi sau bước Lua.
-	bool TryDispatchChat(int channelId) {
-		if (channelId < 0 || pendingScriptLength == 0 || pendingScriptLength > MaximumScriptLength) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
+	int AuditCodeSignature(uint8_t* gameBase, uintptr_t functionRva, uintptr_t siteOffset, const uint8_t* signature, size_t length) {
+		uint8_t* function = gameBase + functionRva;
+		uint8_t* site = function + siteOffset;
+		if (!IsExecutableAddress(function) || !IsExecutableAddress(site)) {
+			return 10;
 		}
+		return memcmp(site, signature, length) == 0 ? 1 : 11;
+	}
+
+	int AuditGlobalPointer(uint8_t* gameBase, uintptr_t rva, bool nullIsInconclusive) {
+		void* slot = gameBase + rva;
+		if (!IsReadableAddress(slot)) {
+			return 13;
+		}
+		void* value = *reinterpret_cast<void**>(slot);
+		if (value == nullptr) {
+			return nullIsInconclusive ? 4 : 12;
+		}
+		return IsReadableAddress(value) ? 2 : 13;
+	}
+
+	// Bảng hàm ảo nằm tĩnh trong ảnh: bốn ô đầu phải là con trỏ mã lệnh nằm trong chính Game.exe.
+	int AuditStaticVtable(uint8_t* gameBase, uintptr_t rva, uint32_t imageSize) {
+		auto slots = reinterpret_cast<uint8_t**>(gameBase + rva);
+		if (!IsReadableAddress(slots)) {
+			return 13;
+		}
+		for (int slot = 0; slot < 4; slot++) {
+			uint8_t* target = slots[slot];
+			if (target < gameBase || target >= gameBase + imageSize) {
+				return 14;
+			}
+			if (!IsExecutableAddress(target)) {
+				return 10;
+			}
+		}
+		return 3;
+	}
+
+	int AuditStaticObjectVtable(uint8_t* gameBase, uintptr_t objectRva, uintptr_t vtableRva) {
+		void* object = gameBase + objectRva;
+		if (!IsReadableAddress(object)) {
+			return 13;
+		}
+		void* actual = *reinterpret_cast<void**>(object);
+		if (actual == nullptr) {
+			return 12;
+		}
+		return actual == gameBase + vtableRva ? 3 : 14;
+	}
+
+	// Lấy vtable của manager và đồng thời xác nhận AttackManagerRva lẫn ExpectedManagerVtableRva còn đúng.
+	int TryGetManagerVtable(uint8_t* gameBase, uint8_t*& managerVtable) {
+		managerVtable = nullptr;
+		void* managerSlot = gameBase + GameClientAddresses::AttackManagerRva;
+		if (!IsReadableAddress(managerSlot)) {
+			return 13;
+		}
+		void* manager = *reinterpret_cast<void**>(managerSlot);
+		if (manager == nullptr) {
+			return 12;
+		}
+		if (!IsReadableAddress(manager)) {
+			return 13;
+		}
+		void* actualVtable = *reinterpret_cast<void**>(manager);
+		if (actualVtable != gameBase + GameClientAddresses::ExpectedManagerVtableRva) {
+			return 14;
+		}
+		managerVtable = reinterpret_cast<uint8_t*>(actualVtable);
+		return 3;
+	}
+
+	int AuditManagerVtableSlot(uint8_t* gameBase, size_t vtableOffset) {
+		uint8_t* managerVtable = nullptr;
+		int managerResult = TryGetManagerVtable(gameBase, managerVtable);
+		if (managerResult != 3) {
+			return managerResult;
+		}
+		void* method = *reinterpret_cast<void**>(managerVtable + vtableOffset);
+		return IsExecutableAddress(method) ? 2 : 10;
+	}
+
+	// Ô vtable +0x40 là hàm ATTACK, kiểm được bằng chính chữ ký ghi ba trường lệnh của AutoFS.
+	int AuditAttackWriter(uint8_t* gameBase) {
+		uint8_t* managerVtable = nullptr;
+		int managerResult = TryGetManagerVtable(gameBase, managerVtable);
+		if (managerResult != 3) {
+			return managerResult;
+		}
+		auto attack = *reinterpret_cast<uint8_t**>(managerVtable + GameClientAddresses::AttackMethodVtableOffset);
+		if (!IsExecutableAddress(attack)) {
+			return 10;
+		}
+		return ContainsAttackWriterSignature(attack) ? 1 : 11;
+	}
+
+	int AuditAddress(int index) {
 		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
 		if (!HasSupportedGameImage(gameBase)) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
+			return 20;
 		}
-		auto sendChat = reinterpret_cast<ChatSendFunction>(gameBase + GameClientAddresses::ChatSendFunctionRva);
-		if (!IsExecutableAddress(reinterpret_cast<void*>(sendChat)) ||
-			memcmp(reinterpret_cast<void*>(sendChat), ChatSendFunctionSignature, sizeof(ChatSendFunctionSignature)) != 0) {
-			pendingScriptLength = 0;
-			pendingScript[0] = '\0';
-			return false;
+		uint32_t imageSize = GetGameImageSize(gameBase);
+		switch (index) {
+			case 0: {
+				uint8_t* managerVtable = nullptr;
+				return TryGetManagerVtable(gameBase, managerVtable);
+			}
+			case 1: return AuditManagerVtableSlot(gameBase, GameClientAddresses::DialogOptionMethodVtableOffset);
+			case 2: return AuditAttackWriter(gameBase);
+			case 3: return AuditManagerVtableSlot(gameBase, GameClientAddresses::SelectGroundItemMethodVtableOffset);
+			case 4: return AuditManagerVtableSlot(gameBase, GameClientAddresses::PrepareMethodVtableOffset);
+			case 5: return AuditGlobalPointer(gameBase, GameClientAddresses::EntityTableRva, false);
+			case 6: return AuditGlobalPointer(gameBase, GameClientAddresses::GroundRecordTablePointerRva, false);
+			// InventoryRoot và ModalState chỉ được game gán khi cần nên giá trị 0 không phải bằng chứng RVA lệch.
+			case 7: return AuditGlobalPointer(gameBase, GameClientAddresses::InventoryRootRva, true);
+			case 8: return AuditGlobalPointer(gameBase, GameClientAddresses::ModalStateRva, true);
+			case 9: return AuditStaticVtable(gameBase, GameClientAddresses::NpcConfirmModalVtableRva, imageSize);
+			case 10: return AuditStaticVtable(gameBase, GameClientAddresses::RepairConfirmModalVtableRva, imageSize);
+			case 11: return AuditStaticObjectVtable(gameBase, GameClientAddresses::ReturnToTownObjectRva, GameClientAddresses::ReturnToTownObjectVtableRva);
+			case 12: return AuditCodeSignature(gameBase, GameClientAddresses::ReturnToTownFunctionRva, 0, ReturnToTownFunctionSignature, sizeof(ReturnToTownFunctionSignature));
+			case 13: return AuditCodeSignature(gameBase, GameClientAddresses::ResetPickupFunctionRva, 0, ResetPickupFunctionSignature, sizeof(ResetPickupFunctionSignature));
+			case 14: return AuditCodeSignature(gameBase, GameClientAddresses::GroundCoordinateConverterRva, 0, GroundCoordinateConverterSignature, sizeof(GroundCoordinateConverterSignature));
+			case 15: return AuditCodeSignature(gameBase, GameClientAddresses::PickupMovementFunctionRva, 0, PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature));
+			case 16: return AuditCodeSignature(gameBase, GameClientAddresses::BuffActionFunctionRva, 0, PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature));
+			case 17: return AuditCodeSignature(gameBase, GameClientAddresses::PickupFunctionRva, 0, PickupFunctionSignature, sizeof(PickupFunctionSignature));
+			case 18: return AuditCodeSignature(gameBase, GameClientAddresses::InventoryCoordinateFunctionRva, 0, InventoryCoordinateFunctionSignature, sizeof(InventoryCoordinateFunctionSignature));
+			case 19: return AuditCodeSignature(gameBase, GameClientAddresses::CastSkillFunctionRva, GameClientAddresses::CastSendSiteOffset, CastSendSiteSignature, sizeof(CastSendSiteSignature));
+			case 20: return AuditCodeSignature(gameBase, GameClientAddresses::PassiveBuffFunctionRva, GameClientAddresses::PassiveBuffSendSiteOffset, PassiveBuffSendSiteSignature, sizeof(PassiveBuffSendSiteSignature));
+			case 21: return AuditCodeSignature(gameBase, GameClientAddresses::ChannelCodeFromIndexRva, 0, ChannelCodeFromIndexSignature, sizeof(ChannelCodeFromIndexSignature));
+			case 22: return AuditCodeSignature(gameBase, GameClientAddresses::ChannelTypeFromIndexRva, 0, ChannelTypeFromIndexSignature, sizeof(ChannelTypeFromIndexSignature));
+			case 23: return AuditCodeSignature(gameBase, GameClientAddresses::ChatGateFunctionRva, 0, ChatGateFunctionSignature, sizeof(ChatGateFunctionSignature));
+			case 24: return AuditCodeSignature(gameBase, GameClientAddresses::ChatPackFunctionRva, 0, ChatPackFunctionSignature, sizeof(ChatPackFunctionSignature));
+			case 25: return AuditCodeSignature(gameBase, GameClientAddresses::ChatEncodeFunctionRva, 0, ChatEncodeFunctionSignature, sizeof(ChatEncodeFunctionSignature));
+			case 26: return AuditCodeSignature(gameBase, GameClientAddresses::ChannelActivateFunctionRva, 0, ChannelActivateFunctionSignature, sizeof(ChannelActivateFunctionSignature));
+			case 27: return AuditCodeSignature(gameBase, GameClientAddresses::ChatSendFunctionRva, 0, ChatSendFunctionSignature, sizeof(ChatSendFunctionSignature));
+			default: return 0;
 		}
-		pendingScript[pendingScriptLength] = '\0';
-		int result = sendChat(channelId, pendingScript, static_cast<int>(pendingScriptLength), -1);
-		pendingScriptLength = 0;
-		pendingScript[0] = '\0';
-		return result >= 0;
 	}
 
 	LRESULT CALLBACK ReceiverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -610,14 +919,18 @@ namespace {
 				pendingScript[pendingScriptLength] = '\0';
 				return 1;
 			}
-			if (wParam == ExecuteScriptCommand) {
-				return TryExecutePendingScript() ? 1 : 0;
-			}
 			if (wParam == SendChatCommand) {
 				return TryDispatchChat(static_cast<int>(lParam)) ? 1 : 0;
 			}
 			if (wParam == UseInventoryItemCommand) {
-				return TryDispatchInventoryItem(static_cast<uint32_t>(lParam)) ? 1 : 0;
+				return TryDispatchInventoryItem(static_cast<uint32_t>(lParam));
+			}
+			if (wParam == PassiveBuffCommand) {
+				return TryDispatchPassiveBuff(static_cast<int>(lParam));
+			}
+			if (wParam == AuditAddressCommand) {
+				int index = static_cast<int>(lParam);
+				return index < 0 ? AuditEntryCount : AuditAddress(index);
 			}
 			if (wParam == MovementXCommand) {
 				int dispatchX = static_cast<int>(lParam);
@@ -627,6 +940,9 @@ namespace {
 			}
 			if (wParam == MovementYCommand) {
 				return TryDispatchMovementY(static_cast<int>(lParam)) ? 1 : 0;
+			}
+			if (wParam == WalkToCommand) {
+				return TryDispatchWalkTo(static_cast<int>(lParam)) ? 1 : 0;
 			}
 			if (wParam == DialogOptionCommand) {
 				return TrySelectDialogOption(static_cast<int>(lParam)) ? 1 : 0;
@@ -652,7 +968,7 @@ namespace {
 				return TryDispatchPickup(static_cast<int>(lParam)) ? 1 : 0;
 			}
 			if (wParam == CastSkillCommand) {
-				return TryDispatchCastSkill(static_cast<int>(lParam)) ? 1 : 0;
+				return TryDispatchCastSkill(static_cast<int>(lParam));
 			}
 			if (wParam == AttackCommand) {
 				uint32_t packedTarget = static_cast<uint32_t>(lParam);

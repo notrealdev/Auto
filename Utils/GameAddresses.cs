@@ -5,20 +5,29 @@ public static class GameAddresses {
 	public const int ModuleMaximumSize = 0x1F7D000;
 
 	public static class Globals {
-		public const int EntityTable = 0x95DF40;
+		// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng BSim + decompile đối chiếu chéo với PICKUP/RESET_PICKUP mới, chưa build/test runtime.
+		public const int EntityTable = 0x95FF60;
 		public const int CurrentTargetIndex = 0x4CB668;
-		public const int InventoryRoot = 0xA7DE04;
-		public const int ItemTable = 0x53F048;
+		// Cập nhật sau bản game 2026-08-28: xác nhận qua chính tên symbol Ghidra tự gán (DAT_00e7fe24) khi decompile hàm ATTACK mới đã đối chiếu xong (dòng *(int*)(DAT_00e7fe24+0x41d3c)), khớp delta +0x2020. Đọc byte thô tại đây có thể =0 do con trỏ chỉ được game gán khi cần, không phải bằng chứng RVA sai. Là nguyên nhân "Game root chưa sẵn sàng | SAFE_REJECT" trong repair.log. Chưa build/test runtime.
+		public const int InventoryRoot = 0xA7FE24;
+		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (bản cũ đọc được con trỏ hợp lệ 0x1798E020 tại RVA cũ; bản mới tại RVA cũ đọc ra 0, tại RVA lệch +0x2020 đọc được con trỏ hợp lệ khác 0x16DBC020). Chưa build/test runtime.
+		public const int ItemTable = 0x541068;
 		public const int AttackManager = 0x4E0640;
-		public const int MapCoordinateRoot = 0x9F8060;
+		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật trong hàm CONVERTER mới (lệnh ADD ECX,[0x9FA080] tại RVA 0x2FBC30+0x21), lệch đúng +0x2020 so với giá trị cũ như ENTITY_TABLE/GROUND_TABLE/ATTACK_MANAGER. Chưa build/test runtime.
+		public const int MapCoordinateRoot = 0x9FA080;
 		public const int CombatTargetRoot = 0x3A95D8;
-		public const int MapId = 0x501AFC;
-		public const int MapIdMirror = 0x501B00;
-		public const int MapIdRuntimeMirror = 0x516B48;
-		public const int ModalState = 0x4ECF68;
+		// Cập nhật sau bản game 2026-08-28: xác nhận bằng đọc byte thật (cả 3 giá trị cùng đồng thuận = 21 tại vị trí lệch +0x2020 so với bản cũ). Nguyên nhân "Map=0" xuyên suốt log và "Tự lên bãi" không chạy sau khi phù về (GameMapReader.Read luôn fail). Chưa build/test runtime.
+		public const int MapId = 0x503B1C;
+		public const int MapIdMirror = 0x503B20;
+		public const int MapIdRuntimeMirror = 0x518B68;
+		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (16 byte ngữ cảnh quanh RVA lệch +0x2020 khớp tuyệt đối với bản cũ), khớp lỗi "DEBUG_REPAIR_SHOP_FAIL | ShopState=0" khi test debug Sửa đồ. Chưa build/test runtime.
+		public const int ModalState = 0x4EEF88;
 		public const int DialogPointer = 0x500BE0;
-		public const int ShopState = 0x4ED6B8;
-		public const int ReturnToTownModal = 0x4FCD38;
+		public const int ShopState = 0x4EF6D8;
+		// Bản client 2026-09-06 dời object popup Về thành +0x2020 (cũ 0x4FCD38). Đo từ runtime: death.log ghi
+		// Modal=0x008FED58 với ModuleBase=0x00400000 ở cả 5 tiến trình lúc chết, xác nhận lại bằng ModalVtableProbe
+		// (MODAL_VTABLE_OBJECT | InModule=True | ObjectRva=0x4FED58).
+		public const int ReturnToTownModal = 0x4FED58;
 	}
 
 	public static class Entity {
@@ -65,9 +74,16 @@ public static class GameAddresses {
 		public const int Object = 0x4B7BC;
 		public const int SaleSlotListPointer = 0x0000;
 		public const int SaleSlotCount = 35;
-		public const int QuickSlotListPointer = 0x0140;
+		// Sửa 0x0140 -> 0x0230 ngày 2026-09-07. Bằng chứng: tool Debug "Probe dò container túi"
+		// (BuildStamp INVENTORY-CONTAINER-20260907-01, PID 21184) cho thấy +0x0140 trỏ tới mảng Ids=[0,0,0,0]
+		// trong khi +0x0230 ra đúng 4 ô: "Thanh Lộ" x1, "Trung Hồng đơn" x2, "Tiểu Hoàn đơn" x6,
+		// "Hồi thành phù (Siêu cấp)" x1 — chủ dự án mở game đối chiếu và xác nhận khớp cả tên lẫn số lượng.
+		public const int QuickSlotListPointer = 0x0230;
 		public const int QuickSlotCount = 4;
-		public const int ExtendedSlotListPointer = 0x0208;
+		// Sửa 0x0208 -> 0x02F8 ngày 2026-09-07, cùng lượt probe trên. +0x0208 đọc ra toàn id rác
+		// (629249068, 1667854396, ...) trong khi +0x02F8 ra đúng 35 ô với "Hoả Vũ" x250, "Hoàn Quan nhãn" x49,
+		// "Đại địa nhãn" x44, "Tiền đồng" x16 — chủ dự án xác nhận đây là rương thứ 2 của túi đồ.
+		public const int ExtendedSlotListPointer = 0x02F8;
 		public const int ExtendedSlotCount = 35;
 		public const int FirstStrength = 0x0FFC8;
 		public const int SecondStrength = 0x0FE88;
@@ -80,7 +96,8 @@ public static class GameAddresses {
 	}
 
 	public static class Item {
-		public const int GroundRecordTablePointer = 0x54BCA0;
+		// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng BSim + decompile, hàm command 78 mới cùng field offset và gọi đúng CONVERTER/MOVEMENT/PICKUP mới.
+		public const int GroundRecordTablePointer = 0x54DCC0;
 		public const int GroundRecordStride = 0x3A4;
 		public const int GroundRecordId = 0x14;
 		public const int GroundRecordType = 0x18;

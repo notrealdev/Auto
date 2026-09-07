@@ -7,6 +7,7 @@ internal sealed class Engine {
 	private const int CastSkillCommand = 85;
 	private const int HealSkillId = 45;
 	private const int HealRepeatDelayMilliseconds = 500;
+	private const int MaximumCastRejectionsBeforeRelease = 3;
 	private readonly Settings settings;
 	private readonly AutoFsAttackTransport transport;
 	private DateTime nextOwnerHealUtc;
@@ -14,6 +15,8 @@ internal sealed class Engine {
 	private bool ownerHealingActive;
 	private bool petHealingActive;
 	private bool petHealthUnavailableLogged;
+	private string lastCastRejectionLine = "";
+	private int castRejectionStreak;
 
 	// Binds one account support instance to the shared transport.
 	public Engine(Settings settings, AutoFsAttackTransport transport) {
@@ -52,8 +55,14 @@ internal sealed class Engine {
 						return false;
 					}
 					nextOwnerHealUtc = DateTime.UtcNow.AddMilliseconds(HealRepeatDelayMilliseconds);
-					if (!transport.TrySendTestCommand(gameWindow, CastSkillCommand, HealSkillId, out _)) return true;
-					log($"BUFF_CAST_POSTED | Target=Owner | SkillId={HealSkillId} | HP={currentHp}/{maximumHp} | HpPercent={currentHp * 100 / maximumHp} | ThresholdPercent={settings.HealOwnerHpPercent} | Exclusive=True | Transport=Direct | Source=DEV_RUNTIME_LAYOUT | RepeatDelayMs={HealRepeatDelayMilliseconds}");
+					// Chuyển sang lệnh có xác nhận: PostMessage chỉ chứng minh đã đẩy vào hàng đợi, không chứng minh
+					// native chấp nhận, nên khi cast không có tác dụng thì log cũ không phân biệt được hỏng ở đâu.
+					if (!transport.TrySendConfirmedCommand(gameWindow, CastSkillCommand, HealSkillId, out string ownerCastError)) {
+						return HoldOrReleaseAfterRejection(log, "Owner", ownerCastError);
+					}
+					lastCastRejectionLine = "";
+					castRejectionStreak = 0;
+					log($"BUFF_CAST_CONFIRMED | Target=Owner | SkillId={HealSkillId} | HP={currentHp}/{maximumHp} | HpPercent={currentHp * 100 / maximumHp} | ThresholdPercent={settings.HealOwnerHpPercent} | Exclusive=True | Transport=Direct | Source=DEV_RUNTIME_LAYOUT | RepeatDelayMs={HealRepeatDelayMilliseconds}");
 					return true;
 				}
 			}
@@ -67,11 +76,11 @@ internal sealed class Engine {
 
 			PetHealthReading pet = PetHealthReader.Read(processId);
 			if (!pet.Success || !pet.Present) {
-				if (!petHealthUnavailableLogged) log($"PET_HEALTH_SOURCE_UNAVAILABLE | Success={pet.Success} | Present={pet.Present} | HealingActive={petHealingActive} | Detail={pet.Detail}");
+				if (!petHealthUnavailableLogged) log($"BUFF_PET_HEALTH_SOURCE_UNAVAILABLE | Success={pet.Success} | Present={pet.Present} | HealingActive={petHealingActive} | Detail={pet.Detail}");
 				petHealthUnavailableLogged = true;
 				return petHealingActive;
 			}
-			if (petHealthUnavailableLogged) log($"PET_HEALTH_SOURCE_RECOVERED | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | HealingActive={petHealingActive} | Detail={pet.Detail}");
+			if (petHealthUnavailableLogged) log($"BUFF_PET_HEALTH_SOURCE_RECOVERED | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | HealingActive={petHealingActive} | Detail={pet.Detail}");
 			petHealthUnavailableLogged = false;
 			if (pet.CurrentHp <= 0) {
 				petHealingActive = false;
@@ -88,12 +97,37 @@ internal sealed class Engine {
 			if (DateTime.UtcNow < nextPetHealUtc) return true;
 
 			nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(HealRepeatDelayMilliseconds);
-			if (!transport.TrySendTestCommand(gameWindow, CastSkillCommand, HealSkillId, out _)) return true;
-			log($"BUFF_CAST_POSTED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
+			if (!transport.TrySendConfirmedCommand(gameWindow, CastSkillCommand, HealSkillId, out string petCastError)) {
+				return HoldOrReleaseAfterRejection(log, "Pet", petCastError);
+			}
+			lastCastRejectionLine = "";
+			castRejectionStreak = 0;
+			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
 			return true;
 		} catch {
 			return ownerHealingActive || petHealingActive;
 		}
+	}
+
+	// Khi native liên tục từ chối lệnh cast thì HP không bao giờ hồi, mà khối heal lại giữ quyền điều khiển độc quyền
+	// nên Auto Đánh và Auto Nhặt bị dừng vĩnh viễn và nhân vật đứng im. Sau vài lần từ chối liên tiếp thì nhả quyền
+	// điều khiển để các luồng khác chạy tiếp, vẫn giữ nguyên việc thử lại theo nhịp cũ.
+	private bool HoldOrReleaseAfterRejection(Action<string> log, string target, string error) {
+		LogCastRejected(log, target, error);
+		castRejectionStreak++;
+		if (castRejectionStreak < MaximumCastRejectionsBeforeRelease) return true;
+		if (castRejectionStreak == MaximumCastRejectionsBeforeRelease) {
+			log($"BUFF_CAST_RELEASED_CONTROL | Target={target} | Rejections={castRejectionStreak} | Action=Nhả quyền điều khiển để Auto Đánh và Auto Nhặt chạy tiếp");
+		}
+		return false;
+	}
+
+	// Lệnh cast lặp mỗi 500 ms nên chỉ ghi khi nội dung lỗi đổi, tránh ngập log.
+	private void LogCastRejected(Action<string> log, string target, string error) {
+		string line = $"BUFF_CAST_REJECTED | Target={target} | SkillId={HealSkillId} | Command={CastSkillCommand} | Error={error}";
+		if (string.Equals(lastCastRejectionLine, line, StringComparison.Ordinal)) return;
+		lastCastRejectionLine = line;
+		log(line);
 	}
 
 	// Clears all exclusive healing state when support automation is disabled.

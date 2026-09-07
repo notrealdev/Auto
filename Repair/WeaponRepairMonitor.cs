@@ -1,5 +1,7 @@
 namespace Auto.Repair;
 
+using Auto.DebugTools;
+
 public sealed class WeaponRepairMonitor {
 	private static readonly bool EnableAutomaticRepairRequests = true;
 	private const int CheckIntervalSeconds = 5;

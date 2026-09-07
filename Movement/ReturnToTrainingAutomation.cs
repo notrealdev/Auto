@@ -92,7 +92,8 @@ public sealed class ReturnToTrainingAutomation {
 		else if (settings.TeachingEnabled && IsValid(settings.TeachingMapId, settings.TeachingRawX, settings.TeachingRawY)) destination = new(settings.TeachingMapId, settings.TeachingRawX, settings.TeachingRawY, settings.TeachingMap);
 		else if (settings.ContinueEnabled && IsValid(settings.ContinueMapId, settings.ContinueRawX, settings.ContinueRawY)) destination = new(settings.ContinueMapId, settings.ContinueRawX, settings.ContinueRawY, settings.ContinueMap);
 		else if (game.SavedTrainingMapId > 0 && game.TrainingPositionsByMap.TryGetValue(game.SavedTrainingMapId, out (int RawX, int RawY) savedPosition) && IsValid(game.SavedTrainingMapId, savedPosition.RawX, savedPosition.RawY)) destination = new(game.SavedTrainingMapId, savedPosition.RawX, savedPosition.RawY, "Bãi đã lưu");
-		else if (settings.UseCenterPosition && IsValid(currentMapId, settings.CenterX, settings.CenterY)) destination = new(currentMapId, settings.CenterX, settings.CenterY, "Tâm bãi");
+		// Ưu tiên map đã ghi nhận lúc đặt tâm để đi được xuyên map về đúng bãi; chưa có thì lùi về map hiện tại như cũ.
+		else if (settings.UseCenterPosition && IsValid(settings.CenterMapId > 0 ? settings.CenterMapId : currentMapId, settings.CenterX, settings.CenterY)) destination = new(settings.CenterMapId > 0 ? settings.CenterMapId : currentMapId, settings.CenterX, settings.CenterY, "Tâm bãi");
 		else if (IsValid(currentMapId, snapshot.X, snapshot.Y)) destination = new(currentMapId, snapshot.X, snapshot.Y, "Vị trí trước khi chết");
 		else {
 			destination = default;

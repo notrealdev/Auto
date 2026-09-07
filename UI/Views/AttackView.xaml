@@ -1,0 +1,140 @@
+<UserControl
+	x:Class="Auto.UI.Views.AttackView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:controls="clr-namespace:Auto.UI.Controls"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:AttackViewModel}"
+	mc:Ignorable="d">
+
+	<ScrollViewer VerticalScrollBarVisibility="Auto">
+		<StackPanel>
+
+			<Border Style="{StaticResource CardBorder}">
+				<StackPanel>
+					<CheckBox Margin="0,0,0,8" Content="Tự động đánh" IsChecked="{Binding Enabled}" />
+					<CheckBox Margin="0,0,0,8" Content="Tự lên bãi" IsChecked="{Binding EnableReturnToTraining}" />
+					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Quanh điểm" IsChecked="{Binding UseCenterPosition}" />
+						<TextBox
+							Width="65"
+							Margin="0,0,6,0"
+							Style="{StaticResource NumericTextBox}"
+							Text="{Binding Center, UpdateSourceTrigger=LostFocus}" />
+						<TextBox
+							Width="55"
+							Style="{StaticResource NumericTextBox}"
+							Text="{Binding Range, UpdateSourceTrigger=LostFocus}"
+							controls:NumericInputBehavior.IsEnabled="True" />
+					</StackPanel>
+					<StackPanel Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Đánh quái" IsChecked="{Binding AttackMonsters}" />
+						<ComboBox
+							x:Name="MonsterComboBox"
+							Width="140"
+							DropDownOpened="MonsterComboBox_DropDownOpened"
+							ItemsSource="{Binding Monsters}"
+							SelectedItem="{Binding SelectedMonster}" />
+					</StackPanel>
+				</StackPanel>
+			</Border>
+
+			<Expander Header="Train quái" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+				<StackPanel>
+					<CheckBox Margin="0,0,0,8" Content="Tân thủ thôn" IsChecked="{Binding ContinueEnabled}" />
+					<StackPanel Margin="0,0,0,16" Orientation="Horizontal">
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding ContinueMaps}"
+							SelectedItem="{Binding SelectedContinueMap}" />
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding ContinueMonsters}"
+							SelectedItem="{Binding SelectedContinueMonster}" />
+						<ComboBox
+							ItemsSource="{Binding ContinueCoordinates}"
+							SelectedItem="{Binding SelectedContinueCoordinate}" />
+					</StackPanel>
+
+					<CheckBox Margin="0,0,0,8" Content="Thành thị" IsChecked="{Binding TeachingEnabled}" />
+					<StackPanel Margin="0,0,0,16" Orientation="Horizontal">
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding TeachingMaps}"
+							SelectedItem="{Binding SelectedTeachingMap}" />
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding TeachingMonsters}"
+							SelectedItem="{Binding SelectedTeachingMonster}" />
+						<ComboBox
+							ItemsSource="{Binding TeachingCoordinates}"
+							SelectedItem="{Binding SelectedTeachingCoordinate}" />
+					</StackPanel>
+
+					<CheckBox Margin="0,0,0,8" Content="Mê cung" IsChecked="{Binding TrainingEnabled}" />
+					<!--
+						Nhóm mê cung tách riêng một hàng và đặt width cố định: nhóm này có 4 select trong khi hai nhóm
+						trên chỉ có 3, mà chỗ khả dụng chỉ khoảng 345-360px nên để chung một hàng thì select cuối bị cắt.
+						Tách ra rồi thì hàng dưới còn đúng 3 select, bằng "Tân thủ thôn" và "Thành thị".
+					-->
+					<ComboBox
+						Width="140"
+						Margin="0,0,0,8"
+						HorizontalAlignment="Left"
+						ItemsSource="{Binding TrainingGroups}"
+						SelectedItem="{Binding SelectedTrainingGroup}" />
+					<StackPanel Orientation="Horizontal">
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding TrainingMaps}"
+							SelectedItem="{Binding SelectedTrainingMap}" />
+						<ComboBox
+							Margin="0,0,8,0"
+							ItemsSource="{Binding TrainingMonsters}"
+							SelectedItem="{Binding SelectedTrainingMonster}" />
+						<ComboBox
+							ItemsSource="{Binding TrainingCoordinates}"
+							SelectedItem="{Binding SelectedTrainingCoordinate}" />
+					</StackPanel>
+				</StackPanel>
+			</Expander>
+
+			<Expander Header="Cài đặt PK" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+				<StackPanel>
+					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Đánh người" IsChecked="{Binding AttackPlayers}" />
+						<ComboBox
+							Width="140"
+							ItemsSource="{Binding Players}"
+							SelectedItem="{Binding SelectedPlayer}" />
+					</StackPanel>
+					<CheckBox Margin="0,0,0,8" Content="Ưu tiên đệ Dị nhân" IsChecked="{Binding PrioritizeSummonerPet}" />
+					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Ưu tiên HP &lt;" IsChecked="{Binding PrioritizeLowHp}" />
+						<TextBox
+							Width="50"
+							Margin="0,0,6,0"
+							Style="{StaticResource NumericTextBox}"
+							Text="{Binding PrioritizeLowHpPercent, UpdateSourceTrigger=LostFocus}"
+							controls:NumericInputBehavior.IsEnabled="True" />
+						<TextBlock Style="{StaticResource FieldLabel}" Text="%" />
+					</StackPanel>
+					<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Ưu tiên theo hệ" IsChecked="{Binding PrioritizeClass}" />
+						<Button
+							Padding="8,4"
+							Command="{Binding OpenClassPriorityCommand}"
+							Content="⚙" />
+					</StackPanel>
+					<StackPanel Orientation="Horizontal">
+						<TextBlock Margin="0,0,10,0" Style="{StaticResource FieldLabel}" Text="Không đánh:" />
+						<CheckBox Content="Lạc đà, biến hình" IsChecked="{Binding ExcludeCamelTransform}" />
+					</StackPanel>
+				</StackPanel>
+			</Expander>
+
+		</StackPanel>
+	</ScrollViewer>
+</UserControl>

@@ -1,5 +1,8 @@
 namespace Auto.Loot;
 
+using System.Globalization;
+using System.Text;
+
 public enum AutoFsSpecialItemCategory { None, SkillBook, Artifact, Trigram, SixPaths, FourSymbols, ImmortalFormationLabel }
 
 public static class AutoFsSpecialItemClassifier {
@@ -24,17 +27,20 @@ public static class AutoFsSpecialItemClassifier {
 	};
 
 	private static readonly HashSet<string> SixPathNames = new(StringComparer.OrdinalIgnoreCase) {
-		"Đoản Kiếm", "Mảnh Giáp", "Băng Cơ", "Ngọc Cốt", "Mặt Quỷ", "Quỷ Diện", "Hỏa Vũ"
+		"Đoản Kiếm", "Đoạn Kiếm", "Mảnh Giáp", "Toái Giáp", "Băng Cơ", "Ngọc Cốt", "Mặt Quỷ", "Quỷ Diện", "Hỏa Vũ"
 	};
 
 	public static AutoFsSpecialItemCategory Classify(string rawName) {
-		string name = NormalizeGroundName(rawName);
-		if (SkillBookNames.Any(knownName => knownName.Contains(name, StringComparison.OrdinalIgnoreCase))) return AutoFsSpecialItemCategory.SkillBook;
-		if (ArtifactNames.Any(knownName => knownName.Contains(name, StringComparison.OrdinalIgnoreCase))) return AutoFsSpecialItemCategory.Artifact;
-		if (name.Contains("Quẻ", StringComparison.OrdinalIgnoreCase)) return AutoFsSpecialItemCategory.Trigram;
-		if (SixPathNames.Any(knownName => name.Contains(knownName, StringComparison.OrdinalIgnoreCase))) return AutoFsSpecialItemCategory.SixPaths;
-		if (name.Contains("Phong Lệ", StringComparison.OrdinalIgnoreCase) || name.Contains("Hỏa Linh", StringComparison.OrdinalIgnoreCase) || name.Contains("Địa Tâm", StringComparison.OrdinalIgnoreCase) || name.Contains("Thủy Hồn", StringComparison.OrdinalIgnoreCase)) return AutoFsSpecialItemCategory.FourSymbols;
-		if (name.Contains("Nhãn", StringComparison.OrdinalIgnoreCase)) return AutoFsSpecialItemCategory.ImmortalFormationLabel;
+		string name = ToAsciiUpper(NormalizeGroundName(rawName));
+		// Kiểm tra Lục Đạo trước Bí Kíp/Bảo Vật và so khớp đúng tuyệt đối (không bao hàm):
+		// tên món Lục Đạo luôn là tên đầy đủ của chính món đó (vd. "Băng Cơ"), trong khi Bí Kíp lại có tên dài chứa
+		// đúng từ đó (vd. "Băng Cơ Tuyết Cốt"). Bao hàm 2 chiều đều có thể nuốt nhầm; so khớp đúng tuyệt đối mới tránh cả 2 chiều.
+		if (SixPathNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.SixPaths;
+		if (SkillBookNames.Any(knownName => ToAsciiUpper(knownName).Contains(name, StringComparison.Ordinal))) return AutoFsSpecialItemCategory.SkillBook;
+		if (ArtifactNames.Any(knownName => ToAsciiUpper(knownName).Contains(name, StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Artifact;
+		if (name.Contains("QUE", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.Trigram;
+		if (name.Contains("PHONG LE", StringComparison.Ordinal) || name.Contains("HOA LINH", StringComparison.Ordinal) || name.Contains("DIA TAM", StringComparison.Ordinal) || name.Contains("THUY HON", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.FourSymbols;
+		if (name.Contains("NHAN", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.ImmortalFormationLabel;
 		return AutoFsSpecialItemCategory.None;
 	}
 
@@ -44,5 +50,28 @@ public static class AutoFsSpecialItemClassifier {
 		while (suffixStart > 0 && char.IsDigit(normalized[suffixStart - 1])) suffixStart--;
 		if (suffixStart > 0 && suffixStart < normalized.Length && (normalized[suffixStart - 1] == 'x' || normalized[suffixStart - 1] == 'X')) normalized = normalized[..(suffixStart - 1)].TrimEnd();
 		return normalized;
+	}
+
+	// Đọc số lượng của một chồng item nằm dưới đất từ hậu tố "xN" trong tên hiển thị.
+	// Đối xứng với NormalizeGroundName: cùng cách quét ngược chữ số rồi 'x'/'X', nhưng trả về N thay vì cắt bỏ.
+	// Không có hậu tố thì coi như 1.
+	public static int GetGroundStackCount(string rawName) {
+		string normalized = rawName.Trim();
+		int suffixStart = normalized.Length;
+		while (suffixStart > 0 && char.IsDigit(normalized[suffixStart - 1])) suffixStart--;
+		if (suffixStart == 0 || suffixStart >= normalized.Length) return 1;
+		if (normalized[suffixStart - 1] != 'x' && normalized[suffixStart - 1] != 'X') return 1;
+		return int.TryParse(normalized[suffixStart..], NumberStyles.None, CultureInfo.InvariantCulture, out int count) && count > 0 ? count : 1;
+	}
+
+	// Bỏ dấu tiếng Việt và chuyển hoa để so khớp bất kể cách gõ dấu khác nhau (VD: "Hỏa"/"Hoả" đều thành "HOA").
+	public static string ToAsciiUpper(string value) {
+		string decomposed = value.Replace('Đ', 'D').Replace('đ', 'd').Normalize(NormalizationForm.FormD);
+		StringBuilder builder = new(decomposed.Length);
+		foreach (char c in decomposed) {
+			if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
+			builder.Append(c);
+		}
+		return builder.ToString().ToUpperInvariant();
 	}
 }

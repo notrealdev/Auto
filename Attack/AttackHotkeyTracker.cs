@@ -1,7 +1,7 @@
 namespace Auto.Attack;
 
 using System.Collections.Concurrent;
-using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
 using Auto.Runtime;
 
@@ -22,7 +22,7 @@ public static class AttackHotkeyTracker {
 	private static readonly object diagnosticSync = new();
 	private static readonly ConcurrentQueue<string> diagnosticEntries = new();
 	private static int diagnosticWriterScheduled;
-	private static string DiagnosticPath => Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "ctrl-a.log");
+	private static string DiagnosticPath => Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "hotkey.log");
 	private static readonly HashSet<IntPtr> gameWindowHandles = new();
 	private static readonly ConcurrentQueue<IntPtr> pendingWindows = new();
 	private static readonly LowLevelKeyboardProc keyboardHookProc = KeyboardHookCallback;
@@ -178,7 +178,7 @@ public static class AttackHotkeyTracker {
 								}
 								queuedCount = pendingWindows.Count;
 							}
-							LogDiagnostic($"CTRL_A_KEYDOWN | Message=0x{message:X4} | ScanCode={hookData.ScanCode} | Flags=0x{hookData.Flags:X8} | ControlState=0x{unchecked((ushort)controlState):X4} | Repeated={repeated} | Foreground=0x{foregroundWindow.ToInt64():X8} | ForegroundPID={foregroundProcessId} | Root=0x{rootWindow.ToInt64():X8} | RootPID={rootProcessId} | ForegroundTracked={foregroundTracked} | RootTracked={rootTracked} | Selected=0x{selectedWindow.ToInt64():X8} | Enqueued={selectedWindow != IntPtr.Zero} | Tracked={trackedCount} | Queue={queuedCount}");
+							LogDiagnostic($"HOTKEY_KEYDOWN | Message=0x{message:X4} | ScanCode={hookData.ScanCode} | Flags=0x{hookData.Flags:X8} | ControlState=0x{unchecked((ushort)controlState):X4} | Repeated={repeated} | Foreground=0x{foregroundWindow.ToInt64():X8} | ForegroundPID={foregroundProcessId} | Root=0x{rootWindow.ToInt64():X8} | RootPID={rootProcessId} | ForegroundTracked={foregroundTracked} | RootTracked={rootTracked} | Selected=0x{selectedWindow.ToInt64():X8} | Enqueued={selectedWindow != IntPtr.Zero} | Tracked={trackedCount} | Queue={queuedCount}");
 						}
 					}
 				}

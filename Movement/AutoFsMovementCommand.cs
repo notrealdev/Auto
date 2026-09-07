@@ -7,6 +7,7 @@ internal static class AutoFsMovementCommand {
 	private const int XCommand = 0;
 	private const int YCommand = 5;
 	private const int PortalCommand = 27;
+	private const int WalkCommand = 321;
 
 	public static bool TryMoveTo(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
 		result = "";
@@ -40,6 +41,44 @@ internal static class AutoFsMovementCommand {
 			return false;
 		}
 		result = $"AutoFS SaveDevice | Commands=32/0,0/{dispatchX},5/{dispatchY} | Raw={destinationRawX}/{destinationRawY}";
+		return true;
+	}
+
+	// Đi bộ thường tới một toạ độ, KHÔNG gắn cờ lên màn hình.
+	// Không dùng lệnh 0/5/32 như TryMoveTo: cả ba lệnh đó đều đổ về CoordinateOpcode 0x9F (SystemUint.cpp:365 và :382
+	// gọi cùng một dispatcher), và 0x9F chính là thứ sinh ra lá cờ — bỏ lệnh reset 32 không thay đổi điều đó, runtime
+	// beta 2026-09-06 đã chứng minh.
+	// Thay vào đó gửi WalkToCommand để native gọi PickupMovementFunction(playerEntity, 3, rawX, rawY, 0), đúng nguyên
+	// thủy mà luồng nhặt đồ dùng (SystemUint.cpp, TryDispatchPickup) và chủ dự án xác nhận là không hiện cờ.
+	// Toạ độ giữ nguyên dạng RAW, không chia 32 — hàm này nhận raw như luồng nhặt đồ.
+	// Gửi bằng TrySendConfirmedCommand chứ không phải TrySendCommand: TrySendCommand dùng PostMessageA nên chỉ chứng
+	// minh được "đã vào hàng đợi", còn bản confirmed đọc giá trị trả về của native nên log phân biệt được nhận với từ chối.
+	public static bool TryWalkTo(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
+		result = "";
+		if (! game.RuntimeLayout.MovementReady) {
+			result = "Runtime movement layout is unavailable: " + game.RuntimeLayout.DescribeUnavailable(RuntimeSubsystem.MovementTransport);
+			return false;
+		}
+		if (destinationRawX <= 0 || destinationRawY <= 0) {
+			result = $"AutoFS WALK SAFE_REJECT | Raw={destinationRawX}/{destinationRawY}";
+			return false;
+		}
+		string walkResult = "";
+		bool walked = game.AutoFsActionGate.RunMovement(() => TryWalkToCore(game, destinationRawX, destinationRawY, out walkResult));
+		result = walkResult;
+		return walked;
+	}
+
+	private static bool TryWalkToCore(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
+		if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, XCommand, destinationRawX, out string xError)) {
+			result = $"AutoFS walk command {XCommand} FAIL | {xError}";
+			return false;
+		}
+		if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, WalkCommand, destinationRawY, out string yError)) {
+			result = $"AutoFS walk command {WalkCommand} FAIL | {yError}";
+			return false;
+		}
+		result = $"AutoFS WalkTo | Commands=0/{destinationRawX},{WalkCommand}/{destinationRawY} | Raw={destinationRawX}/{destinationRawY} | Delivery=CONFIRMED";
 		return true;
 	}
 

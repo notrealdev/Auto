@@ -1,0 +1,104 @@
+<UserControl
+	x:Class="Auto.UI.Views.LootView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:controls="clr-namespace:Auto.UI.Controls"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:LootViewModel}"
+	mc:Ignorable="d">
+
+	<UserControl.Resources>
+		<DataTemplate x:Key="CheckableItemTemplate" DataType="{x:Type vm:CheckableItemViewModel}">
+			<Grid Margin="0,0,0,4">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="*" />
+					<ColumnDefinition Width="Auto" />
+				</Grid.ColumnDefinitions>
+				<CheckBox Grid.Column="0" Content="{Binding Name}" IsChecked="{Binding IsChecked}" />
+				<Button
+					Grid.Column="1"
+					Padding="6,0"
+					Command="{Binding DataContext.RemoveItemCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+					CommandParameter="{Binding}"
+					Content="✕"
+					Visibility="{Binding IsBuiltIn, Converter={StaticResource InverseBooleanToVisibilityConverter}}" />
+			</Grid>
+		</DataTemplate>
+	</UserControl.Resources>
+
+	<ScrollViewer VerticalScrollBarVisibility="Auto">
+		<StackPanel>
+
+			<Border Style="{StaticResource CardBorder}">
+				<StackPanel>
+					<CheckBox Margin="0,0,0,8" Content="Nhặt đồ" IsChecked="{Binding Enabled}" />
+					<StackPanel Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Nhặt dược phẩm" IsChecked="{Binding PickPotion}" />
+						<Button Padding="8,4" Command="{Binding OpenPotionNamesCommand}" Content="⚙" />
+					</StackPanel>
+				</StackPanel>
+			</Border>
+
+			<Expander Header="Vật phẩm" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+				<StackPanel>
+					<Grid Margin="0,0,0,8">
+						<Grid.ColumnDefinitions>
+							<ColumnDefinition Width="*" />
+							<ColumnDefinition Width="Auto" />
+						</Grid.ColumnDefinitions>
+						<TextBox Grid.Column="0" Margin="0,0,6,0" Text="{Binding PendingMaterialItem, UpdateSourceTrigger=PropertyChanged}" />
+						<Button Grid.Column="1" Padding="10,4" Command="{Binding AddMaterialItemCommand}" Content="Thêm" />
+					</Grid>
+					<ItemsControl ItemTemplate="{StaticResource CheckableItemTemplate}" ItemsSource="{Binding MaterialItems}" />
+				</StackPanel>
+			</Expander>
+
+			<Expander Header="Không nhặt" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+				<StackPanel>
+					<Grid Margin="0,0,0,8">
+						<Grid.ColumnDefinitions>
+							<ColumnDefinition Width="*" />
+							<ColumnDefinition Width="Auto" />
+						</Grid.ColumnDefinitions>
+						<TextBox Grid.Column="0" Margin="0,0,6,0" Text="{Binding PendingExcludedItem, UpdateSourceTrigger=PropertyChanged}" />
+						<Button Grid.Column="1" Padding="10,4" Command="{Binding AddExcludedItemCommand}" Content="Thêm" />
+					</Grid>
+					<ItemsControl ItemTemplate="{StaticResource CheckableItemTemplate}" ItemsSource="{Binding ExcludedItems}" />
+				</StackPanel>
+			</Expander>
+
+			<Expander Header="Bán" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+				<StackPanel>
+					<Grid Margin="0,0,0,8">
+						<Grid.ColumnDefinitions>
+							<ColumnDefinition Width="*" />
+							<ColumnDefinition Width="Auto" />
+						</Grid.ColumnDefinitions>
+						<TextBox Grid.Column="0" Margin="0,0,6,0" Text="{Binding PendingSaleItem, UpdateSourceTrigger=PropertyChanged}" />
+						<Button Grid.Column="1" Padding="10,4" Command="{Binding AddSaleItemCommand}" Content="Thêm" />
+					</Grid>
+					<ItemsControl Margin="0,0,0,8" ItemTemplate="{StaticResource CheckableItemTemplate}" ItemsSource="{Binding SaleItems}" />
+					<StackPanel Margin="0,0,0,6" Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Số lượng &gt;" IsChecked="{Binding SaleQuantityThresholdEnabled}" />
+						<TextBox
+							Width="60"
+							Style="{StaticResource NumericTextBox}"
+							Text="{Binding SaleQuantityThreshold, UpdateSourceTrigger=LostFocus}"
+							controls:NumericInputBehavior.IsEnabled="True" />
+					</StackPanel>
+					<StackPanel Orientation="Horizontal">
+						<CheckBox Margin="0,0,10,0" Content="Sức lực còn" IsChecked="{Binding SaleRemainingStrengthThresholdEnabled}" />
+						<TextBox
+							Width="60"
+							Style="{StaticResource NumericTextBox}"
+							Text="{Binding SaleRemainingStrengthThreshold, UpdateSourceTrigger=LostFocus}"
+							controls:NumericInputBehavior.IsEnabled="True" />
+					</StackPanel>
+				</StackPanel>
+			</Expander>
+
+		</StackPanel>
+	</ScrollViewer>
+</UserControl>

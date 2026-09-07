@@ -1,0 +1,192 @@
+<Window
+	x:Class="Auto.UI.Views.MainWindow"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:views="clr-namespace:Auto.UI.Views"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+	xmlns:app="clr-namespace:Auto"
+	Title="{x:Static app:AppVersion.Title}"
+	Icon="/app.ico"
+	Width="420"
+	Height="900"
+	MinWidth="420"
+	MinHeight="900"
+	Background="{StaticResource Brush.Background}"
+	WindowStyle="None"
+	AllowsTransparency="False"
+	ResizeMode="CanResizeWithGrip"
+	UseLayoutRounding="True"
+	SnapsToDevicePixels="True"
+	RenderOptions.EdgeMode="Aliased"
+	d:DataContext="{d:DesignInstance Type=vm:MainWindowViewModel}"
+	mc:Ignorable="d">
+
+	<shell:WindowChrome.WindowChrome>
+		<shell:WindowChrome
+			CaptionHeight="0"
+			CornerRadius="0"
+			GlassFrameThickness="0"
+			ResizeBorderThickness="5"
+			UseAeroCaptionButtons="False" />
+	</shell:WindowChrome.WindowChrome>
+
+	<Window.Resources>
+		<DataTemplate DataType="{x:Type vm:BasicViewModel}">
+			<views:BasicView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:AttackViewModel}">
+			<views:AttackView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:LootViewModel}">
+			<views:LootView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:SupportViewModel}">
+			<views:SupportView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:MarketViewModel}">
+			<views:MarketView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:InfoViewModel}">
+			<views:InfoView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:DebugViewModel}">
+			<views:DebugView />
+		</DataTemplate>
+		<DataTemplate x:Key="AccountRowTemplate" DataType="{x:Type vm:AccountRowViewModel}">
+			<StackPanel>
+				<Border x:Name="Separator" Height="1" Margin="0,0,0,4" Background="{StaticResource Brush.Border}" Opacity="0.4" />
+				<Grid Margin="0,0,0,4">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="Auto" />
+						<ColumnDefinition Width="3*" />
+						<ColumnDefinition Width="1*" />
+					</Grid.ColumnDefinitions>
+					<CheckBox
+						Grid.Column="0"
+						Margin="{StaticResource Size.CheckboxLabelGap}"
+						IsChecked="{Binding AutoEnabled}" />
+					<TextBlock
+						Grid.Column="1"
+						VerticalAlignment="Center"
+						Foreground="{StaticResource Brush.TextPrimary}"
+						Text="{Binding DisplayName}"
+						TextTrimming="CharacterEllipsis" />
+					<TextBlock
+						Grid.Column="2"
+						VerticalAlignment="Center"
+						Foreground="{StaticResource Brush.TextSecondary}"
+						Text="{Binding Vitals}"
+						TextTrimming="CharacterEllipsis" />
+				</Grid>
+			</StackPanel>
+			<DataTemplate.Triggers>
+				<DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=(ItemsControl.AlternationIndex)}" Value="0">
+					<Setter TargetName="Separator" Property="Visibility" Value="Collapsed" />
+				</DataTrigger>
+			</DataTemplate.Triggers>
+		</DataTemplate>
+	</Window.Resources>
+
+	<Grid Background="{StaticResource Brush.Background}">
+		<Grid.RowDefinitions>
+			<RowDefinition Height="32" />
+			<RowDefinition Height="*" />
+		</Grid.RowDefinitions>
+
+		<Border
+			Grid.Row="0"
+			Background="{StaticResource Brush.TitleBar}"
+			MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="*" />
+					<ColumnDefinition Width="Auto" />
+				</Grid.ColumnDefinitions>
+
+				<Image
+					Grid.Column="0"
+					Width="16"
+					Height="16"
+					Margin="10,0,0,0"
+					VerticalAlignment="Center"
+					Source="/app.ico" />
+
+				<TextBlock
+					Grid.Column="1"
+					Margin="8,0"
+					VerticalAlignment="Center"
+					Foreground="{StaticResource Brush.TextPrimary}"
+					Text="{x:Static app:AppVersion.Title}" />
+
+				<StackPanel Grid.Column="2" Orientation="Horizontal">
+					<Button Click="Minimize_Click" Content="—" Style="{StaticResource TitleBarButton}" />
+					<Button Click="Maximize_Click" Content="☐" Style="{StaticResource TitleBarButton}" />
+					<Button Click="Close_Click" Content="✕" Style="{StaticResource TitleBarCloseButton}" />
+				</StackPanel>
+			</Grid>
+		</Border>
+
+		<Grid Grid.Row="1" Margin="{StaticResource Size.WindowGutter}" Background="{StaticResource Brush.Background}">
+			<Grid.RowDefinitions>
+				<RowDefinition Height="Auto" />
+				<RowDefinition Height="*" />
+			</Grid.RowDefinitions>
+
+			<!-- Padding riêng cho block account, không dùng Size.CardPadding chung: đè trực tiếp ở đây, muốn chỉnh chỉ sửa số "12". -->
+			<Border Grid.Row="0" Padding="12" Style="{StaticResource CardBorder}">
+				<ListBox
+					MaxHeight="200"
+					AlternationCount="1000"
+					Background="Transparent"
+					BorderThickness="0"
+					ItemContainerStyle="{StaticResource AccountListBoxItem}"
+					ItemTemplate="{StaticResource AccountRowTemplate}"
+					ItemsSource="{Binding AccountList.Accounts}"
+					ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+					ScrollViewer.VerticalScrollBarVisibility="Auto"
+					SelectedItem="{Binding AccountList.SelectedRow, Mode=TwoWay}" />
+			</Border>
+
+			<Grid Grid.Row="1">
+				<Grid.RowDefinitions>
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="*" />
+				</Grid.RowDefinitions>
+
+				<Border
+					Grid.Row="0"
+					Padding="0"
+					Style="{StaticResource CardBorder}"
+					BorderThickness="0">
+					<ItemsControl ItemsSource="{Binding Tabs}">
+						<ItemsControl.ItemsPanel>
+							<ItemsPanelTemplate>
+								<!-- WPF không có "gap" như CSS flex/grid. TabRadioButton tự mang Margin="0,0,6,6" để
+								     tạo khoảng cách phải/dưới giữa các nút; nhưng nút cuối mỗi hàng/cột vẫn giữ margin
+								     đó, cộng dồn thành khoảng trống thừa ở mép phải và mép dưới của cả khối. Bù lại
+								     đúng bằng Margin âm trên WrapPanel để mép ngoài luôn khít, còn khoảng cách GIỮA
+								     các nút thì không đổi. -->
+								<WrapPanel Margin="0,0,-6,-6" Orientation="Horizontal" />
+							</ItemsPanelTemplate>
+						</ItemsControl.ItemsPanel>
+						<ItemsControl.ItemTemplate>
+							<DataTemplate DataType="{x:Type vm:TabItemViewModel}">
+								<RadioButton
+									Content="{Binding Title}"
+									GroupName="MainTabs"
+									IsChecked="{Binding IsSelected, Mode=TwoWay}"
+									Style="{StaticResource TabRadioButton}" />
+							</DataTemplate>
+						</ItemsControl.ItemTemplate>
+					</ItemsControl>
+				</Border>
+
+				<ContentControl Grid.Row="1" Content="{Binding SelectedTabContent}" />
+			</Grid>
+		</Grid>
+	</Grid>
+</Window>

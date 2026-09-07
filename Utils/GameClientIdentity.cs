@@ -1,6 +1,7 @@
 namespace Auto.Utils;
 
 using System.Diagnostics;
+using System.IO;
 
 public static class GameClientIdentity {
 	public const string ExpectedExecutablePath = @"D:\G\FS\Game.exe";

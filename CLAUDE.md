@@ -36,7 +36,11 @@ Gọi ứng dụng của dự án này là `Auto` (phân biệt với `DEV auto`
 
 ## Verification
 
-* Không build/publish tạo `.exe` trừ khi được yêu cầu — theo đúng rule global.
+* Được phép tự build thư viện, không cần hỏi: `.dll` managed, thư viện native trong `Native/SystemUint`, và project scratchpad.
+* Lý do cho phép: offset và chữ ký hàm nằm song song ở cả C# lẫn `Native/SystemUint/GameClientAddresses.h`, sửa một bên mà không build lại bên kia thì hai bên lệch nhau và sinh lỗi runtime khó truy.
+* KHÔNG build/publish tạo `.exe` — chủ dự án tự build. Cần bản `.exe` mới để test thì báo rõ, đừng tự chạy.
+* Sau khi build `.dll` phải liệt kê đúng những file binary vừa bị ghi đè, vì `Native/SystemUint/bin/*.dll` và `*.pdb` là artifact nằm trong repo.
+* Build thành công vẫn KHÔNG phải bằng chứng chức năng chạy đúng — áp nguyên Mục 4 của rule global.
 * Khi cần kiểm tra XAML hợp lệ, có thể build project demo/scratchpad riêng thay vì build chính `Auto.csproj`, trừ khi chủ dự án yêu cầu build trực tiếp.
 
 ## Git Rules
