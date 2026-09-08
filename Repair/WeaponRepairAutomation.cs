@@ -68,6 +68,11 @@ public sealed class WeaponRepairAutomation {
 
 	public bool IsBusy => state != RepairState.Idle;
 
+	// Chuyến sửa do người dùng bấm nút Chạy trong tab Thông tin. Luật "tắt Đánh = không di chuyển nhân vật" chỉ áp cho
+	// luồng TỰ ĐỘNG; bấm nút là lệnh trực tiếp của người dùng nên vẫn được đi. Không có cờ này thì không thể test luồng
+	// sửa đồ mà không bật Đánh, vì bật Đánh lên là nhân vật vừa đi sửa vừa đuổi quái, không tách được nguyên nhân.
+	public bool IsDebugRun => debugRunRequested || debugMode;
+
 	public string RequestDebugRun() {
 		if (state == RepairState.PausedAtDoctor) Reset();
 		if (IsBusy || debugRunRequested) return "DEBUG Sửa đồ chưa thể chạy vì flow hiện tại đang bận.";

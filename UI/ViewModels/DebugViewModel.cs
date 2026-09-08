@@ -12,6 +12,10 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolClientAddressAudit = "Thông tin địa chỉ client";
 	private const string ToolInventoryInfo = "Thông tin túi đồ";
 	private const string ToolEliteMonsterInfo = "Thông tin quái thủ lĩnh";
+	// Hai probe chẩn đoán popup NPC. Đã bị xoá nhầm lúc dọn probe 2026-09-07 rồi khôi phục 2026-09-08 khi luồng
+	// Sửa đồ với NPC dạng popup xác nhận hỏng mà không còn công cụ nào đọc được vtable thật của popup.
+	private const string ToolModalVtable = "Thông tin popup (vtable)";
+	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
 	private const string ToolImmediateSale = "Bán ngay (shop đang mở)";
 	private const string ToolImmediateShopRepair = "Sửa ngay (shop đang mở)";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
@@ -46,6 +50,8 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolClientAddressAudit,
 		ToolInventoryInfo,
 		ToolEliteMonsterInfo,
+		ToolModalVtable,
+		ToolNpcMenuCapture,
 		ToolImmediateSale,
 		ToolImmediateShopRepair,
 		ToolImmediateRepair
@@ -79,6 +85,12 @@ public sealed class DebugViewModel : ViewModelBase {
 				return;
 			case ToolEliteMonsterInfo:
 				StartEliteMonsterInfo();
+				return;
+			case ToolModalVtable:
+				StartModalVtableProbe();
+				return;
+			case ToolNpcMenuCapture:
+				StartNpcMenuCapture();
 				return;
 			case ToolImmediateSale:
 				StartImmediateSale();
@@ -133,6 +145,32 @@ public sealed class DebugViewModel : ViewModelBase {
 		AccountInfoText = $"PID={processId} | {result}";
 	}
 
+	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.
+	private async void StartModalVtableProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang đọc popup... Giữ nguyên popup, đừng đóng.";
+		string result = await Task.Run(() => ModalVtableProbe.Run(processId));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
+	// Dump danh sách lựa chọn của menu NPC đang mở, để đối chiếu offset và stride thật.
+	private async void StartNpcMenuCapture() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang đọc menu NPC... Giữ nguyên popup, đừng đóng.";
+		string result = await Task.Run(() => NpcMenuOptionCapture.Capture(processId, "Đại Phu"));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
 	// Chạy một lượt kiểm tra sửa toàn bộ khi account đã mở sẵn shop NPC.
 	private async void StartImmediateShopRepair() {
 		if (game == null) {
@@ -162,7 +200,9 @@ public sealed class DebugViewModel : ViewModelBase {
 		string status;
 		lock (game.AutoSync) status = game.WeaponRepairAutomation.RequestDebugRun();
 		DebugLog.AddForProcess(game.ProcessId, status);
-		AccountInfoText = $"PID={game.ProcessId} | {status}\r\nGiữ Auto tổng đang bật. Auto sẽ đi sửa toàn bộ và quay lại bãi, không kiểm tra ngưỡng độ bền.";
+		AccountInfoText = $"PID={game.ProcessId} | {status}\r\n" +
+			"Chỉ cần bật Auto tổng, KHÔNG cần bật Đánh. Nhân vật tự đi tới NPC, sửa toàn bộ rồi quay lại bãi, bỏ qua ngưỡng độ bền.\r\n" +
+			"Xem repair.log để biết NPC thuộc dạng nào: \"Doctor confirmation modal\" = popup xác nhận, \"Doctor shop menu\" = menu nhiều lựa chọn.";
 	}
 
 	private async void StartImmediateSale() {

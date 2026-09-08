@@ -16,7 +16,13 @@ namespace GameClientAddresses {
 	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (ngữ cảnh khớp bản cũ), delta +0x2020. Chưa build/test runtime.
 	constexpr uintptr_t ModalStateRva = 0x004EEF88;
 	constexpr size_t ModalEventMethodVtableOffset = 0x10;
-	constexpr uintptr_t NpcConfirmModalVtableRva = 0x00469E34;
+	// Sửa 0x00469E34 -> 0x0046AF3C ngày 2026-09-08. Bản game 2026-08-28 dời hằng số này nhưng lượt rebase trước bỏ sót,
+	// nên address-audit.log ghi FAIL_VTABLE_MISMATCH (Code=14) — lỗi DUY NHẤT trên 34 địa chỉ. Hệ quả: popup xác nhận
+	// của NPC không được nhận diện, luồng Sửa đồ rơi xuống nhánh đọc menu và fail "Menu NPC không có duy nhất...".
+	// Đo trực tiếp bằng ModalVtableProbe khi popup đang mở (PID 22056): MODAL_VTABLE_TABLE | VtableRva=0x46AF3C.
+	// Kiểm chứng chéo: delta +0x1108 trùng khít delta của RepairConfirmModalVtableRva (0x4721B4 -> 0x4732BC) — hai
+	// vtable cùng vùng .rdata dời cùng lượng, và hằng số kia đã PASS_VTABLE độc lập.
+	constexpr uintptr_t NpcConfirmModalVtableRva = 0x0046AF3C;
 	constexpr uintptr_t NpcConfirmControlOffset = 0x00000248;
 	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật đọc trực tiếp từ runtime (DEBUG_REPAIR_POPUP_REFERENCE_SUMMARY | Label=VTABLE | Target=0x008732BC, auto-runtime.log 19:36:59.014), chưa build/test runtime.
 	constexpr uintptr_t RepairConfirmModalVtableRva = 0x004732BC;

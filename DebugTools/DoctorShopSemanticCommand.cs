@@ -5,7 +5,9 @@ using Auto.Runtime;
 using Auto.Utils;
 
 public static class DoctorShopSemanticCommand {
-	private const int ExpectedDialogVtableRva = 0x469E34;
+	// Phải khớp GameClientAddresses.h NpcConfirmModalVtableRva — sửa một bên mà quên bên kia thì managed và native
+	// nhận diện popup khác nhau. Sửa 0x469E34 -> 0x46AF3C ngày 2026-09-08, xem bằng chứng ở header đó.
+	private const int ExpectedDialogVtableRva = 0x46AF3C;
 	private const int DialogOptionCommand = 7;
 	private const int CurrentMenuTextOffset = 0x7EC;
 	private const int CurrentMenuOptionStride = 0x69C;

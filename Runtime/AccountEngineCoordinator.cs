@@ -213,7 +213,9 @@ public static class AccountEngineCoordinator {
 			// Sửa đồ dừng theo ĐÚNG ô checkbox Đánh, không theo attackEnabled: state Returning của nó đi thẳng về
 			// tâm bãi nên tắt Đánh mà để chạy tiếp thì nhân vật vẫn tự di chuyển. Huỷ giữa chuyến có thể để nhân vật
 			// đứng lại ở NPC. Dùng attackConfigured để một nhịp rớt layout.AttackReady không giết luôn luồng Sửa đồ.
-			if (!attackConfigured) game.WeaponRepairAutomation.Cancel(game);
+			// Ngoại lệ IsDebugRun: chuyến do người dùng bấm nút "Đi sửa đồ" là lệnh trực tiếp, không phải luồng tự động.
+			bool repairAllowed = attackConfigured || game.WeaponRepairAutomation.IsDebugRun;
+			if (!repairAllowed) game.WeaponRepairAutomation.Cancel(game);
 
 			bool returnToTrainingBusy = attackEnabled && !repairPriority && game.ReturnToTrainingAutomation.Tick(game, snapshot, manualInputActive, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, returnToTrainingBusy);
@@ -236,7 +238,7 @@ public static class AccountEngineCoordinator {
 				return;
 			}
 
-			bool repairBusy = attackConfigured && game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
+			bool repairBusy = repairAllowed && game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, repairBusy);
 			if (repairBusy) {
 				game.AttackEngine.Stop();

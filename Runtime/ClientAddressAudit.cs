@@ -1,5 +1,6 @@
 namespace Auto.Runtime;
 
+using Auto.Attack;
 using Auto.Utils;
 
 // Kiểm tra một lượt toàn bộ địa chỉ client mà DEV auto phụ thuộc, rồi báo cáo trong một khối log duy nhất.
@@ -46,15 +47,21 @@ public static class ClientAddressAudit {
 		("CHAT_SEND_FUNCTION", "ChatSendFunctionRva")
 	];
 
-	// Hằng số trong GameAddresses.Globals không có nơi nào tham chiếu tới; đọc giá trị thô để đối chiếu sau update,
-	// nhưng không kết luận đúng/sai vì không có quy tắc nào trong repo mô tả giá trị hợp lệ của chúng.
+	// Hằng số thật sự không còn nơi nào tham chiếu. Trước 2026-09-08 danh sách này còn chứa 5 hằng số ĐANG được dùng
+	// trong mã sản xuất, và nhãn UNUSED_NO_RULE khiến chúng không bao giờ được kiểm — đúng loại bẫy đã làm mất cả buổi
+	// với NpcConfirmModalVtableRva. Đếm lại bằng grep ngày 2026-09-08, chỉ hằng số dưới đây là 0 tham chiếu.
+	// AttackManager còn trùng vai trò với AttackManagerRva bên native, mà bản native đã dời sang 0x4E2660 trong khi
+	// hằng số managed này vẫn giữ 0x4E0640 của bản game cũ — giữ lại chỉ để đối chiếu, không ai đọc.
 	private static readonly (string Name, int Rva)[] UnusedGlobals = [
-		("CURRENT_TARGET_INDEX", GameAddresses.Globals.CurrentTargetIndex),
-		("ATTACK_MANAGER_MANAGED", GameAddresses.Globals.AttackManager),
-		("MAP_COORDINATE_ROOT", GameAddresses.Globals.MapCoordinateRoot),
-		("COMBAT_TARGET_ROOT", GameAddresses.Globals.CombatTargetRoot),
-		("DIALOG_POINTER", GameAddresses.Globals.DialogPointer),
-		("RETURN_TO_TOWN_MODAL", GameAddresses.Globals.ReturnToTownModal)
+		("ATTACK_MANAGER_MANAGED", GameAddresses.Globals.AttackManager)
+	];
+
+	// Con trỏ toàn cục có tham chiếu thật trong mã. Đều đọc bằng ReadPointer32 rồi lấy field theo offset, nên quy tắc
+	// chung là: bằng 0 thì chưa kết luận được (game chỉ gán khi cần), khác 0 thì phải đọc được vùng nhớ nó trỏ tới.
+	private static readonly (string Name, int Rva, string Users)[] PointerGlobals = [
+		("MAP_COORDINATE_ROOT", GameAddresses.Globals.MapCoordinateRoot, "Loot/Engine.cs:393, Loot/AutoFsGroundItemScanner.cs:28"),
+		("COMBAT_TARGET_ROOT", GameAddresses.Globals.CombatTargetRoot, "Utils/CombatSnapshot.cs:7"),
+		("DIALOG_POINTER", GameAddresses.Globals.DialogPointer, "chỉ DebugTools: ShopRepairDebugCommand.cs:58, ModalVtableProbe.cs:40")
 	];
 
 	// Trả về khối log đã sẵn sàng ghi. Dòng đầu là tóm tắt, các dòng sau là chi tiết từng mục.
@@ -121,6 +128,9 @@ public static class ClientAddressAudit {
 			results.Add(CheckMapIdMirrors(reader, moduleBase));
 			results.Add(CheckShopState(reader, moduleBase));
 			results.Add(CheckModalState(reader, moduleBase));
+			results.Add(CheckCurrentTargetIndex(reader, moduleBase));
+			results.Add(CheckReturnToTownModal(reader, moduleBase));
+			foreach ((string name, int rva, string users) in PointerGlobals) results.Add(CheckPointerGlobal(reader, moduleBase, name, rva, users));
 			foreach ((string name, int rva) in UnusedGlobals) {
 				results.Add(new ManagedResult(name, rva, "UNUSED_NO_RULE", $"Value=0x{ReadRaw(reader, moduleBase, rva):X8} | Note=Hằng số không được tham chiếu ở đâu trong mã nguồn"));
 			}
@@ -233,6 +243,52 @@ public static class ClientAddressAudit {
 			return new ManagedResult("MODAL_STATE", rva, "PASS_POINTER", $"Value=0x{value:X8} | ReturnToTownModal=0x{expectedReturnToTown:X8}");
 		} catch (Exception ex) {
 			return new ManagedResult("MODAL_STATE", rva, "FAIL_READ", $"{ex.GetType().Name}: {ex.Message}");
+		}
+	}
+
+	// Ô này giữ chỉ số entity đang được client target. Giá trị hợp lệ theo AutoFsClientProfile là -1/0 (không có mục
+	// tiêu) hoặc FirstEntityIndex..LastEntityIndex. Đây là ô mà toàn bộ luồng chọn mục tiêu của Đánh dựa vào.
+	private static ManagedResult CheckCurrentTargetIndex(MemoryReader reader, IntPtr moduleBase) {
+		int rva = GameAddresses.Globals.CurrentTargetIndex;
+		try {
+			int value = reader.ReadInt32(IntPtr.Add(moduleBase, rva));
+			bool valid = value >= -1 && value <= AutoFsClientProfile.LastEntityIndex;
+			string detail = $"Value={value} (0x{unchecked((uint)value):X8}) | Expected=-1..{AutoFsClientProfile.LastEntityIndex} | Users=Attack/AutoFsEntityScanner.cs:13,53 + Utils/TargetSelector,MonsterFinder,EntitySnapshot,EntityFinder";
+			return new ManagedResult("CURRENT_TARGET_INDEX", rva, valid ? "PASS_RANGE" : "FAIL_RANGE", detail);
+		} catch (Exception ex) {
+			return new ManagedResult("CURRENT_TARGET_INDEX", rva, "FAIL_READ", $"{ex.GetType().Name}: {ex.Message}");
+		}
+	}
+
+	// RVA này KHÔNG phải con trỏ để đọc: AccountEngineCoordinator.cs:485 dùng chính địa chỉ moduleBase+rva làm giá trị
+	// modal mong đợi khi nhân vật chết. Nên quy tắc là địa chỉ đó phải nằm trong ảnh module, và phải trùng hằng số
+	// ReturnToTownObjectRva bên native — cái đã được mục NATIVE RETURN_TO_TOWN_OBJECT kiểm độc lập.
+	private static ManagedResult CheckReturnToTownModal(MemoryReader reader, IntPtr moduleBase) {
+		int rva = GameAddresses.Globals.ReturnToTownModal;
+		try {
+			uint expected = unchecked((uint)IntPtr.Add(moduleBase, rva).ToInt64());
+			uint vtable = unchecked((uint)reader.ReadInt32(IntPtr.Add(moduleBase, rva)));
+			// Object tĩnh của popup Về thành: ô đầu tiên phải là con trỏ vtable nằm trong module.
+			uint vtableRva = vtable - unchecked((uint)moduleBase.ToInt64());
+			bool valid = vtable != 0 && vtableRva < 0x2000000;
+			string detail = $"ObjectAddress=0x{expected:X8} | Vtable=0x{vtable:X8} | VtableRva=0x{vtableRva:X} | Users=Runtime/AccountEngineCoordinator.cs:485";
+			return new ManagedResult("RETURN_TO_TOWN_MODAL", rva, valid ? "PASS_VTABLE_IN_MODULE" : "FAIL_VTABLE_OUT_OF_MODULE", detail);
+		} catch (Exception ex) {
+			return new ManagedResult("RETURN_TO_TOWN_MODAL", rva, "FAIL_READ", $"{ex.GetType().Name}: {ex.Message}");
+		}
+	}
+
+	private static ManagedResult CheckPointerGlobal(MemoryReader reader, IntPtr moduleBase, string name, int rva, string users) {
+		try {
+			IntPtr pointer = reader.ReadPointer32(IntPtr.Add(moduleBase, rva));
+			if (pointer == IntPtr.Zero) return new ManagedResult(name, rva, "INCONCLUSIVE_NULL", $"Con trỏ bằng 0, game chưa gán | Users={users}");
+			// Khác 0 thì phải đọc được vùng nó trỏ tới; RVA lệch thường cho ra số rác không map được.
+			byte[] probe = reader.ReadBytes(pointer, sizeof(int));
+			bool readable = probe.Length == sizeof(int);
+			string detail = $"Pointer=0x{pointer.ToInt64():X8} | Readable={readable} | Users={users}";
+			return new ManagedResult(name, rva, readable ? "PASS_POINTER_READABLE" : "FAIL_POINTER_UNREADABLE", detail);
+		} catch (Exception ex) {
+			return new ManagedResult(name, rva, "FAIL_READ", $"{ex.GetType().Name}: {ex.Message}");
 		}
 	}
 
