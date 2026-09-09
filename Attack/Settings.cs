@@ -3,7 +3,7 @@ namespace Auto.Attack;
 public sealed class Settings {
 	public bool Enabled { get; set; }
 
-	public bool EnableReturnToTraining { get; set; }
+	public bool EnableReturnToTraining { get; set; } = true;
 
 	public bool OnlySelectedMonster { get; set; }
 
@@ -91,7 +91,7 @@ public sealed class Settings {
 	// trong EliteAvoidance.Distance. <= 0 nghĩa là tắt né nhưng vẫn lọc mục tiêu.
 	public int EliteAvoidRadius { get; set; } = 500;
 
-	public int Range { get; set; } = 1200;
+	public int Range { get; set; } = 2000;
 
 	public int CenterX { get; set; }
 
@@ -101,7 +101,7 @@ public sealed class Settings {
 	// nên đứng ở map khác vẫn đem toạ độ ra trừ nhau và không thể đi xuyên map về đúng bãi.
 	public int CenterMapId { get; set; }
 
-	public bool UseCenterPosition { get; set; }
+	public bool UseCenterPosition { get; set; } = true;
 
 	public int MinHpPercent { get; set; } = 30;
 

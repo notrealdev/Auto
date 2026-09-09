@@ -35,7 +35,7 @@ public sealed class Settings {
 		ItemSelections["Đồ Vàng"] = true;
 		ItemSelections["Đồ Cam"] = true;
 		ItemSelections["Đồ Khác"] = true;
-		ItemSelections["Dược Phẩm"] = false;
+		ItemSelections["Dược Phẩm"] = true;
 		ItemSelections["Mảnh, Ngọc"] = true;
 		ItemSelections["Bí Kíp"] = true;
 		ItemSelections["Pháp Bảo"] = true;

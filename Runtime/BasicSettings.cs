@@ -8,9 +8,10 @@ public enum DeathAction {
 }
 
 public sealed class BasicSettings {
-	public bool EnableLowHpReturnTalisman { get; set; }
+	// Mặc định bật, ngưỡng 15% chốt với chủ dự án 2026-09-08.
+	public bool EnableLowHpReturnTalisman { get; set; } = true;
 
-	public int LowHpReturnTalismanThreshold { get; set; } = 10;
+	public int LowHpReturnTalismanThreshold { get; set; } = 15;
 
 	public bool EnableWeaponRepair { get; set; } = true;
 

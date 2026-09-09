@@ -1,4 +1,4 @@
-namespace Auto.UI.ViewModels;
+﻿namespace Auto.UI.ViewModels;
 
 using System.Collections.ObjectModel;
 using Auto.DebugTools;
@@ -12,6 +12,9 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolClientAddressAudit = "Thông tin địa chỉ client";
 	private const string ToolInventoryInfo = "Thông tin túi đồ";
 	private const string ToolEliteMonsterInfo = "Thông tin quái thủ lĩnh";
+	private const string ToolPetOwner = "Thông tin Đệ";
+	private const string ToolReturnTalisman = "Thông tin Hồi thành phù";
+	private const string ToolHotkeyReturnTalisman = "Dùng Hồi thành phù bằng phím tắt";
 	// Hai probe chẩn đoán popup NPC. Đã bị xoá nhầm lúc dọn probe 2026-09-07 rồi khôi phục 2026-09-08 khi luồng
 	// Sửa đồ với NPC dạng popup xác nhận hỏng mà không còn công cụ nào đọc được vtable thật của popup.
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
@@ -50,6 +53,9 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolClientAddressAudit,
 		ToolInventoryInfo,
 		ToolEliteMonsterInfo,
+		ToolPetOwner,
+		ToolReturnTalisman,
+		ToolHotkeyReturnTalisman,
 		ToolModalVtable,
 		ToolNpcMenuCapture,
 		ToolImmediateSale,
@@ -85,6 +91,15 @@ public sealed class DebugViewModel : ViewModelBase {
 				return;
 			case ToolEliteMonsterInfo:
 				StartEliteMonsterInfo();
+				return;
+			case ToolPetOwner:
+				StartPetOwnerProbe();
+				return;
+			case ToolReturnTalisman:
+				StartReturnTalismanProbe();
+				return;
+			case ToolHotkeyReturnTalisman:
+				StartHotkeyReturnTalisman();
 				return;
 			case ToolModalVtable:
 				StartModalVtableProbe();
@@ -143,6 +158,45 @@ public sealed class DebugViewModel : ViewModelBase {
 		string result = await Task.Run(() => EliteMonsterProbe.Run(processId));
 		DebugLog.AddDebugForProcess(processId, result);
 		AccountInfoText = $"PID={processId} | {result}";
+	}
+
+	// Dò cách tách Đệ của nhân vật ra khỏi các entity type 6 khác. Phải có Đệ đang ra ngoài khi chạy.
+	private async void StartPetOwnerProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang quét entity type 6...";
+		string result = await Task.Run(() => PetOwnerProbe.Run(processId));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
+	// Kiểm từng cổng của tính năng Hồi thành phù, không đụng gì vào game.
+	private async void StartReturnTalismanProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		AccountInfoText = $"PID={target.ProcessId} | Đang kiểm tính năng Hồi thành phù...";
+		string result = await Task.Run(() => ReturnTalismanProbe.Inspect(target));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = $"PID={target.ProcessId} | {result}";
+	}
+
+	// GỬI PHÍM THẬT vào cửa sổ game theo đường phím tắt trang bị nhanh. Bùa phải nằm ở container 11.
+	private async void StartHotkeyReturnTalisman() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		AccountInfoText = $"PID={target.ProcessId} | Đang gửi phím tắt trang bị nhanh...";
+		string result = await Task.Run(() => ReturnTalismanProbe.UseByHotkey(target));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = $"PID={target.ProcessId} | {result}";
 	}
 
 	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.

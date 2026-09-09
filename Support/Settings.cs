@@ -5,11 +5,12 @@ public sealed class Settings {
 	public bool BuffThreeSystems { get; set; } = true;
 
 
-	public bool HealOwner { get; set; }
+	// Buff Chủ/Đệ mặc định bật, ngưỡng chốt với chủ dự án 2026-09-08: Chủ 45%, Đệ 30%.
+	public bool HealOwner { get; set; } = true;
 
-	public int HealOwnerHpPercent { get; set; } = 30;
+	public int HealOwnerHpPercent { get; set; } = 45;
 
-	public bool HealPet { get; set; }
+	public bool HealPet { get; set; } = true;
 
 	public int HealPetHpPercent { get; set; } = 30;
 }

@@ -56,6 +56,18 @@ internal sealed class AutoFsActionGate {
 		lock (syncRoot) return AutomationEnabled && action();
 	}
 
+	// Đường dành riêng cho DebugTools: BỎ QUA công tắc tổng nhưng VẪN giữ khoá syncRoot.
+	//
+	// Lý do bỏ công tắc: công cụ chẩn đoán do chủ dự án tự bấm từng lần, và nó thường phải chạy đúng lúc tài khoản
+	// đang tắt để thử một mình. Bắt bật công tắc tổng thì hoặc là không chẩn được, hoặc phải bật cả automation lên
+	// rồi các engine khác cùng chen lệnh vào, làm bẩn phép đo.
+	//
+	// Lý do GIỮ khoá: hai lệnh gửi đồng thời vào cùng một client vẫn hỏng như thường, kể cả khi một trong hai là
+	// lệnh chẩn đoán. Khoá là thứ chống việc đó, không liên quan gì tới công tắc bật/tắt.
+	public bool RunDebugCommand(Func<bool> action) {
+		lock (syncRoot) return action();
+	}
+
 	public void SetLootSuspended(string owner, bool suspended) {
 		lock (suspensionSyncRoot) {
 			if (suspended) lootSuspensionOwners.Add(owner);

@@ -31,6 +31,13 @@ namespace {
 	// 2026-09-06: nhân vật đi tới chỗ đồ rơi lúc nhặt không hiện cờ).
 	// Toạ độ X gửi trước qua MovementXCommand ở dạng RAW (không chia 32), rồi chốt bằng lệnh này với Y raw.
 	constexpr WPARAM WalkToCommand = 321;
+	// Dấu phiên bản của chính DLL này, trả về cho phía C# đọc.
+	//
+	// Lý do có: DLL được inject vào tiến trình game và SỐNG LÂU HƠN một phiên chạy Auto. Sau khi build lại
+	// native, không có cách nào biết tiến trình game đang chạy bản cũ hay bản mới — mà đo trên bản cũ thì mọi
+	// kết luận đều vô nghĩa. Bump số này MỖI LẦN sửa native.
+	constexpr WPARAM NativeBuildStampCommand = 322;
+	constexpr int NativeBuildStamp = 20260909;
 	constexpr int AuditEntryCount = 28;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
@@ -617,15 +624,52 @@ namespace {
 		int expectedItemId = static_cast<int>(packedItem >> 11);
 		uintptr_t slotListPointerOffset = 0;
 		int slotCount = 0;
+		// Mã container mà CHÍNH CLIENT dùng, khác hẳn số 11/3/16 thừa hưởng từ AutoFS.
+		//
+		// Dịch ngược hàm điều phối container tại RVA 0x3714D0 trên PID 22056 ngày 2026-09-09:
+		//     mov cl,[edx+1]                  ; mã container
+		//     test cl,cl / je   -> lea ecx,[ecx+0x4B7BC]      (mã 0)
+		//     cmp cl,0x0E / je  -> lea ecx,[ecx+0x4B9EC]      (mã 14)
+		//     lea eax,[ecx-0x13] / cmp al,9 / ja              (mã 19..28)
+		//     lea ecx,[eax+eax*4] / lea ecx,[ecx*8+0x4B7BC]   ; = 40*mã + 0x4B7BC
+		// Nghĩa là container là MẢNG phần tử 40 byte tại gốc+0x4B7BC, và ba offset danh sách ô mà Auto đã
+		// xác minh chính là 40*mã: 0x0000=40*0, 0x230=40*14, 0x2F8=40*19. Mã hợp lệ duy nhất là 0, 14, 19..28.
+		//
+		// Vì vậy số 11 mà descriptor cũ gửi đi không trỏ tới container nào.
+		//
+		// ĐÃ THỬ VÀ BỊ BÁC BỎ 2026-09-09: đổi sang mã client rồi đo lại trên PID 14236, bùa thường trong túi
+		// (Container=3, Slot=27, SốLượng=4), với dấu phiên bản native xác nhận bản mới đang chạy
+		// (BuildStamp=20260909). Kết quả vẫn SốLượng 4 -> 4 và Map ID không đổi. Mã container KHÔNG phải nguyên
+		// nhân. Giữ lại ánh xạ này vì nó khớp cấu trúc client đã dịch ngược, nhưng nó không sửa được gì.
+		//
+		// TOÀN BỘ ĐƯỜNG LỆNH 310 HIỆN COI NHƯ CHẾT. Luồng thật dùng phím tắt ô trang bị nhanh
+		// (AutoFsAttackTransport.TryUseQuickSlotHotkey), đã đo được MapId 37 -> 21 và SốLượng 1 -> 0.
+		//
+		// Những gì đã loại, để người sau khỏi dò lại:
+		//   - InventoryUsePrepareOpcode 0x12A KHÔNG có trong DLL native của AutoFS (quét toàn .text, 0 chỗ).
+		//     Nó do DEV auto tự nghĩ ra, không phải port từ AutoFS.
+		//   - AutoFS không gửi một lệnh gói. Nó gửi BỐN message tới hook của chính nó (WindowQueue.cs:23971):
+		//     cmd 0=itemId, cmd 1=container, cmd 2=slot/5, cmd 10=slot%5 kèm kích hoạt.
+		//   - Handler thật trong DLL AutoFS ở 0x1000196F, gọi trực tiếp:
+		//         this = *(Game.exe + 0x5EB2FC) + 0x2E5E4
+		//         FUN_005B64D0(this, itemId, container, cot, hang, 0)
+		//   - Hai địa chỉ đó KHÔNG port sang client hiện tại: *(0x5EB2FC) và *(0x5ED31C) đều đọc ra NULL, còn
+		//     RVA 0x1B64D0 rơi vào giữa hàm chứ không phải mở đầu. DLL AutoFS đề Nov 2024, client là 2026-08.
+		//   - Không trích được chữ ký từ file: mọi Game.exe đều bị nén (section TML có RawSize=0), code chỉ tồn
+		//     tại sau khi giải nén trong bộ nhớ. Muốn dò tiếp buộc phải quét trên tiến trình đang chạy.
+		int clientContainerCode = -1;
 		if (container == 11) {
 			slotListPointerOffset = GameClientAddresses::InventoryQuickSlotListPointerOffset;
 			slotCount = GameClientAddresses::InventoryQuickSlotCount;
+			clientContainerCode = 14;
 		} else if (container == 3) {
 			slotListPointerOffset = GameClientAddresses::InventorySlotListPointerOffset;
 			slotCount = GameClientAddresses::InventorySlotCount;
+			clientContainerCode = 0;
 		} else if (container == 16) {
 			slotListPointerOffset = GameClientAddresses::InventoryExtendedSlotListPointerOffset;
 			slotCount = GameClientAddresses::InventoryExtendedSlotCount;
+			clientContainerCode = 19;
 		}
 		if (memoryIndex < 0 || memoryIndex >= slotCount || expectedItemId <= 0) {
 			return 10;
@@ -670,7 +714,7 @@ namespace {
 		getCoordinates(&coordinateX, &coordinateY);
 		uint32_t descriptor[7]{
 			static_cast<uint32_t>(expectedItemId),
-			static_cast<uint32_t>(container),
+			static_cast<uint32_t>(clientContainerCode),
 			static_cast<uint32_t>(memoryIndex / 5),
 			static_cast<uint32_t>(memoryIndex % 5),
 			0,
@@ -927,6 +971,9 @@ namespace {
 			}
 			if (wParam == PassiveBuffCommand) {
 				return TryDispatchPassiveBuff(static_cast<int>(lParam));
+			}
+			if (wParam == NativeBuildStampCommand) {
+				return NativeBuildStamp;
 			}
 			if (wParam == AuditAddressCommand) {
 				int index = static_cast<int>(lParam);

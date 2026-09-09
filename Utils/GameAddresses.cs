@@ -71,6 +71,20 @@ public static class GameAddresses {
 	}
 
 	public static class Inventory {
+		// Gốc MẢNG container, không phải một đối tượng đơn lẻ.
+		//
+		// Dịch ngược hàm điều phối của client tại RVA 0x3714D0 (PID 22056, 2026-09-09): container là mảng phần
+		// tử 40 byte bắt đầu tại đây, đánh chỉ số bằng mã container, và client chỉ chấp nhận mã 0, 14, 19..28:
+		//     test cl,cl / je   -> lea ecx,[ecx+0x4B7BC]      (mã 0)
+		//     cmp cl,0x0E / je  -> lea ecx,[ecx+0x4B9EC]      (mã 14)
+		//     lea eax,[ecx-0x13] / cmp al,9 / ja              (mã 19..28)
+		//     lea ecx,[eax+eax*4] / lea ecx,[ecx*8+0x4B7BC]   ; = 40*mã + 0x4B7BC
+		// Nghĩa là ba hằng số *SlotListPointer dưới đây chính là 40*mã chứ không phải ba offset rời rạc:
+		//     0x0000 = 40*0   túi chính
+		//     0x0230 = 40*14  ô trang bị nhanh
+		//     0x02F8 = 40*19  rương 2
+		// Ba số này dò ra bằng probe ngày 2026-09-07 và chủ dự án đã đối chiếu tên/số lượng vật phẩm trong game.
+		// Lưu ý mã container của AutoFS (3/11/16) KHÁC mã của client (0/14/19).
 		public const int Object = 0x4B7BC;
 		public const int SaleSlotListPointer = 0x0000;
 		public const int SaleSlotCount = 35;

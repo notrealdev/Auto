@@ -7,12 +7,13 @@ internal sealed class AutoFsAttackTransport {
 	private const string SourceLibraryName = "SystemUint.Source.dll";
 	private const string HookMessageName = "WM_HOOK_WRITE";
 	private const int AttackCommand = 300;
-	private const int UseInventoryItemCommand = 310;
-	private const int InventoryContainerShift = 6;
-	private const int InventoryItemIdShift = 11;
-	private const int MaximumInventoryMemoryIndex = 0x3F;
-	private const int MaximumInventoryContainer = 0x1F;
-	private const int MaximumInventoryItemId = 0x001FFFFF;
+	private const int NativeBuildStampCommand = 322;
+	public const int QuickSlotContainer = 11;
+	public const int QuickSlotCount = 4;
+	private const uint WmKeyDown = 0x0100;
+	private const uint WmKeyUp = 0x0101;
+	private const int VirtualKeyOne = 0x31;
+	private const int ScanCodeOne = 0x02;
 	private const int BeginScriptCommand = 311;
 	private const int AppendScriptByteCommand = 34;
 	private const int SendChatCommand = 312;
@@ -43,6 +44,12 @@ internal sealed class AutoFsAttackTransport {
 	public AutoFsAttackTransport(AutoFsActionGate actionGate) {
 		this.actionGate = actionGate;
 	}
+
+	// Lộ trạng thái cổng ra ngoài để DebugTools báo trước được. Mọi hàm gửi lệnh dưới đây đều bị chặn khi cổng
+	// đóng, mà thông báo chặn chỉ hiện ra SAU khi đã bấm gửi — kiểm trước thì đỡ tốn một vòng thử.
+	public bool MasterEnabled => actionGate.MasterEnabled;
+
+	public bool AutomationEnabled => actionGate.AutomationEnabled;
 
 	public static bool TryValidateDependency(out string error) {
 		error = "";
@@ -92,20 +99,45 @@ internal sealed class AutoFsAttackTransport {
 		return sent;
 	}
 
-	// Gửi đúng command 310 của DEV auto với descriptor đóng gói mà native handler đọc lại theo bit.
-	public bool TryUseInventoryItem(IntPtr gameWindow, int itemId, int container, int memoryIndex, out string error) {
+	// Dùng vật phẩm ở ô trang bị nhanh bằng PHÍM TẮT của chính client.
+	//
+	// Đây là đường DUY NHẤT để dùng vật phẩm. Lệnh 310 đã bị gỡ ngày 2026-09-09: đo trên PID 22056 nó chạy trọn
+	// native tới return 1 nhưng game KHÔNG trừ vật phẩm (SốLượng 1 -> 1) và không đổi map, trong khi đường phím tắt
+	// cho SốLượng 1 -> 0 và MapId 37 -> 21. Đợt dò tìm hàm dùng vật phẩm thật của client sau đó cũng không ra kết
+	// quả (chi tiết ở LowHpReturnTalismanEngine), nên hệ quả đã chấp nhận: vật phẩm phải nằm ở ô trang bị nhanh.
+	//
+	// Ô trang bị nhanh hiện trên màn hình đánh số 1..4, slot trong bộ nhớ đếm từ 0.
+	public bool TryUseQuickSlotHotkey(IntPtr gameWindow, int slotIndex, out string error) {
 		if (! actionGate.AutomationEnabled) {
 			error = "Master automation switch is disabled.";
 			return false;
 		}
-		if (itemId <= 0 || itemId > MaximumInventoryItemId || container < 0 || container > MaximumInventoryContainer || memoryIndex < 0 || memoryIndex > MaximumInventoryMemoryIndex) {
-			error = $"Invalid inventory descriptor. ItemId={itemId}, Container={container}, MemoryIndex={memoryIndex}.";
+		return TryUseQuickSlotHotkeyCore(gameWindow, slotIndex, false, out error);
+	}
+
+	public bool TryUseQuickSlotHotkeyForDebug(IntPtr gameWindow, int slotIndex, out string error) {
+		return TryUseQuickSlotHotkeyCore(gameWindow, slotIndex, true, out error);
+	}
+
+	private bool TryUseQuickSlotHotkeyCore(IntPtr gameWindow, int slotIndex, bool debugRun, out string error) {
+		if (gameWindow == IntPtr.Zero || slotIndex < 0 || slotIndex >= QuickSlotCount) {
+			error = $"Invalid quick-slot hotkey. Window=0x{gameWindow.ToInt64():X}, SlotIndex={slotIndex}.";
 			return false;
 		}
-		int packedItem = unchecked((int)(((uint)itemId << InventoryItemIdShift) | ((uint)container << InventoryContainerShift) | (uint)memoryIndex));
+		int virtualKey = VirtualKeyOne + slotIndex;
+		int scanCode = ScanCodeOne + slotIndex;
+		IntPtr downLParam = new((scanCode << 16) | 1);
+		IntPtr upLParam = new(unchecked((int)(0xC0000000u | (uint)(scanCode << 16) | 1u)));
 		string currentError = "";
-		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, UseInventoryItemCommand, packedItem, out currentError));
-		error = sent || currentError.Length > 0 ? currentError : "Automatic command gate rejected the inventory-item sequence.";
+		bool Send() {
+			if (! PostMessageA(gameWindow, WmKeyDown, new IntPtr(virtualKey), downLParam) || ! PostMessageA(gameWindow, WmKeyUp, new IntPtr(virtualKey), upLParam)) {
+				currentError = $"PostMessageA failed. VirtualKey=0x{virtualKey:X2}, Win32Error={Marshal.GetLastWin32Error()}.";
+				return false;
+			}
+			return true;
+		}
+		bool sent = debugRun ? actionGate.RunDebugCommand(Send) : actionGate.RunCommand(Send);
+		error = sent || currentError.Length > 0 ? currentError : "Automatic command gate rejected the quick-slot hotkey.";
 		return sent;
 	}
 
@@ -172,6 +204,24 @@ internal sealed class AutoFsAttackTransport {
 			return false;
 		}
 		result = value.ToUInt64();
+		return true;
+	}
+
+	// Đọc dấu phiên bản của DLL native ĐANG SỐNG trong tiến trình game.
+	//
+	// DLL được inject vào game và tồn tại lâu hơn một phiên chạy Auto, nên sau khi build lại native không có
+	// cách nào biết tiến trình game đang chạy bản cũ hay mới. Đo trên bản cũ thì mọi kết luận đều vô nghĩa —
+	// đúng cái bẫy đã suýt làm hỏng kết luận về lệnh 310 ngày 2026-09-09.
+	// Không qua AutoFsActionGate vì đây là lệnh chỉ đọc và phải chạy được cả khi Auto đang tắt.
+	public bool TryQueryNativeBuildStamp(IntPtr gameWindow, out ulong stamp, out string error) {
+		stamp = 0;
+		if (! TryEnsureReceiver(gameWindow, out error)) return false;
+		IntPtr sent = SendMessageTimeoutA(gameWindow, hookMessage, (IntPtr)NativeBuildStampCommand, IntPtr.Zero, SmtoAbortIfHung, SendMessageTimeoutMilliseconds, out UIntPtr value);
+		if (sent == IntPtr.Zero) {
+			error = $"SendMessageTimeoutA failed. Command={NativeBuildStampCommand}, Win32Error={Marshal.GetLastWin32Error()}";
+			return false;
+		}
+		stamp = value.ToUInt64();
 		return true;
 	}
 
