@@ -8,6 +8,8 @@ public sealed class Finder {
 	// Đơn vị là raw: 1 ô toạ độ hiển thị = 256 raw theo trục X và 512 raw theo trục Y, nên 150 raw chưa tới nửa ô.
 	// public để Loot/Engine dùng chung đúng con số này cho chốt chặn OUT_OF_SCAN_RADIUS trong vòng lặp nhặt.
 	public const int PlayerScanRadius = 150;
+	// Một chỗ duy nhất giữ nhãn nhóm "Vũ khí xanh": Finder đọc, LootViewModel dựng ô tick, Settings đặt mặc định.
+	public const string GreenWeaponSelectionName = "Vũ khí xanh";
 
 	private readonly Settings settings;
 	private readonly AutoFsGroundItemScanner spriteItemScanner = new();
@@ -26,6 +28,8 @@ public sealed class Finder {
 	}
 
 	public LootFindResult Find(GameSnapshot snapshot) {
+		long profilerStart = Auto.Runtime.HotPathProfiler.Begin();
+		try {
 		LootFindResult result = new LootFindResult { ProcessId = snapshot.ProcessId };
 
 		if (!snapshot.Success) {
@@ -64,6 +68,9 @@ public sealed class Finder {
 			result.FailReason = ex.Message;
 			return result;
 		}
+		} finally {
+			Auto.Runtime.HotPathProfiler.End(Auto.Runtime.HotPathProfiler.LootScan, profilerStart);
+		}
 	}
 
 	public LootFilterDecision EvaluateFilter(LootSnapshot item) {
@@ -74,6 +81,19 @@ public sealed class Finder {
 
 	public void InvalidatePotionCounts() => potionCounter.Invalidate();
 
+	// Đếm TƯƠI số lượng một item bất kỳ trong túi. Bỏ cache trước khi đọc vì nơi gọi cần so trước/sau một lệnh nhặt,
+	// mà cache còn hạn sẽ trả về đúng con số cũ ở cả hai lần đo.
+	//
+	// Dùng lại nguyên InventoryPotionCounter: Refresh của nó gom TẤT CẢ tên trong 3 container chứ không riêng dược
+	// phẩm, chỉ có GetPotionLimitReason mới giới hạn ở 6 loại trong popup.
+	public bool TryCountInInventory(int processId, string itemName, out int count) {
+		count = 0;
+		string key = InventoryPotionCounter.ToKey(itemName);
+		if (key.Length == 0) return false;
+		potionCounter.Invalidate();
+		return potionCounter.TryGetCount(processId, key, out count);
+	}
+
 	public string[] ConsumePotionCountDiagnostics() => potionCounter.ConsumeDiagnostics();
 
 	// Áp dụng category đã biết trước item riêng để checkbox category luôn có quyền quyết định
@@ -83,7 +103,17 @@ public sealed class Finder {
 		if (GetExclusionReason(itemName, item, settings).Length > 0) return false;
 		bool explicitlySelected = IsExactItemSelected(settings, itemName);
 		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(itemName);
-		if (specialCategory != AutoFsSpecialItemCategory.None) return IsSelected(settings, GetSelectionName(specialCategory));
+		// "Vũ khí xanh" là nhóm CHỈ THÊM, không bao giờ bớt — khác mọi nhóm còn lại.
+		//
+		// Chủ dự án chốt 2026-09-12: các ô tick màu (Đồ Lục / Đồ Vàng / Đồ Cam) giữ quyền ƯU TIÊN SỐ 1. Nên ở đây
+		// chỉ nhận thẳng khi tên nằm trong danh sách VÀ màu là xanh lục; mọi trường hợp còn lại rơi xuống nguyên
+		// luật cũ bên dưới thay vì return false. Nhờ vậy rìu vàng/cam vẫn được nhặt qua ô tick màu của chúng, và
+		// nhóm này không thể làm mất món nào so với trước khi có nó.
+		if (specialCategory == AutoFsSpecialItemCategory.GreenWeapon) {
+			if (IsSelected(settings, GreenWeaponSelectionName) && item.Color == ItemColor.Green) return true;
+		} else if (specialCategory != AutoFsSpecialItemCategory.None) {
+			return IsSelected(settings, GetSelectionName(specialCategory));
+		}
 		// Ngưỡng số lượng đặt TRƯỚC nhánh explicitlySelected: gõ tay tên dược phẩm vào ô "Vật phẩm" cũng không vượt được giới hạn.
 		if (GetPotionLimitReason(snapshot, itemName).Length > 0) return false;
 		bool allowed = explicitlySelected
@@ -153,7 +183,7 @@ public sealed class Finder {
 		return false;
 	}
 	private static bool IsBuiltInSelection(string name) {
-		return name is "Đồ Trắng" or "Đồ Xanh" or "Đồ Lục" or "Đồ Vàng" or "Đồ Cam" or "Đồ Khác" or "Dược Phẩm" or "Mảnh, Ngọc" or "Bí Kíp" or "Pháp Bảo" or "Quẻ" or "Lục Đạo" or "Tứ Tượng" or "Nhãn Vạn Tiên Trận";
+		return name is "Đồ Trắng" or "Đồ Xanh" or "Đồ Lục" or "Đồ Vàng" or "Đồ Cam" or "Đồ Khác" or "Dược Phẩm" or "Thảo Dược" or GreenWeaponSelectionName or "Mảnh, Ngọc" or "Bí Kíp" or "Pháp Bảo" or "Quẻ" or "Lục Đạo" or "Tứ Tượng" or "Nhãn Vạn Tiên Trận";
 	}
 	private static string GetSelectionName(AutoFsSpecialItemCategory category) {
 		return category switch {
@@ -163,6 +193,8 @@ public sealed class Finder {
 			AutoFsSpecialItemCategory.SixPaths => "Lục Đạo",
 			AutoFsSpecialItemCategory.FourSymbols => "Tứ Tượng",
 			AutoFsSpecialItemCategory.ImmortalFormationLabel => "Nhãn Vạn Tiên Trận",
+			AutoFsSpecialItemCategory.Herb => "Thảo Dược",
+			AutoFsSpecialItemCategory.GreenWeapon => GreenWeaponSelectionName,
 			_ => ""
 		};
 	}
@@ -177,7 +209,11 @@ public sealed class Finder {
 		if (exclusionReason.Length > 0) return exclusionReason;
 		if (accepted) return "ALLOWED";
 		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(snapshot.ItemNameRaw);
-		if (specialCategory != AutoFsSpecialItemCategory.None) return $"AUTOFS_{specialCategory.ToString().ToUpperInvariant()}_DISABLED";
+		// GreenWeapon KHÔNG báo AUTOFS_..._DISABLED: nhóm đó chỉ thêm chứ không loại, nên món bị bỏ là do luật màu
+		// bên dưới chứ không phải do ô tick "Vũ khí xanh". Báo nhầm ở đây là gửi chủ dự án đi sai hướng khi đọc log.
+		if (specialCategory != AutoFsSpecialItemCategory.None && specialCategory != AutoFsSpecialItemCategory.GreenWeapon) {
+			return $"AUTOFS_{specialCategory.ToString().ToUpperInvariant()}_DISABLED";
+		}
 		// Phải đứng trước nhánh MEDICINE_DISABLED bên dưới, nếu không log sẽ báo là checkbox bị tắt trong khi thật ra là chạm ngưỡng.
 		string potionLimitReason = GetPotionLimitReason(snapshot, itemName);
 		if (potionLimitReason.Length > 0) return potionLimitReason;

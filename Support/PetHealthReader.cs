@@ -11,6 +11,11 @@ internal sealed record PetHealthReading(bool Success, bool Present, int EntityIn
 
 internal static class PetHealthReader {
 	private const int PetEntityType = 6;
+	// Chỉ số giả để TryReadPetAt báo "là Đệ nhưng của người khác", tách khỏi "không phải Đệ".
+	private const int ForeignPetMarker = -1;
+	// Ô entity của Đệ ở lần tìm thành công gần nhất, khoá theo tiến trình. ConcurrentDictionary vì nhiều account
+	// được TickOne xử lý song song (AccountListViewModel dùng Parallel.ForEach).
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> cachedPetIndexByProcess = new();
 
 	// Mã nhân vật của CHỦ con Đệ, và mã nhân vật của chính mình. Bằng nhau tức là Đệ của mình.
 	//
@@ -51,8 +56,17 @@ internal static class PetHealthReader {
 	private const int OwnerCharacterId = 0x0008;
 	private const int PetOwnerCharacterId = 0x429C;
 
+	// Khối đầu bản ghi entity, gom hai trường phải đọc cho MỌI entity: EntityType (0x0028) và LifecycleStatus
+	// (0x01E8). Suy ra từ AutoFsClientProfile nên đổi offset bên đó là ở đây tự theo.
+	private const int HeaderBase = AutoFsClientProfile.Level;
+	private const int HeaderTypeOffset = AutoFsClientProfile.EntityType - HeaderBase;
+	private const int HeaderStatusOffset = AutoFsClientProfile.LifecycleStatus - HeaderBase;
+	private const int EntityHeaderSize = HeaderStatusOffset + sizeof(int);
+
 	// Đọc HP Đệ từ entity type 6 bằng chính entity layout đã xác nhận của client hiện tại.
 	public static PetHealthReading Read(int processId) {
+		long profilerStart = HotPathProfiler.Begin();
+		try {
 		try {
 			using MemoryReader reader = new(processId);
 			RuntimeLayout layout = RuntimeLayoutResolver.Resolve(processId);
@@ -63,22 +77,33 @@ internal static class PetHealthReader {
 			int ownerId = reader.ReadInt32(IntPtr.Add(IntPtr.Add(entityTable, layout.PlayerRecordOffset), OwnerCharacterId));
 			if (ownerId == 0) return PetHealthReading.Fail("Không đọc được mã nhân vật tại +0x08.");
 
+			// ĐƯỜNG NHANH: thử lại đúng ô đã tìm được lần trước thay vì quét lại cả 510 ô.
+			//
+			// Đệ hầu như không đổi ô giữa hai nhịp 100ms. Đo ngày 2026-09-14 (perf.log): hàm này chạy 44 lần/giây và
+			// mỗi lần tốn ~1040us vì quét đủ 510 ô — tức ~22.000 lần đọc bộ nhớ mỗi giây chỉ để tìm một con.
+			// Đường nhanh chỉ tốn 3 lần đọc.
+			//
+			// AN TOÀN vì kiểm lại ĐẦY ĐỦ đúng những điều kiện của vòng quét: type 6, chưa kết thúc, HP hợp lệ, và mã
+			// chủ khớp. Sai bất kỳ điều nào là bỏ cache, quét lại toàn bảng — nên Đệ chết, đổi ô, hay gọi con khác đều
+			// tự phục hồi ở đúng nhịp kế tiếp.
+			//
+			// Đánh đổi đã biết: phép kiểm "hai Đệ cùng mã chủ" ở cuối hàm chỉ còn chạy trong lượt quét đầy đủ. Chấp
+			// nhận được vì tính tới 2026-09-08 đã 1294 lượt chưa lần nào chạm nhánh đó.
+			byte[] header = new byte[EntityHeaderSize];
+			if (cachedPetIndexByProcess.TryGetValue(processId, out int cachedIndex)) {
+				PetHealthReading cached = TryReadPetAt(reader, layout, entityTable, cachedIndex, ownerId, header);
+				if (cached.Present) return cached;
+				cachedPetIndexByProcess.TryRemove(processId, out _);
+			}
+
 			List<PetHealthReading> candidates = [];
 			int foreignPets = 0;
+			// Lượt quét ĐẦY ĐỦ: chỉ chạy khi chưa có cache hoặc ô cache không còn đúng.
+			// MỘT lần đọc lấy cả EntityType (0x0028) lẫn LifecycleStatus (0x01E8) — hai trường nằm gọn trong 456 byte.
 			for (int index = AutoFsClientProfile.FirstEntityIndex; index <= AutoFsClientProfile.LastEntityIndex; index++) {
-				IntPtr entity = IntPtr.Add(entityTable, index * layout.EntityStride);
-				if (reader.ReadInt32(IntPtr.Add(entity, AutoFsClientProfile.EntityType)) != PetEntityType) continue;
-				if (reader.ReadInt32(IntPtr.Add(entity, AutoFsClientProfile.LifecycleStatus)) == AutoFsClientProfile.FinishedStatus) continue;
-				int currentHp = reader.ReadInt32(IntPtr.Add(entity, layout.HpOffset));
-				int maximumHp = reader.ReadInt32(IntPtr.Add(entity, layout.MaxHpOffset));
-				if (currentHp <= 0 || maximumHp <= 0 || currentHp > maximumHp) continue;
-				// Đệ của người khác bị loại ở đây thay vì làm cả hàm bail như trước.
-				int petOwnerId = reader.ReadInt32(IntPtr.Add(entity, PetOwnerCharacterId));
-				if (petOwnerId != ownerId) {
-					foreignPets++;
-					continue;
-				}
-				candidates.Add(new PetHealthReading(true, true, index, currentHp, maximumHp, $"EntityType={PetEntityType}; EntityIndex={index}; OwnerId={ownerId}; Source=OWNER_ID_MATCH."));
+				PetHealthReading found = TryReadPetAt(reader, layout, entityTable, index, ownerId, header);
+				if (found.Present) candidates.Add(found);
+				else if (found.EntityIndex == ForeignPetMarker) foreignPets++;
 			}
 			// Không con nào mang mã chủ của mình = coi như không có Đệ, để luồng Buff Đệ nhả quyền sạch sẽ.
 			// Nếu offset mã chủ sai thì nhánh này chạy suốt: Buff Đệ không kích, nhưng nhân vật KHÔNG bị treo.
@@ -90,9 +115,37 @@ internal static class PetHealthReader {
 			// Tính tới 22:48 ngày 2026-09-08, 1294 lượt buff Đệ trong Release\Diagnostics\buff.log chưa lần nào
 			// chạm nhánh này.
 			if (candidates.Count > 1) return PetHealthReading.Fail($"Có {candidates.Count} entity type 6 cùng mang mã chủ {ownerId}; mã chủ không tách được duy nhất.");
+			cachedPetIndexByProcess[processId] = candidates[0].EntityIndex;
 			return candidates[0];
 		} catch (Exception ex) {
 			return PetHealthReading.Fail($"{ex.GetType().Name}: {ex.Message}");
 		}
+		} finally {
+			HotPathProfiler.End(HotPathProfiler.PetRead, profilerStart);
+		}
+	}
+
+	// Đọc và kiểm ĐỦ một ô entity xem có phải Đệ của mình không. Dùng chung cho cả đường nhanh lẫn lượt quét đầy đủ,
+	// nên hai đường KHÔNG THỂ lệch điều kiện nhau — đó là lý do tách hàm thay vì chép lại phép kiểm.
+	// Trả Present=true khi đúng là Đệ của mình; EntityIndex=ForeignPetMarker khi là Đệ của người khác.
+	private static PetHealthReading TryReadPetAt(MemoryReader reader, RuntimeLayout layout, IntPtr entityTable, int index, int ownerId, byte[] header) {
+		if (index < AutoFsClientProfile.FirstEntityIndex || index > AutoFsClientProfile.LastEntityIndex) return PetHealthReading.Missing();
+		IntPtr entity = IntPtr.Add(entityTable, index * layout.EntityStride);
+		if (! reader.ReadInto(IntPtr.Add(entity, HeaderBase), header, EntityHeaderSize)) return PetHealthReading.Missing();
+		if (BitConverter.ToInt32(header, HeaderTypeOffset) != PetEntityType) return PetHealthReading.Missing();
+		if (BitConverter.ToInt32(header, HeaderStatusOffset) == AutoFsClientProfile.FinishedStatus) return PetHealthReading.Missing();
+		// Hp (0x27D0) và MaxHp (0x27D4) liền nhau nên gộp một lần đọc; vẫn kiểm liền kề vì hai offset này do
+		// RuntimeLayout cấp lúc chạy chứ không phải hằng số cứng.
+		int currentHp;
+		int maximumHp;
+		if (layout.MaxHpOffset == layout.HpOffset + sizeof(int)) {
+			if (! reader.TryReadInt32Pair(IntPtr.Add(entity, layout.HpOffset), out currentHp, out maximumHp)) return PetHealthReading.Missing();
+		} else {
+			currentHp = reader.ReadInt32(IntPtr.Add(entity, layout.HpOffset));
+			maximumHp = reader.ReadInt32(IntPtr.Add(entity, layout.MaxHpOffset));
+		}
+		if (currentHp <= 0 || maximumHp <= 0 || currentHp > maximumHp) return PetHealthReading.Missing();
+		if (reader.ReadInt32(IntPtr.Add(entity, PetOwnerCharacterId)) != ownerId) return new PetHealthReading(true, false, ForeignPetMarker, 0, 0, "");
+		return new PetHealthReading(true, true, index, currentHp, maximumHp, $"EntityType={PetEntityType}; EntityIndex={index}; OwnerId={ownerId}; Source=OWNER_ID_MATCH.");
 	}
 }

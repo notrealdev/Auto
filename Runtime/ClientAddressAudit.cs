@@ -44,7 +44,12 @@ public static class ClientAddressAudit {
 		("CHAT_PACK_FUNCTION", "ChatPackFunctionRva"),
 		("CHAT_ENCODE_FUNCTION", "ChatEncodeFunctionRva"),
 		("CHANNEL_ACTIVATE_FUNCTION", "ChannelActivateFunctionRva"),
-		("CHAT_SEND_FUNCTION", "ChatSendFunctionRva")
+		("CHAT_SEND_FUNCTION", "ChatSendFunctionRva"),
+		// Ba mục đăng nhập: hai hộp thoại chỉ tồn tại ở màn đăng nhập nên khi đã vào game chúng trả INCONCLUSIVE_NULL,
+		// đó là bình thường. Muốn đo thật thì chạy audit ngay khi client vừa mở, trước khi bấm qua ba hộp thoại.
+		("LOGIN_NOTICE_DIALOG", "LoginNoticeDialogRva"),
+		("LOGIN_SERVER_DIALOG", "LoginServerDialogRva"),
+		("LOGIN_SUBMIT_FUNCTIONS", "LoginSubmitFunctionRva+LoginAfterSubmitFunctionA/B/C+LoginSubmitContextRva")
 	];
 
 	// Hằng số thật sự không còn nơi nào tham chiếu. Trước 2026-09-08 danh sách này còn chứa 5 hằng số ĐANG được dùng

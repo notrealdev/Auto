@@ -13,6 +13,9 @@
 
 	<!-- Lề ngoài cùng: khoảng cách từ viền cửa sổ (và title bar) tới các block -->
 	<Thickness x:Key="Size.WindowGutter">14</Thickness>
+	<!-- Thanh trạng thái dưới đáy: lề trái/phải/dưới phải bằng đúng Size.WindowGutter ở trên thì mép nó mới thẳng
+	     hàng với các block nội dung; lề trên để 0 vì block cuối cùng phía trên đã tự mang Size.CardSpacing. -->
+	<Thickness x:Key="Size.StatusBarMargin">14,0,14,14</Thickness>
 	<!-- Khoảng cách từ viền mỗi block tới nội dung bên trong nó -->
 	<Thickness x:Key="Size.CardPadding">16</Thickness>
 	<!-- Khoảng hở dọc giữa 2 block liền nhau -->

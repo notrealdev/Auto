@@ -37,11 +37,14 @@ public sealed class GameMemory : IDisposable {
 	}
 
 	public static GameSnapshot ReadSnapshot(int processId) {
+		long profilerStart = Auto.Runtime.HotPathProfiler.Begin();
 		try {
 			using GameMemory memory = new GameMemory(processId);
 			return memory.ReadSnapshot();
 		} catch (Exception ex) {
 			return CreateFail(SnapshotStatus.Exception, ex.Message);
+		} finally {
+			Auto.Runtime.HotPathProfiler.End(Auto.Runtime.HotPathProfiler.Snapshot, profilerStart);
 		}
 	}
 

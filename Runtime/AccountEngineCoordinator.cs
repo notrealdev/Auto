@@ -1,7 +1,9 @@
-namespace Auto.Runtime;
+﻿namespace Auto.Runtime;
 
 using System.Collections.Concurrent;
 using Auto.Attack;
+using Auto.DebugTools;
+using Auto.Movement;
 using Auto.Utils;
 
 // Port từ D:\G\DEV\UI\Accounts.cs (TickAutoEngineCore + helper) — giữ nguyên thứ tự/điều kiện dừng engine.
@@ -14,6 +16,7 @@ public static class AccountEngineCoordinator {
 	private static readonly ConcurrentDictionary<IntPtr, DateTime> deathDetectedUtcByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> lastRuntimeGateByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> lastAutoGateByWindow = new();
+	private static readonly ConcurrentDictionary<IntPtr, string> lastQuestGateByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, bool> deathReturnLoggedByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, bool> deathReadErrorLoggedByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> deathUndetectedLoggedByWindow = new();
@@ -28,12 +31,49 @@ public static class AccountEngineCoordinator {
 	// Ngưỡng đứng im trước khi khôi phục. Hạ từ 20 xuống 10 giây theo yêu cầu phản ứng nhanh khi nhân vật kẹt ngoài bãi.
 	private const int StationaryRestartSeconds = 10;
 
+	// ===== Lớp giám sát đứng im, đứng TRÊN mọi engine =====
+	//
+	// Khác hẳn ShouldRestartStationaryAttack: nhánh đó nằm SAU bốn điều kiện (attackEnabled, !manualInputActive,
+	// !repairPriority, movementRecoveryPending||!recentAttack) nên nó tự tắt đúng lúc một engine đang ôm quyền mà
+	// không làm gì — tức đúng ca kẹt nguy hiểm nhất. Lớp này không hỏi engine nào đang giữ quyền.
+	//
+	// Bằng chứng vì sao cần (2026-09-12, PID=22824): kẹt cạnh Đại Phu 3 giờ 39 phút, heartbeat.log ghi 219 dòng liên
+	// tiếp cùng toạ độ và RepairBusy=True ở cả 219 dòng, còn anti-afk.log không có lấy một dòng nào của PID này.
+	//
+	// NGƯỠNG ĐO ĐƯỢC, không đoán: quét 141 quãng đứng yên trong heartbeat.log (Master=True). Mọi quãng của phiên chạy
+	// bình thường đều dưới 1 phút. Chỉ 8 quãng đạt 2 phút trở lên, và 5 trong số đó là Player=0/0 tức lỗi đọc
+	// snapshot. Hai quãng đứng im thật là 135 phút và 89 phút, đều của chính vụ kẹt này. Lấy 5 phút: trên xa mọi
+	// quãng hợp lệ đo được, dưới xa mọi quãng kẹt thật.
+	private const int StuckSupervisorMinutes = 5;
+	// Coi là "vẫn đứng nguyên chỗ" nếu chưa rời khỏi bán kính này. Không so khớp toạ độ tuyệt đối như
+	// ShouldRestartStationaryAttack: trong vụ 22824 nhân vật trôi 14 raw (0,05 ô) nên phép so tuyệt đối cắt quãng kẹt
+	// 219 phút thành hai mảnh 135 và 89 — đủ để một bộ đếm dựa trên so khớp tuyệt đối bị reset oan.
+	private const int StuckSupervisorRadiusRaw = 256;
+	// Bỏ hẳn yêu cầu sửa trong quãng này khi phải cứu kẹt, để HasPendingRepairRequest về false và repairPriority nhả.
+	private const int StuckSupervisorRepairCooldownSeconds = 600;
+	private static readonly ConcurrentDictionary<IntPtr, StuckAnchor> stuckAnchorByWindow = new();
+	// Máu của nhịp trước, để phân biệt "đang hồi máu" với "đang bị đánh" — xem chỗ dùng trong lớp giám sát đứng im.
+	private static readonly ConcurrentDictionary<IntPtr, int> lastStuckHpByWindow = new();
+
+	// Tránh boss chặn Buff tối đa bao lâu. Cần trần này vì có tình huống trốn KHÔNG bao giờ xong: cả bốn góc đều nằm
+	// trong vùng cấm thì Engine.TryRetreatFromElitesCore ghi ELITE_NO_SAFE_CORNER rồi đứng im. Không có trần thì nhân
+	// vật đứng cạnh boss và vĩnh viễn không được heal — chết chắc hơn là để Buff chen vào.
+	private const int EliteRetreatBuffBlockSeconds = 5;
+	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatSinceByWindow = new();
+
 	private readonly record struct AttackPositionState(int X, int Y, DateTime SinceUtc);
 
 	public static void TickOne(GameWindow game) {
+		long profilerStart = HotPathProfiler.Begin();
+		try {
 		lock (game.AutoSync) {
 			bool masterEnabled = game.Enabled;
-			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled);
+			// Công cụ Debug chạy tay phải chạy được KỂ CẢ khi Auto tổng đang tắt (chủ dự án chốt 2026-09-10).
+			// Bắt bật Auto tổng lên chỉ để chẩn đoán thì các engine khác cùng chen lệnh vào và làm bẩn phép đo — đúng
+			// thứ mà công cụ chẩn đoán phải tránh. Mở cổng ở đây an toàn vì khi Auto tổng tắt thì không engine nào
+			// khác được tick, chỉ luồng sửa đồ chạy tay là gửi lệnh.
+			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
+			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun);
 			DebugLog.SetProcessLoggingEnabled(game.ProcessId, masterEnabled);
 			Action<string> accountLog = text => DebugLog.AddForProcess(game.ProcessId, text);
 			Action<string> accountDropLog = text => DebugLog.AddLootDropForProcess(game.ProcessId, text);
@@ -52,7 +92,31 @@ public static class AccountEngineCoordinator {
 			bool repairEnabled = repairConfigured;
 			bool saleEnabled = game.InventorySaleEngine.IsAutomaticSaleEnabled;
 			bool returnTalismanConfigured = game.BasicSettings.EnableLowHpReturnTalisman;
-			bool autoAdvertiseEnabled = game.AutoAdvertiseEngine.IsConfigured;
+			bool autoAdvertiseEnabled = game.ChatEngine.IsConfigured;
+
+			// Nhiệm vụ đi khắp map và tự chọn NPC riêng nên không chia được quyền điều khiển với Đánh và Sửa đồ:
+			// bật "Làm nhiệm vụ" ở BẤT KỲ nhiệm vụ nào là khoá cứng cả hai (chủ dự án chốt 2026-09-09).
+			// Chỉ khoá thực thi, không sửa cấu hình — bỏ tick nhiệm vụ thì hai chức năng kia trở lại đúng ô đã đặt.
+			// Phải khoá cả attackConfigured chứ không riêng attackEnabled, vì attackConfigured mới là thứ cho phép
+			// WeaponRepairAutomation chạy tiếp (repairAllowed bên dưới) và cho WeaponRepairMonitor xếp yêu cầu sửa.
+			// Nhặt KHÔNG bị khoá: nó không tự phát sinh di chuyển.
+			// Chưa có engine nhiệm vụ nên hiện tại bật ô này chỉ dừng Đánh/Sửa đồ chứ chưa có gì chạy thay.
+			// Bào thương đã bị gỡ khỏi UI (2026-09-11) nên KHÔNG được đưa CaravanEnabled vào cổng này: file cấu hình cũ
+			// có thể còn lưu true, mà không còn ô nào để bỏ tick — Đánh và Sửa đồ sẽ bị khoá vĩnh viễn.
+			bool questEnabled = game.QuestSettings.ScoutEnabled;
+			// Ghi ngay khi trạng thái ô tick đổi. HEARTBEAT_AUTO chỉ ghi mỗi phút một lần nên một phiên chạy ngắn
+			// không đủ để biết ô "Làm nhiệm vụ" có tới được engine hay không (quest.log rỗng ngày 2026-09-09 18:57).
+			string questGate = $"QUEST_GATE | ThámQuân={game.QuestSettings.ScoutEnabled} | Khoá Đánh/Sửa đồ={questEnabled}";
+			if (!lastQuestGateByWindow.TryGetValue(game.Handle, out string? previousQuestGate) || !string.Equals(previousQuestGate, questGate, StringComparison.Ordinal)) {
+				lastQuestGateByWindow[game.Handle] = questGate;
+				accountLog(questGate);
+			}
+			if (questEnabled) {
+				attackEnabled = false;
+				attackConfigured = false;
+				repairConfigured = false;
+				repairEnabled = false;
+			}
 
 			RuntimeLayout layout = RuntimeLayoutResolver.Resolve(game.ProcessId);
 			game.RuntimeLayout = layout;
@@ -66,26 +130,41 @@ public static class AccountEngineCoordinator {
 			bool returnToTownEnabled = game.BasicSettings.DeathAction != DeathAction.StayStill && layout.PlayerReady;
 
 			GameSnapshot snapshot = GameMemory.ReadSnapshot(game.ProcessId);
+			// Đồng hồ bắt client treo. Đặt NGAY sau khi đọc snapshot và TRƯỚC mọi cổng bật/tắt bên dưới: client treo
+			// thì mọi tính năng đều lệch theo, nên phải đo cả lúc Auto tổng đang tắt. Chỉ quan sát, không đổi hành vi.
+			ClientFreezeWatch.Observe(game, snapshot);
 			if (!snapshot.Success) {
-				LogHeartbeat(game, snapshot, masterEnabled, attackEnabled, lootEnabled, repairConfigured, repairEnabled, saleEnabled, accountLog);
+				LogHeartbeat(game, snapshot, masterEnabled, attackEnabled, lootEnabled, repairConfigured, repairEnabled, saleEnabled, questEnabled, accountLog);
 				game.AutoFsActionGate.SetRuntimeSuspended(true);
+				// Cùng lý do như ở cổng Auto tổng: worker đánh vừa bị Stop nên trạng thái nhớ phải về "chưa chạy",
+				// không thì lượt đọc được snapshot trở lại sẽ không tính là chuyển tắt->bật.
+				attackEnabledByWindow.TryRemove(game.Handle, out _);
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
 				return;
 			}
 			game.AutoFsActionGate.SetRuntimeSuspended(false);
 
-			if (masterEnabled && returnTalismanEnabled && game.LowHpReturnTalismanEngine.Tick(game.ProcessId, game.Handle, snapshot, game.LastObservedMapId, accountLog)) {
+			// Đặt NGAY ĐÂY, trước mọi nhánh return của từng luồng. Mọi nhánh bên dưới đều có đường thoát sớm
+			// (Hồi thành phù, tắt Auto tổng, chết, Buff, Tự lên bãi, Di chuyển bãi), nên đặt sau bất kỳ nhánh nào
+			// là lại đẻ ra đúng lỗ hổng cũ: luồng nào ôm quyền thì lớp giám sát tắt theo.
+			SuperviseStuckAccount(game, snapshot, masterEnabled, accountLog);
+
+			if (masterEnabled && returnTalismanEnabled && game.LowHpEngine.Tick(game.ProcessId, game.Handle, snapshot, game.LastObservedMapId, accountLog)) {
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
-				game.WeaponRepairAutomation.Cancel(game);
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Hồi thành phù giữ quyền điều khiển");
+				// Cùng lý do như ở cổng Auto tổng. Nhánh này chính là "phù về thành": nó vừa huỷ Tự lên bãi và Stop
+				// worker đánh, nên phải quên trạng thái nhớ. Yêu cầu lên bãi trùng không gây hại — RequestReturnToTrainingCenter
+				// và Prepare đều tự chặn khi ReturnToTrainingAutomation đang bận.
+				attackEnabledByWindow.TryRemove(game.Handle, out _);
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
 				return;
 			}
-			if (!returnTalismanEnabled) game.LowHpReturnTalismanEngine.Reset();
+			if (!returnTalismanEnabled) game.LowHpEngine.Reset();
 
-			if (game.LowHpReturnTalismanEngine.ConsumeReturnToTrainingRequest()) {
+			if (game.LowHpEngine.ConsumeReturnToTrainingRequest()) {
 				if (!game.AttackSettings.EnableReturnToTraining) {
 					accountLog($"LOW_HP_RETURN_TO_TRAINING_SKIPPED | Reason=EnableReturnToTraining=False | Hp={snapshot.Hp}/{snapshot.MaxHp}");
 				} else if (game.ReturnToTrainingAutomation.IsBusy) {
@@ -107,13 +186,28 @@ public static class AccountEngineCoordinator {
 			if (!game.WeaponRepairAutomation.IsBusy) game.WeaponRepairMonitor.Tick(game.ProcessId, game.BasicSettings.WeaponDurabilityThreshold, masterEnabled && (attackEnabled || lootEnabled), accountLog);
 			if (repairConfigured && !layout.RepairReady) game.WeaponRepairMonitor.ReportUnavailableTransport(layout.DescribeUnavailable(RuntimeSubsystem.MovementTransport, RuntimeSubsystem.Map, RuntimeSubsystem.Shop, RuntimeSubsystem.RepairTransport), accountLog);
 
-			if (!masterEnabled || (!attackEnabled && !lootEnabled && !repairEnabled && !saleEnabled && !returnToTownEnabled && !returnTalismanEnabled && !autoAdvertiseEnabled)) {
+			// questEnabled phải nằm trong cổng này: nó vừa tắt attackEnabled/repairEnabled ở trên, nên nếu account
+			// chỉ bật mỗi nhiệm vụ thì cổng sẽ thoát sớm và luồng nhiệm vụ không bao giờ được tick.
+			if (!masterEnabled || (!attackEnabled && !lootEnabled && !repairEnabled && !saleEnabled && !returnToTownEnabled && !returnTalismanEnabled && !autoAdvertiseEnabled && !questEnabled)) {
 				LogAutoGate(game, masterEnabled, attackEnabled, lootEnabled, repairEnabled, saleEnabled);
-				game.WeaponRepairAutomation.Cancel(game);
+				// Quên trạng thái Đánh của lượt trước khi thoát ở cổng này, để lần bật lại được tính là chuyển tắt->bật.
+				//
+				// Không quên thì: đang train (nhớ true) -> tắt Auto tổng (thoát ở đây, KHÔNG ghi nhớ gì) -> dùng phù về
+				// thành -> bật lại Auto tổng. Lúc đó attackEnabled=true và giá trị nhớ cũng vẫn là true, nên chốt
+				// "bật Đánh khi đang ở ngoài bãi thì đi lên bãi" bên dưới không kích hoạt và nhân vật đứng im giữa thành.
+				// Người dùng phải tắt/bật lại riêng ô Đánh mới chạy được — đúng hiện tượng báo ngày 2026-09-09.
+				attackEnabledByWindow.TryRemove(game.Handle, out _);
 				game.ReturnToTrainingAutomation.Cancel();
 				game.ConfiguredTrainingMovementAutomation.Cancel();
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
+				// Chuyến sửa đồ chạy tay vẫn được đi tiếp: nó là lệnh trực tiếp của chủ dự án, không phải luồng tự động.
+				// Đánh và Nhặt đã dừng ở trên nên không ai tranh quyền điều khiển — đúng điều kiện sạch để chẩn đoán.
+				if (debugRepairRun) {
+					game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
+					return;
+				}
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Tắt Auto tổng hoặc tắt ô Sửa đồ");
 				return;
 			}
 			lastAutoGateByWindow.TryRemove(game.Handle, out _);
@@ -138,28 +232,67 @@ public static class AccountEngineCoordinator {
 			// Chỉ xét đúng lúc chuyển tắt->bật; đang đứng trong bãi thì bỏ qua hoàn toàn, không bắn lệnh di chuyển nào.
 			bool attackWasEnabled = attackEnabledByWindow.TryGetValue(game.Handle, out bool previousAttackEnabled) && previousAttackEnabled;
 			attackEnabledByWindow[game.Handle] = attackEnabled;
-			if (attackEnabled && !attackWasEnabled && IsOutsideTrainingArea(game, snapshot)) {
-				RequestReturnToTrainingCenter(game, snapshot, accountLog, "Bật Tự động đánh khi đang ở ngoài bãi");
+
+			// Bật Auto tổng = RÀ LẠI TOÀN BỘ, không phải chạy tiếp từ trạng thái cũ (chủ dự án chốt 2026-09-10).
+			// Cổng Auto tổng ở trên đã xoá attackEnabledByWindow nên lần bật lại luôn được tính là chuyển tắt->bật.
+			//
+			// Vì sao phải ghi log cả khi không làm gì: trước đây nhánh này im lặng hoàn toàn khi IsOutsideTrainingArea
+			// trả false, nên lúc nhân vật đứng im sau khi bật lại Auto tổng thì không có một dòng nào cho biết vì sao.
+			// Ngày 2026-09-10 PID=34032 kết thúc luồng sửa đồ ở 59334/93306 (cạnh Đại Phu, cách tâm bãi hơn 5000 raw)
+			// và không có dòng log nào giải thích. Bốn giá trị dưới đây đủ để chỉ ra ngay ô cấu hình nào đang chặn.
+			if (attackEnabled && !attackWasEnabled) {
+				Settings rearmSettings = game.AttackSettings;
+				bool outsideArea = IsOutsideTrainingArea(game, snapshot);
+				accountLog($"MASTER_REARM | PID={game.ProcessId} | NgoàiBãi={outsideArea} | TựLênBãi={rearmSettings.EnableReturnToTraining} | QuanhĐiểm={rearmSettings.UseCenterPosition} | Tâm={rearmSettings.CenterX}/{rearmSettings.CenterY} | MapTâm={rearmSettings.CenterMapId} | BãiĐãLưu={game.SavedTrainingMapId} | ViTríHiệnTại=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | SửaĐồ={repairConfigured} | ĐangChờSửa={game.WeaponRepairMonitor.HasPendingRepairRequest}");
+				// Luồng sửa đồ: xoá cache độ bền để nó đọc lại từ client thay vì tin số đã nhớ từ trước lúc tắt.
+				if (repairConfigured) {
+					game.WeaponRepairMonitor.ResetCache();
+					game.WeaponRepairMonitor.ScheduleImmediateCheck("Bật lại Auto tổng");
+				}
+				// Luồng đánh: ở ngoài bãi thì đi lên bãi trước. RequestReturnToTrainingCenter tự ghi lý do khi không
+				// khởi động được, nên nhánh này không còn đường nào im lặng.
+				if (outsideArea) RequestReturnToTrainingCenter(game, snapshot, accountLog, "Bật Auto tổng khi đang ở ngoài bãi");
 			}
 
 			// AutoFS gốc không theo dõi chuột, nên Auto cũng không tạm dừng tự động đánh theo click trái.
 			bool manualInputActive = false;
 
-			LogHeartbeat(game, snapshot, masterEnabled, attackEnabled, lootEnabled, repairConfigured, repairEnabled, saleEnabled, accountLog);
+			LogHeartbeat(game, snapshot, masterEnabled, attackEnabled, lootEnabled, repairConfigured, repairEnabled, saleEnabled, questEnabled, accountLog);
 			if (HandleDeathPopup(game, snapshot, accountLog)) {
-				game.WeaponRepairAutomation.Cancel(game);
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Nhân vật chết, popup hồi sinh đang mở");
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
 				return;
 			}
 
-			// Skill hỗ trợ bị động chỉ gửi gói bật lại, không chiếm quyền điều khiển nên chạy trước và không chặn luồng khác.
-			game.PassiveBuffEngine.Tick(game.ProcessId, game.Handle, attackEnabled, accountLog);
+			// Nhiệm vụ chạy sau khi đã xử lý xong chết/hồi sinh, và trước Buff. Đánh/Sửa đồ đã bị khoá ở đầu tick nên
+			// không tranh quyền di chuyển. Nhặt vẫn chạy tiếp bên dưới theo quyết định của chủ dự án.
+			if (game.QuestSettings.ScoutEnabled) game.ScoutQuestAutomation.Tick(game, snapshot, accountLog);
+			else game.ScoutQuestAutomation.ResetSession();
 
-			if (game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, accountLog)) {
+			// Skill hỗ trợ bị động chỉ gửi gói bật lại, không chiếm quyền điều khiển nên chạy trước và không chặn luồng khác.
+			game.BuffEngine.Tick(game.ProcessId, game.Handle, attackEnabled, AreSkillsAllowedHere(game), accountLog);
+
+			// Tránh quái thủ lĩnh/boss là ƯU TIÊN SỐ 1, đứng trên cả Buff: chạy ra xa rồi mới heal (chủ dự án chốt
+			// 2026-09-10). Boss mạnh hơn hẳn, đứng yên cạnh nó mà heal thì heal không kịp máu tụt.
+			//
+			// Bằng chứng vì sao phải có nhánh này (movement.log + buff.log + death.log, PID=34032):
+			//   18:24:01.932  ELITE_RETREAT | Distance=146   <- dòng trốn CUỐI CÙNG
+			//   18:24:04.407  BUFF Target=Owner | Exclusive=True
+			//   18:24:05.699  Nhân vật chết
+			// Khối tránh boss nằm TRONG worker của luồng đánh, mà nhánh Buff bên dưới vừa gọi AttackEngine.Stop()
+			// vừa bật SetLootSuspended — chặn cả hai lớp, nên luồng trốn tắt theo đúng lúc cần nó nhất.
+			// Hai nguồn: cờ do worker cập nhật (tươi nhất khi worker sống), và đường quét độc lập cho lúc worker đã bị
+			// dừng — thiếu đường thứ hai thì cờ đóng băng ở false và boss tới sau đó không ai thấy.
+			bool eliteRetreatActive = attackEnabled && !manualInputActive
+				&& (game.AttackEngine.IsRetreatingFromElite || game.AttackEngine.IsInsideEliteZoneNow(game.ProcessId));
+			bool eliteBlockExpired = UpdateEliteRetreatBuffBlock(game, eliteRetreatActive, accountLog);
+			if (eliteRetreatActive && !eliteBlockExpired) {
+				game.SupportEngine.ReleaseForHigherPriority();
+			} else if (game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), accountLog)) {
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
-				game.WeaponRepairAutomation.Cancel(game);
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, true);
 				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.TrainingMovementOwner, true);
 				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, true);
@@ -167,7 +300,7 @@ public static class AccountEngineCoordinator {
 				game.LootEngine.Stop();
 				return;
 			}
-			game.AutoAdvertiseEngine.Tick(game.ProcessId, game.Handle, accountLog);
+			game.ChatEngine.Tick(game.ProcessId, game.Handle, accountLog);
 
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, game.ReturnToTrainingAutomation.IsBusy);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.TrainingMovementOwner, game.ConfiguredTrainingMovementAutomation.IsBusy);
@@ -215,13 +348,13 @@ public static class AccountEngineCoordinator {
 			// đứng lại ở NPC. Dùng attackConfigured để một nhịp rớt layout.AttackReady không giết luôn luồng Sửa đồ.
 			// Ngoại lệ IsDebugRun: chuyến do người dùng bấm nút "Đi sửa đồ" là lệnh trực tiếp, không phải luồng tự động.
 			bool repairAllowed = attackConfigured || game.WeaponRepairAutomation.IsDebugRun;
-			if (!repairAllowed) game.WeaponRepairAutomation.Cancel(game);
+			if (!repairAllowed) game.WeaponRepairAutomation.Cancel(game, accountLog, "Tắt ô Đánh nên dừng luồng Sửa đồ");
 
 			bool returnToTrainingBusy = attackEnabled && !repairPriority && game.ReturnToTrainingAutomation.Tick(game, snapshot, manualInputActive, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, returnToTrainingBusy);
 			if (returnToTrainingBusy) {
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Tự lên bãi giữ quyền điều khiển");
-				game.WeaponRepairAutomation.Cancel(game);
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Tự lên bãi giữ quyền điều khiển");
 				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, false);
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
@@ -231,7 +364,7 @@ public static class AccountEngineCoordinator {
 			bool configuredTrainingMovementBusy = attackEnabled && !repairPriority && game.ConfiguredTrainingMovementAutomation.Tick(game, snapshot, manualInputActive, accountLog);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.TrainingMovementOwner, configuredTrainingMovementBusy);
 			if (configuredTrainingMovementBusy) {
-				game.WeaponRepairAutomation.Cancel(game);
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Di chuyển tới bãi cấu hình giữ quyền điều khiển");
 				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, false);
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
@@ -255,6 +388,9 @@ public static class AccountEngineCoordinator {
 				attackPositionByWindow.TryRemove(game.Handle, out _);
 				game.AttackEngine.Stop();
 			}
+		}
+		} finally {
+			HotPathProfiler.End(HotPathProfiler.AccountTick, profilerStart);
 		}
 	}
 
@@ -294,13 +430,90 @@ public static class AccountEngineCoordinator {
 	}
 
 	// Port từ D:\G\DEV\UI\Accounts.cs:653 (LogHeartbeat) — mỗi account ghi một dòng trạng thái tổng mỗi phút.
-	private static void LogHeartbeat(GameWindow game, GameSnapshot snapshot, bool masterEnabled, bool attackEnabled, bool lootEnabled, bool repairConfigured, bool repairReady, bool saleEnabled, Action<string> log) {
+	// Phát hiện account đứng nguyên một chỗ quá lâu rồi nhả sạch quyền điều khiển, bất kể engine nào đang giữ.
+	//
+	// Nguyên tắc: KHÔNG tin engine nào. Không đọc IsBusy của ai để quyết định có chạy hay không — chỉ nhìn toạ độ.
+	// Mọi phép kiểm "luồng X đang bận nên bỏ qua" chính là thứ đã làm watchdog 10 giây câm suốt 3 giờ 39 phút.
+	private static void SuperviseStuckAccount(GameWindow game, GameSnapshot snapshot, bool masterEnabled, Action<string> accountLog) {
+		// Auto tổng tắt thì nhân vật đứng im là đúng, không theo dõi.
+		if (!masterEnabled) {
+			stuckAnchorByWindow.TryRemove(game.Handle, out _);
+			return;
+		}
+		// Toạ độ 0/0 là lỗi đọc bộ nhớ, không phải đứng im. Trong 8 quãng dài đo được có tới 5 quãng dạng này; tính
+		// chúng vào là báo động giả rồi đi reset engine của một account đang chạy bình thường.
+		if (snapshot.X <= 0 && snapshot.Y <= 0) {
+			stuckAnchorByWindow.TryRemove(game.Handle, out _);
+			return;
+		}
+		// Chỉ bỏ qua khi máu ĐANG LÊN, không phải khi máu chưa đầy.
+		//
+		// Ý định ban đầu (chủ dự án chốt 2026-09-12) vẫn giữ nguyên: đứng yên hồi máu trước khi lên bãi là hành vi
+		// đúng, không được coi là kẹt. Nhưng điều kiện cũ là "Hp < MaxHp -> xoá mốc", mà coordinator chạy mỗi 100ms
+		// và nhân vật kẹt giữa bãi thì bị quái đánh liên tục — chỉ một nhịp máu hụt là đồng hồ 5 phút về 0, nên lớp
+		// giám sát gần như không bao giờ chạy được ở bãi.
+		//
+		// Bằng chứng (Release/Diagnostics 2026-09-15, PID=28500): đứng nguyên 52572/104835 suốt 38 nhịp tim liên
+		// tiếp (~38 phút), anti-afk.log ghi StationaryMilliseconds tới 516812 (8,6 phút), mà ANTI_AFK_STUCK_SUPERVISOR
+		// nổ ĐÚNG 0 lần trong toàn bộ log. Heartbeat cùng quãng đó cho thấy máu dao động 470/470 -> 459/470 -> 470/470.
+		// Chính comment cũ ở đây cũng đã tự khai: ca 22824 chỉ lọt qua được vì máu tình cờ đầy suốt.
+		//
+		// Máu đi lên nghĩa là đang hồi thật -> nhả. Máu đứng yên hoặc tụt (bị đánh) thì để đồng hồ chạy tiếp.
+		int previousStuckHp = lastStuckHpByWindow.TryGetValue(game.Handle, out int stored) ? stored : snapshot.Hp;
+		lastStuckHpByWindow[game.Handle] = snapshot.Hp;
+		if (snapshot.MaxHp > 0 && snapshot.Hp < snapshot.MaxHp && snapshot.Hp > previousStuckHp) {
+			stuckAnchorByWindow.TryRemove(game.Handle, out _);
+			return;
+		}
+
+		DateTime now = DateTime.UtcNow;
+		if (!stuckAnchorByWindow.TryGetValue(game.Handle, out StuckAnchor anchor) || GetRawDistance(anchor.RawX, anchor.RawY, snapshot.X, snapshot.Y) > StuckSupervisorRadiusRaw) {
+			stuckAnchorByWindow[game.Handle] = new StuckAnchor(snapshot.X, snapshot.Y, now);
+			return;
+		}
+		double stuckMinutes = (now - anchor.SinceUtc).TotalMinutes;
+		if (stuckMinutes < StuckSupervisorMinutes) return;
+
+		// Đặt lại mốc TRƯỚC khi cứu, để nếu vẫn kẹt thì lần cứu sau cách đúng một chu kỳ nữa chứ không bắn mỗi nhịp.
+		stuckAnchorByWindow[game.Handle] = new StuckAnchor(snapshot.X, snapshot.Y, now);
+		string state = $"RepairBusy={game.WeaponRepairAutomation.IsBusy} | RepairPending={game.WeaponRepairMonitor.HasPendingRepairRequest} | ReturnBusy={game.ReturnToTrainingAutomation.IsBusy} | TrainingBusy={game.ConfiguredTrainingMovementAutomation.IsBusy} | QuestBusy={game.ScoutQuestAutomation.IsBusy} | AttackState={game.AttackEngine.GetDiagnosticState()} | LootState={game.LootEngine.GetDiagnosticState()}";
+		accountLog($"ANTI_AFK_STUCK_SUPERVISOR | Đứng nguyên {stuckMinutes:F1} phút trong bán kính {StuckSupervisorRadiusRaw} raw | ViTri={snapshot.X}/{snapshot.Y} | Map={game.LastObservedMapId} | HP={snapshot.Hp}/{snapshot.MaxHp} | {state}");
+
+		// Nhả theo đúng thứ tự đã biết là cần thiết, không bỏ bước nào:
+		// 1. ESC đóng mọi popup/shop đang treo — kẹt ở NPC thì giao diện thường còn mở, không đóng thì mọi lệnh sau vô nghĩa.
+		// 2. Huỷ ba luồng giữ quyền di chuyển.
+		// 3. DeferRepairRequest là bắt buộc: chỉ Cancel thì IsBusy về false nhưng HasPendingRepairRequest vẫn true,
+		//    repairPriority vẫn bật và nhân vật lại đi sửa ngay. Đây đúng là vòng lặp đã xảy ra lúc 09:43:54.
+		// 4. Dừng hai worker; chúng được dựng lại ở nhịp sau.
+		BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+		game.WeaponRepairAutomation.Cancel(game, accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
+		game.WeaponRepairMonitor.DeferRepairRequest(StuckSupervisorRepairCooldownSeconds, "sau khi lớp giám sát đứng im thu hồi quyền điều khiển");
+		game.ReturnToTrainingAutomation.Cancel(accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
+		game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
+		game.SupportEngine.ReleaseForHigherPriority();
+		game.ScoutQuestAutomation.Cancel(accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
+		attackPositionByWindow.TryRemove(game.Handle, out _);
+		attackEnabledByWindow.TryRemove(game.Handle, out _);
+		game.AttackEngine.Stop();
+		game.LootEngine.Stop();
+		accountLog($"ANTI_AFK_STUCK_SUPERVISOR_RECOVERY | Đã ESC, huỷ Sửa đồ/Lên bãi/Di chuyển bãi/Nhiệm vụ, hoãn yêu cầu sửa {StuckSupervisorRepairCooldownSeconds}s, dựng lại worker Đánh/Nhặt ở nhịp sau.");
+	}
+
+	private static double GetRawDistance(int firstRawX, int firstRawY, int secondRawX, int secondRawY) {
+		double deltaX = (double)firstRawX - secondRawX;
+		double deltaY = (double)firstRawY - secondRawY;
+		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+	}
+
+	private readonly record struct StuckAnchor(int RawX, int RawY, DateTime SinceUtc);
+
+	private static void LogHeartbeat(GameWindow game, GameSnapshot snapshot, bool masterEnabled, bool attackEnabled, bool lootEnabled, bool repairConfigured, bool repairReady, bool saleEnabled, bool questEnabled, Action<string> log) {
 		DateTime now = DateTime.UtcNow;
 		if (nextHeartbeatByWindow.TryGetValue(game.Handle, out DateTime nextUtc) && now < nextUtc) return;
 		nextHeartbeatByWindow[game.Handle] = now.AddMinutes(1);
 		EntitySnapshot target = snapshot.Success ? EntitySnapshot.ReadCurrentTarget(game.ProcessId) : new EntitySnapshot();
 		log(
-			$"HEARTBEAT_AUTO | Master={masterEnabled} | Attack={attackEnabled} | Loot={lootEnabled} | RepairConfigured={repairConfigured} | RepairReady={repairReady} | Sale={saleEnabled} | " +
+			$"HEARTBEAT_AUTO | Master={masterEnabled} | Attack={attackEnabled} | Loot={lootEnabled} | RepairConfigured={repairConfigured} | RepairReady={repairReady} | Sale={saleEnabled} | Quest={questEnabled} | " +
 			$"Snapshot={snapshot.Success}/{snapshot.Status} | Map={game.LastObservedMapId} | Player={snapshot.X}/{snapshot.Y} | HP={snapshot.Hp}/{snapshot.MaxHp} | " +
 			$"CombatDiagnostic={(snapshot.Combat.Success ? $"CONFIRMED/{snapshot.Combat.CurrentHp}/{snapshot.Combat.MaxHpCandidate}" : "UNAVAILABLE")} | " +
 			$"Target={target.Success}/{target.Index}/{target.Handle}/Active={target.ActiveFlag}/HP={target.Hp}/{target.MaxHp} | " +
@@ -330,10 +543,36 @@ public static class AccountEngineCoordinator {
 		DebugLog.AddForProcess(game.ProcessId, "Auto chưa chạy | " + gate + " | Cần bật Auto tổng và ít nhất một module.");
 	}
 
+	// Theo dõi một đợt tránh boss kéo dài bao lâu. Trả về true khi đã quá trần và phải trả quyền lại cho Buff.
+	// Ghi log đúng MỘT lần mỗi đợt: mốc thời gian được đẩy lên tương lai sau khi ghi nên nhịp sau không ghi lại nữa.
+	private static bool UpdateEliteRetreatBuffBlock(GameWindow game, bool retreatActive, Action<string> accountLog) {
+		if (!retreatActive) {
+			eliteRetreatSinceByWindow.TryRemove(game.Handle, out _);
+			return false;
+		}
+		DateTime now = DateTime.UtcNow;
+		DateTime since = eliteRetreatSinceByWindow.GetOrAdd(game.Handle, now);
+		// MinValue = đã hết hạn ở nhịp trước. Giữ nguyên trạng thái hết hạn cho tới khi đợt trốn này kết thúc hẳn,
+		// không thì nhịp sau lại tính ra "chưa đủ 15 giây" và chặn Buff trở lại.
+		if (since == DateTime.MinValue) return true;
+		if ((now - since).TotalSeconds < EliteRetreatBuffBlockSeconds) return false;
+		if (eliteRetreatSinceByWindow.TryUpdate(game.Handle, DateTime.MinValue, since)) {
+			accountLog($"ELITE_RETREAT_BUFF_BLOCK_EXPIRED | PID={game.ProcessId} | Seconds={EliteRetreatBuffBlockSeconds} | Action=Trả quyền lại cho Buff vì trốn boss quá lâu chưa xong");
+		}
+		return true;
+	}
+
 	private static bool ShouldRestartStationaryAttack(IntPtr gameWindow, GameSnapshot snapshot, out int stationaryMilliseconds) {
 		stationaryMilliseconds = 0;
 		DateTime now = DateTime.UtcNow;
-		if (!attackPositionByWindow.TryGetValue(gameWindow, out AttackPositionState state) || state.X != snapshot.X || state.Y != snapshot.Y) {
+		// So theo BÁN KÍNH chứ không so khớp toạ độ tuyệt đối.
+		//
+		// Bản trước dùng "state.X != snapshot.X || state.Y != snapshot.Y", nên nhân vật nhích đúng 1 raw là bộ đếm về
+		// 0 và mốc 10 giây không bao giờ tới. Bằng chứng lỗi này có thật (2026-09-12, PID=22824): suốt quãng kẹt cạnh
+		// Đại Phu nhân vật trôi từ 58958/96143 sang 58972/96144 — 14 raw, tức 0,05 ô, đủ để phép so tuyệt đối cắt
+		// quãng 219 phút thành hai mảnh 135 và 89 khi tính trên heartbeat.
+		// Dùng chung StuckSupervisorRadiusRaw với lớp giám sát để hai nơi không lệch định nghĩa "đứng nguyên chỗ".
+		if (!attackPositionByWindow.TryGetValue(gameWindow, out AttackPositionState state) || GetRawDistance(state.X, state.Y, snapshot.X, snapshot.Y) > StuckSupervisorRadiusRaw) {
 			attackPositionByWindow[gameWindow] = new AttackPositionState(snapshot.X, snapshot.Y, now);
 			return false;
 		}
@@ -372,19 +611,53 @@ public static class AccountEngineCoordinator {
 			return;
 		}
 		Settings settings = game.AttackSettings;
-		string line = $"Tự lên bãi AutoFS không khởi động được | PID={game.ProcessId} | YêuCầu={reason} | TựLênBãi={settings.EnableReturnToTraining} | QuanhĐiểm={settings.UseCenterPosition} | Tâm={settings.CenterX}/{settings.CenterY} | MapTâm={settings.CenterMapId} | MapHiệnTại={game.LastObservedMapId}";
+		string line = $"Tự lên bãi không khởi động được | PID={game.ProcessId} | YêuCầu={reason} | TựLênBãi={settings.EnableReturnToTraining} | QuanhĐiểm={settings.UseCenterPosition} | Tâm={settings.CenterX}/{settings.CenterY} | MapTâm={settings.CenterMapId} | MapHiệnTại={game.LastObservedMapId}";
 		if (lastReturnRequestFailureByWindow.TryGetValue(game.Handle, out string? previous) && string.Equals(previous, line, StringComparison.Ordinal)) return;
 		lastReturnRequestFailureByWindow[game.Handle] = line;
 		log(line);
 	}
 
+	// Nhân vật có đang đứng ở chỗ dùng được kỹ năng không.
+	//
+	// Quy tắc chủ dự án chốt 2026-09-11: "Mọi map trong Train quái đều là ngoài thành, còn lại đều là phạm vi trong
+	// thành." Trong thành game CẤM dùng kỹ năng, nên cast ở đó là ném lệnh đi vô ích.
+	//
+	// Không giải được đích bãi thì trả true (KHÔNG chặn). Chặn nhầm ở đây nghĩa là Buff không bao giờ chạy — hỏng
+	// nặng hơn hẳn so với việc thỉnh thoảng cast thừa, và trần cast theo tiến độ máu vẫn còn đó làm lưới an toàn.
+	private static bool AreSkillsAllowedHere(GameWindow game) {
+		if (!ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out int trainingMapId, out _, out _)) return true;
+		if (trainingMapId <= 0 || game.LastObservedMapId <= 0) return true;
+		return game.LastObservedMapId == trainingMapId;
+	}
+
 	private static bool IsOutsideTrainingArea(GameWindow game, GameSnapshot snapshot) {
 		Settings settings = game.AttackSettings;
-		if (! settings.UseCenterPosition || settings.CenterX <= 0 || settings.CenterY <= 0 || snapshot.X <= 0 || snapshot.Y <= 0) return false;
+		if (snapshot.X <= 0 || snapshot.Y <= 0) return false;
+		// Mê cung / Thành thị / Tân thủ thôn ưu tiên cao hơn "Quanh điểm" (chủ dự án chốt 2026-09-10).
+		// TryResolveTrainingPoint đã xếp đúng thứ tự đó rồi (ConfiguredTrainingMovementAutomation.TryResolveDestination),
+		// và nó cũng chính là đích mà ReturnToTrainingAutomation.Prepare sẽ dùng — hỏi "có đang ở ngoài chỗ sắp bị kéo
+		// về không" thì phải hỏi đúng cái đích đó.
+		//
+		// Bản cũ mở đầu bằng "if (!settings.UseCenterPosition) return false", nên cấu hình bãi kiểu Mê cung mà không
+		// bật Quanh điểm thì hàm này luôn trả false: nhân vật đứng ngoài bãi vẫn bị coi là trong bãi, không ai kéo về.
+		int areaMapId;
+		int areaRawX;
+		int areaRawY;
+		if (ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out int resolvedMapId, out int resolvedRawX, out int resolvedRawY)) {
+			areaMapId = resolvedMapId;
+			areaRawX = resolvedRawX;
+			areaRawY = resolvedRawY;
+		} else if (settings.UseCenterPosition && settings.CenterX > 0 && settings.CenterY > 0) {
+			areaMapId = settings.CenterMapId;
+			areaRawX = settings.CenterX;
+			areaRawY = settings.CenterY;
+		} else {
+			return false;
+		}
 		// Khác map bãi là chắc chắn ngoài bãi. Không xét map thì toạ độ của hai map khác nhau bị đem trừ nhau, cho kết quả vô nghĩa.
-		if (settings.CenterMapId > 0 && game.LastObservedMapId > 0 && game.LastObservedMapId != settings.CenterMapId) return true;
-		long deltaX = (long)snapshot.X - settings.CenterX;
-		long deltaY = (long)snapshot.Y - settings.CenterY;
+		if (areaMapId > 0 && game.LastObservedMapId > 0 && game.LastObservedMapId != areaMapId) return true;
+		long deltaX = (long)snapshot.X - areaRawX;
+		long deltaY = (long)snapshot.Y - areaRawY;
 		long range = Math.Max(settings.Range, 1);
 		return deltaX * deltaX + deltaY * deltaY > range * range;
 	}
@@ -397,7 +670,7 @@ public static class AccountEngineCoordinator {
 			deathDetectedUtcByWindow.TryRemove(game.Handle, out _);
 			deathSendFailureByWindow.TryRemove(game.Handle, out _);
 			if (! string.IsNullOrEmpty(readError)) {
-				if (deathReadErrorLoggedByWindow.TryAdd(game.Handle, true)) log($"Về thành AutoFS đọc trạng thái FAIL | PID={game.ProcessId} | {readError}");
+				if (deathReadErrorLoggedByWindow.TryAdd(game.Handle, true)) log($"Về thành đọc trạng thái FAIL | PID={game.ProcessId} | {readError}");
 			} else {
 				deathReadErrorLoggedByWindow.TryRemove(game.Handle, out _);
 			}
@@ -410,14 +683,14 @@ public static class AccountEngineCoordinator {
 		deathUndetectedLoggedByWindow.TryRemove(game.Handle, out _);
 		game.ReturnToTrainingAutomation.Prepare(game, snapshot, log);
 		if (game.BasicSettings.DeathAction == DeathAction.StayStill) {
-			if (deathReturnLoggedByWindow.TryAdd(game.Handle, true)) log($"Nhân vật chết AutoFS | PID={game.ProcessId} | Status={deathStatus} | State={deathState} | Modal=0x{deathModal:X8} | Về thành đã tắt");
+			if (deathReturnLoggedByWindow.TryAdd(game.Handle, true)) log($"Nhân vật chết | PID={game.ProcessId} | Status={deathStatus} | State={deathState} | Modal=0x{deathModal:X8} | Về thành đã tắt");
 			return true;
 		}
 
 		int returnDelayMilliseconds = game.BasicSettings.ReturnToTownDelayMilliseconds;
 		DateTime detectedUtc = deathDetectedUtcByWindow.GetOrAdd(game.Handle, DateTime.UtcNow);
 		if ((DateTime.UtcNow - detectedUtc).TotalMilliseconds < returnDelayMilliseconds) {
-			if (deathReturnLoggedByWindow.TryAdd(game.Handle, true)) log($"Nhân vật chết AutoFS | PID={game.ProcessId} | Status={deathStatus} | State={deathState} | Modal=0x{deathModal:X8} | Chờ={returnDelayMilliseconds}ms");
+			if (deathReturnLoggedByWindow.TryAdd(game.Handle, true)) log($"Nhân vật chết | PID={game.ProcessId} | Status={deathStatus} | State={deathState} | Modal=0x{deathModal:X8} | Chờ={returnDelayMilliseconds}ms");
 			return true;
 		}
 
@@ -429,7 +702,7 @@ public static class AccountEngineCoordinator {
 		// Phải dùng lệnh có xác nhận: TrySendCommand chỉ PostMessageA rồi báo thành công ngay, nên khi native
 		// TryDispatchReturnToTown safe-reject (vtable/chữ ký lệch sau bản cập nhật client) log vẫn ghi thành công giả.
 		if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, 38, deathActionPayload, out string sendError)) {
-			string failure = $"Xử lý khi chết AutoFS FAIL | PID={game.ProcessId} | Command=38 | Payload={deathActionPayload} | {sendError}";
+			string failure = $"Xử lý khi chết FAIL | PID={game.ProcessId} | Command=38 | Payload={deathActionPayload} | {sendError}";
 			if (!deathSendFailureByWindow.TryGetValue(game.Handle, out string? previousFailure) || !string.Equals(previousFailure, failure, StringComparison.Ordinal)) {
 				deathSendFailureByWindow[game.Handle] = failure;
 				log(failure);
@@ -437,7 +710,7 @@ public static class AccountEngineCoordinator {
 			return true;
 		}
 		deathSendFailureByWindow.TryRemove(game.Handle, out _);
-		log($"Xử lý khi chết AutoFS | PID={game.ProcessId} | Command=38 | Payload={deathActionPayload} | Action={game.BasicSettings.DeathAction} | Delay={returnDelayMilliseconds}ms");
+		log($"Xử lý khi chết | PID={game.ProcessId} | Command=38 | Payload={deathActionPayload} | Action={game.BasicSettings.DeathAction} | Delay={returnDelayMilliseconds}ms");
 		return true;
 	}
 
@@ -448,7 +721,7 @@ public static class AccountEngineCoordinator {
 			deathUndetectedLoggedByWindow.TryRemove(game.Handle, out _);
 			return;
 		}
-		string line = $"Về thành AutoFS chưa nhận diện được trạng thái chết | PID={game.ProcessId} | Hp={snapshot.Hp}/{snapshot.MaxHp} | " +
+		string line = $"Về thành chưa nhận diện được trạng thái chết | PID={game.ProcessId} | Hp={snapshot.Hp}/{snapshot.MaxHp} | " +
 			$"Status={status}/ExpectedStatus=6 | State={state}/ExpectedState=15 | Modal=0x{modal:X8}/Expected=0x{expectedModal:X8} | " +
 			$"EntityTableRva=0x{game.RuntimeLayout.EntityTableRva:X} | PlayerRecordOffset=0x{game.RuntimeLayout.PlayerRecordOffset:X} | " +
 			$"StatusOffset=0x{GameAddresses.Entity.PlayerDeathStatus:X} | StateOffset=0x{GameAddresses.Entity.PlayerDeathState:X} | ModalStateRva=0x{GameAddresses.Globals.ModalState:X}";

@@ -177,6 +177,29 @@ public sealed class WeaponRepairMonitor {
 		ResetPendingReading();
 	}
 
+	// Hoãn kiểm tra lại một quãng thay vì kiểm ngay. Dùng cho nhánh luồng sửa đồ hỏng liên tiếp: xếp lại ngay lập tức
+	// thì nó quay vòng vô hạn và account không làm được gì khác.
+	public void ScheduleDelayedCheck(int delaySeconds, string? reason = null) {
+		EndExclusiveCheck();
+		nextCheckUtc = DateTime.UtcNow.AddSeconds(Math.Max(delaySeconds, 1));
+		if (!string.IsNullOrWhiteSpace(reason)) {
+			logNextReading = true;
+			nextReadingReason = reason;
+		}
+	}
+
+	// Xoá yêu cầu sửa đang treo rồi hoãn kiểm tra lại một quãng dài. Khác ScheduleDelayedCheck ở chỗ nó hạ
+	// HasPendingRepairRequest xuống false, nhờ vậy repairPriority nhả và tài khoản quay lại đánh thay vì cắm ở NPC.
+	// Độ bền không đổi nên lần Tick sau quãng nghỉ sẽ tự đặt lại repairRequested.
+	public void DeferRepairRequest(int delaySeconds, string? reason = null) {
+		repairRequested = false;
+		requestedDurability = 0;
+		lastThresholdValue = null;
+		unavailableTransportLogged = false;
+		ResetPendingReading();
+		ScheduleDelayedCheck(delaySeconds, reason);
+	}
+
 	public void ScheduleImmediateCheck(string? reason = null) {
 		EndExclusiveCheck();
 		nextCheckUtc = DateTime.MinValue;

@@ -1,41 +1,46 @@
 ﻿namespace Auto.UI.ViewModels;
 
 using System.Collections.ObjectModel;
+using System.Text;
 using Auto.DebugTools;
 using Auto.Runtime;
 using Auto.Sale;
 using Auto.Utils;
 
 public sealed class DebugViewModel : ViewModelBase {
-	// Ba mục đầu là công cụ chẩn đoán cố định, không được xóa.
-	private const string ToolSelectedAccountIdentity = "Thông tin account/PID";
-	private const string ToolClientAddressAudit = "Thông tin địa chỉ client";
-	private const string ToolInventoryInfo = "Thông tin túi đồ";
-	private const string ToolEliteMonsterInfo = "Thông tin quái thủ lĩnh";
-	private const string ToolPetOwner = "Thông tin Đệ";
-	private const string ToolReturnTalisman = "Thông tin Hồi thành phù";
-	private const string ToolHotkeyReturnTalisman = "Dùng Hồi thành phù bằng phím tắt";
+	// Tab này chỉ còn công cụ GỬI LỆNH vào client. Chín mục chỉ-đọc đã chuyển sang tab Thông tin ngày 2026-09-12.
+	private const string ToolTransitGate = "Điểm chuyển tiếp: so sánh trước/sau";
+	private const string ToolTransitGateSelect = "Điểm chuyển tiếp: thử số thứ tự (DỊCH CHUYỂN THẬT)";
+	private const string ToolTransitGateTravel = "Điểm chuyển tiếp: tự đi rồi dịch chuyển (DỊCH CHUYỂN THẬT)";
 	// Hai probe chẩn đoán popup NPC. Đã bị xoá nhầm lúc dọn probe 2026-09-07 rồi khôi phục 2026-09-08 khi luồng
 	// Sửa đồ với NPC dạng popup xác nhận hỏng mà không còn công cụ nào đọc được vtable thật của popup.
+	private const string ToolMonsterIndex = "Quái nằm ở ô nào (đo trần quét entity)";
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
 	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
-	private const string ToolImmediateSale = "Bán ngay (shop đang mở)";
-	private const string ToolImmediateShopRepair = "Sửa ngay (shop đang mở)";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
+	// Mở client thật và gõ tài khoản thật của dòng đầu tiên trong Login\Login.json.
+	private const string ToolLoginTest = "Đăng nhập: thử account đầu tiên (MỞ CLIENT THẬT)";
+	// Chụp ảnh bộ nhớ rồi so hai trạng thái, đúng GAME-ADDRESSES-GUIDE.md §5.1. Chỉ đọc.
+	private const string ToolLoginDialogDiff = "Đăng nhập: chụp & so bộ nhớ tìm hộp thoại";
+	private const string ToolLoginDialogDiffReset = "Đăng nhập: xoá ảnh chụp, bắt đầu lại";
+	// Chỉ đọc: in nguyên giá trị ở từng địa chỉ AutoFS dùng, để biết chuỗi gãy ở mắt xích nào.
+	private const string ToolLoginAutoFsAddress = "Đăng nhập: đọc địa chỉ AutoFS";
 
-	private const int ImmediateSaleTimeoutSeconds = 45;
-	private const int ImmediateSalePollMilliseconds = 100;
-
+	// Trên mức này thì báo cáo đối chiếu không đọc được. Lấy rộng hơn DoctorRouteArrivalDistance (1,5 ô) của luồng
+	// Sửa đồ để lượt bấm ngay sát NPC vẫn được coi là hợp lệ.
+	private const double ConformanceReadableDistanceCells = 3;
 	private readonly GameWindow? game;
 	private bool enableDebugLogging = true;
 	private string selectedTool;
 	private string accountInfoText = "";
+	private int transitGateCommand = 7;
+	private int transitGateOptionIndex;
 
 	public DebugViewModel() : this(null) { }
 
 	public DebugViewModel(GameWindow? game) {
 		this.game = game;
-		selectedTool = ToolSelectedAccountIdentity;
+		selectedTool = ToolTransitGate;
 		RunToolCommand = new RelayCommand(_ => RunTool());
 		ClearOutputCommand = new RelayCommand(_ => AccountInfoText = "");
 	}
@@ -49,19 +54,29 @@ public sealed class DebugViewModel : ViewModelBase {
 	}
 
 	public ObservableCollection<string> Tools { get; } = [
-		ToolSelectedAccountIdentity,
-		ToolClientAddressAudit,
-		ToolInventoryInfo,
-		ToolEliteMonsterInfo,
-		ToolPetOwner,
-		ToolReturnTalisman,
-		ToolHotkeyReturnTalisman,
+		ToolTransitGate,
+		ToolTransitGateSelect,
+		ToolTransitGateTravel,
+		ToolMonsterIndex,
 		ToolModalVtable,
 		ToolNpcMenuCapture,
-		ToolImmediateSale,
-		ToolImmediateShopRepair,
-		ToolImmediateRepair
+		ToolImmediateRepair,
+		ToolLoginTest,
+		ToolLoginAutoFsAddress,
+		ToolLoginDialogDiff,
+		ToolLoginDialogDiffReset
 	];
+
+	// Số lệnh và tham số khi thử điểm đến. Chỉ tool ToolTransitGateSelect đọc hai giá trị này.
+	public int TransitGateCommand {
+		get => transitGateCommand;
+		set => SetField(ref transitGateCommand, value);
+	}
+
+	public int TransitGateOptionIndex {
+		get => transitGateOptionIndex;
+		set => SetField(ref transitGateOptionIndex, value);
+	}
 
 	public string SelectedTool {
 		get => selectedTool;
@@ -80,26 +95,17 @@ public sealed class DebugViewModel : ViewModelBase {
 	// Khớp DEV\UI\Debug.cs.RunTool: chọn công cụ theo dropdown rồi chạy đúng 1 nút "Chạy" chung.
 	private void RunTool() {
 		switch (selectedTool) {
-			case ToolSelectedAccountIdentity:
-				ShowAccountInfo();
+			case ToolTransitGate:
+				StartTransitGate();
 				return;
-			case ToolClientAddressAudit:
-				StartClientAddressAudit();
+			case ToolTransitGateSelect:
+				StartTransitGateSelect();
 				return;
-			case ToolInventoryInfo:
-				StartInventoryInfo();
+			case ToolTransitGateTravel:
+				StartTransitGateTravel();
 				return;
-			case ToolEliteMonsterInfo:
-				StartEliteMonsterInfo();
-				return;
-			case ToolPetOwner:
-				StartPetOwnerProbe();
-				return;
-			case ToolReturnTalisman:
-				StartReturnTalismanProbe();
-				return;
-			case ToolHotkeyReturnTalisman:
-				StartHotkeyReturnTalisman();
+			case ToolMonsterIndex:
+				StartMonsterIndexProbe();
 				return;
 			case ToolModalVtable:
 				StartModalVtableProbe();
@@ -107,14 +113,20 @@ public sealed class DebugViewModel : ViewModelBase {
 			case ToolNpcMenuCapture:
 				StartNpcMenuCapture();
 				return;
-			case ToolImmediateSale:
-				StartImmediateSale();
-				return;
-			case ToolImmediateShopRepair:
-				StartImmediateShopRepair();
-				return;
 			case ToolImmediateRepair:
 				StartWeaponRepairFlowTest();
+				return;
+			case ToolLoginTest:
+				StartLoginTest();
+				return;
+			case ToolLoginAutoFsAddress:
+				StartLoginAutoFsAddress();
+				return;
+			case ToolLoginDialogDiff:
+				StartLoginDialogDiff();
+				return;
+			case ToolLoginDialogDiffReset:
+				AccountInfoText = LoginDialogDiffProbe.Reset();
 				return;
 			default:
 				AccountInfoText = $"Không nhận diện được công cụ: {selectedTool}";
@@ -122,84 +134,47 @@ public sealed class DebugViewModel : ViewModelBase {
 		}
 	}
 
-	// Chạy ClientAddressAudit.Run và hiển thị nguyên khối kết quả, khớp DEV\UI\Debug.cs.StartClientAddressAudit.
-	private async void StartClientAddressAudit() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		AccountInfoText = $"PID={game.ProcessId} | Đang kiểm tra toàn bộ địa chỉ client...";
-		List<string> lines = await Task.Run(() => ClientAddressAudit.Run(game));
-		foreach (string line in lines) DebugLog.AddDebugForProcess(game.ProcessId, line);
-		AccountInfoText = string.Join("\r\n", lines);
+	// Không cần account đang chọn: luồng này TỰ MỞ client mới rồi mới gõ tài khoản.
+	private async void StartLoginTest() {
+		AccountInfoText = "Đang mở client và gửi chuỗi lệnh đăng nhập...";
+		AccountInfoText = await Task.Run(LoginTestProbe.Run);
 	}
 
-	// Liệt kê tên, số lượng và trọng lượng vật phẩm ở cả 3 container, chỉ đọc bộ nhớ.
-	private async void StartInventoryInfo() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		int processId = game.ProcessId;
-		AccountInfoText = $"PID={processId} | Đang đọc túi đồ...";
-		string result = await Task.Run(() => InventoryInfoProbe.Run(processId));
-		DebugLog.AddDebugForProcess(processId, result);
-		AccountInfoText = $"PID={processId} | {result}";
-	}
-
-	// Liệt kê quái quanh nhân vật kèm phán quyết thủ lĩnh/boss và byte thô của tên, chỉ đọc bộ nhớ.
-	private async void StartEliteMonsterInfo() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		int processId = game.ProcessId;
-		AccountInfoText = $"PID={processId} | Đang quét quái quanh nhân vật...";
-		string result = await Task.Run(() => EliteMonsterProbe.Run(processId));
-		DebugLog.AddDebugForProcess(processId, result);
-		AccountInfoText = $"PID={processId} | {result}";
-	}
-
-	// Dò cách tách Đệ của nhân vật ra khỏi các entity type 6 khác. Phải có Đệ đang ra ngoài khi chạy.
-	private async void StartPetOwnerProbe() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		int processId = game.ProcessId;
-		AccountInfoText = $"PID={processId} | Đang quét entity type 6...";
-		string result = await Task.Run(() => PetOwnerProbe.Run(processId));
-		DebugLog.AddDebugForProcess(processId, result);
-		AccountInfoText = $"PID={processId} | {result}";
-	}
-
-	// Kiểm từng cổng của tính năng Hồi thành phù, không đụng gì vào game.
-	private async void StartReturnTalismanProbe() {
+	private async void StartLoginAutoFsAddress() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
 		GameWindow target = game;
-		AccountInfoText = $"PID={target.ProcessId} | Đang kiểm tính năng Hồi thành phù...";
-		string result = await Task.Run(() => ReturnTalismanProbe.Inspect(target));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = $"PID={target.ProcessId} | {result}";
+		AccountInfoText = $"PID={target.ProcessId} | Đang đọc các địa chỉ đăng nhập của AutoFS...";
+		AccountInfoText = await Task.Run(() => LoginAutoFsAddressProbe.Run(target));
 	}
 
-	// GỬI PHÍM THẬT vào cửa sổ game theo đường phím tắt trang bị nhanh. Bùa phải nằm ở container 11.
-	private async void StartHotkeyReturnTalisman() {
+	private async void StartLoginDialogDiff() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
 		GameWindow target = game;
-		AccountInfoText = $"PID={target.ProcessId} | Đang gửi phím tắt trang bị nhanh...";
-		string result = await Task.Run(() => ReturnTalismanProbe.UseByHotkey(target));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = $"PID={target.ProcessId} | {result}";
+		AccountInfoText = $"PID={target.ProcessId} | Đang chụp ảnh bộ nhớ Game.exe...";
+		AccountInfoText = await Task.Run(() => LoginDialogDiffProbe.Run(target));
 	}
 
 	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.
+	// Đo dải chỉ số ô mà QUÁI thật sự chiếm, để biết có hạ được trần quét của vòng Đánh không.
+	// Giữ mốc cao nhất qua các lần bấm nên phải chạy ở nhiều bãi rồi mới đọc kết luận.
+	private async void StartMonsterIndexProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang đo dải ô của quái...";
+		string result = await Task.Run(() => MonsterIndexProbe.Run(processId));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
 	private async void StartModalVtableProbe() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
@@ -225,112 +200,118 @@ public sealed class DebugViewModel : ViewModelBase {
 		AccountInfoText = $"PID={processId} | {result}";
 	}
 
-	// Chạy một lượt kiểm tra sửa toàn bộ khi account đã mở sẵn shop NPC.
-	private async void StartImmediateShopRepair() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		if (!game.AutoFsActionGate.MasterEnabled) {
-			AccountInfoText = "Hãy bật Auto tổng cho account đã chọn để command nội bộ hoạt động; có thể tắt riêng Đánh và Nhặt.";
-			return;
-		}
-		if (game.WeaponRepairAutomation.IsBusy) {
-			AccountInfoText = "Luồng Sửa đồ tự động đang bận. Hãy tắt riêng Sửa đồ trước khi chạy debug shop.";
-			return;
-		}
-		AccountInfoText = $"PID={game.ProcessId} | Debug Sửa ngay bắt đầu. Giữ shop đang mở.";
-		string result = await Task.Run(() => ShopRepairDebugCommand.Run(game, text => DebugLog.AddDebugForProcess(game.ProcessId, text)));
-		DebugLog.AddDebugForProcess(game.ProcessId, result);
-		AccountInfoText = $"PID={game.ProcessId} | {result}";
-	}
-
 	// Đi sửa đồ toàn bộ theo yêu cầu, bỏ qua ngưỡng độ bền; giữ Auto tổng đang bật.
 	private void StartWeaponRepairFlowTest() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
+		// Chụp quyết định của luồng Sửa đồ TRƯỚC khi chạy, rồi mới chạy. Không có phần này thì chỉ biết chuyến sửa
+		// thành công hay hỏng, không biết Auto đã bám đúng cách AutoFS tìm NPC hay chưa.
+		string conformance = DescribeAutoFsConformance(game);
+		DebugLog.AddDebugForProcess(game.ProcessId, conformance);
 		string status;
 		lock (game.AutoSync) status = game.WeaponRepairAutomation.RequestDebugRun();
 		DebugLog.AddForProcess(game.ProcessId, status);
-		AccountInfoText = $"PID={game.ProcessId} | {status}\r\n" +
-			"Chỉ cần bật Auto tổng, KHÔNG cần bật Đánh. Nhân vật tự đi tới NPC, sửa toàn bộ rồi quay lại bãi, bỏ qua ngưỡng độ bền.\r\n" +
+		AccountInfoText = $"PID={game.ProcessId} | {status}\r\n\r\n{conformance}\r\n" +
+			"KHÔNG cần bật Auto tổng, KHÔNG cần bật Đánh, KHÔNG cần đợi độ bền tụt. Nhân vật tự đi tới NPC, sửa toàn bộ rồi quay lại chỗ cũ.\r\n" +
 			"Xem repair.log để biết NPC thuộc dạng nào: \"Doctor confirmation modal\" = popup xác nhận, \"Doctor shop menu\" = menu nhiều lựa chọn.";
 	}
 
-	private async void StartImmediateSale() {
+	// Đổ danh sách điểm đến trong popup Điểm chuyển tiếp ĐANG hiện. Không đi bộ, không click, không chọn mục nào.
+	private async void StartTransitGate() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
-		if (game.Enabled) {
-			AccountInfoText = "Hãy tắt Auto tổng trước khi chạy Bán ngay để tránh tranh chấp với Tự đánh/Nhặt/Sửa đồ.";
-			return;
-		}
-		if (game.WeaponRepairAutomation.IsBusy) {
-			AccountInfoText = "Không thể chạy Bán ngay vì flow Sửa đồ đang bận.";
-			return;
-		}
-		if (!IsShopReadyForImmediateSale(game.ProcessId, out string shopState)) {
-			AccountInfoText = "Bán ngay yêu cầu bạn mở shop NPC thủ công trước. " + shopState;
-			return;
-		}
-
-		AccountInfoText = $"PID={game.ProcessId} | Bán ngay bắt đầu. Không đóng shop cho tới khi hoàn tất.";
-		GameWindow saleGame = game;
-		string finalText = await Task.Run(() => RunImmediateSale(saleGame));
-		AccountInfoText = finalText;
+		GameWindow target = game;
+		// Quét 512MB nên phải chạy nền, để trên luồng UI thì cửa sổ đứng hình suốt lượt quét.
+		AccountInfoText = $"PID={target.ProcessId} | Đang quét toàn bộ bộ nhớ game...";
+		string status = await Task.Run(() => TransitGatePopupProbe.Read(target));
+		DebugLog.AddDebugForProcess(target.ProcessId, status);
+		AccountInfoText = $"PID={target.ProcessId}\r\n{status}\r\n\r\n"
+			+ "Bấm HAI lần: lần 1 lúc popup ĐÓNG để chụp nền, lần 2 lúc popup ĐANG MỞ để lấy phần chữ mới.\r\n"
+			+ "Công cụ chỉ ĐỌC, không chọn điểm đến nào, không cần bật Auto tổng.";
 	}
 
-	// Chạy nền toàn bộ vòng bán và chỉ trả về câu kết luận để nơi gọi cập nhật giao diện trên luồng UI.
-	private static string RunImmediateSale(GameWindow game) {
-		Action<string> log = text => DebugLog.AddDebugForProcess(game.ProcessId, text);
-		lock (game.AutoSync) game.InventorySaleEngine.Start(log);
-		DateTime deadlineUtc = DateTime.UtcNow.AddSeconds(ImmediateSaleTimeoutSeconds);
-		while (DateTime.UtcNow < deadlineUtc) {
-			InventorySaleTickResult result;
-			string failure;
-			lock (game.AutoSync) result = game.InventorySaleEngine.Tick(game.ProcessId, game.Handle, log, out failure);
-			if (result == InventorySaleTickResult.Completed) return $"PID={game.ProcessId} | Bán ngay hoàn tất. Kiểm tra log SALE_*.";
-			if (result == InventorySaleTickResult.Failed) return $"PID={game.ProcessId} | Bán ngay dừng an toàn | {failure}";
-			Thread.Sleep(ImmediateSalePollMilliseconds);
-		}
-		lock (game.AutoSync) game.InventorySaleEngine.Reset();
-		return $"PID={game.ProcessId} | Bán ngay timeout sau {ImmediateSaleTimeoutSeconds} giây.";
-	}
-
-	private static bool IsShopReadyForImmediateSale(int processId, out string state) {
-		try {
-			using MemoryReader reader = new(processId);
-			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
-			if (moduleBase == IntPtr.Zero) {
-				state = "Game.exe không tồn tại.";
-				return false;
-			}
-			uint modalState = unchecked((uint)reader.ReadInt32(IntPtr.Add(moduleBase, GameAddresses.Globals.ModalState)));
-			uint shopState = unchecked((uint)reader.ReadInt32(IntPtr.Add(moduleBase, GameAddresses.Globals.ShopState)));
-			state = $"ModalState={modalState} | ShopState={shopState}";
-			return modalState == 0 && shopState == 2;
-		} catch (Exception ex) {
-			state = ex.GetType().Name + ": " + ex.Message;
-			return false;
-		}
-	}
-
-	private void ShowAccountInfo() {
+	// GỬI LỆNH THẬT vào game: bấm thử một số thứ tự trong popup Điểm chuyển tiếp rồi báo map thật sự tới.
+	private async void StartTransitGateSelect() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
-		AccountInfoText =
-			"===== Selected Account Identity =====\r\n" +
-			"BuildStamp = SELECTED-ACCOUNT-PID-20260728-01\r\n" +
-			$"ProcessId = {game.ProcessId}\r\n" +
-			$"Tên = {game.DisplayName}\r\n" +
-			$"Level = {game.Level}\r\n" +
-			$"HP = {game.Hp}/{game.MaxHp}\r\n" +
-			$"CE Process = {game.ProcessId:X8}-Game.exe\r\n" +
-			"Status = COMPLETED";
+		GameWindow target = game;
+		int command = transitGateCommand;
+		int index = transitGateOptionIndex;
+		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh {command} với số {index}...";
+		string result = await Task.Run(() => TransitGateSelectProbe.Run(target, command, index));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = $"PID={target.ProcessId}\r\n{result}\r\n\r\n"
+			+ "Phải đứng lên Điểm chuyển tiếp cho popup hiện ra TRƯỚC khi bấm. Mỗi lần bấm thử ĐÚNG MỘT số.\r\n"
+			+ "DỊCH CHUYỂN THẬT: nếu số đó là điểm đến thì nhân vật đi luôn.";
 	}
+
+	// GỬI LỆNH THẬT: nhân vật tự đi ra Điểm chuyển tiếp ở Triều Ca rồi chọn số thứ tự đang nhập.
+	private async void StartTransitGateTravel() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		int index = transitGateOptionIndex;
+		AccountInfoText = $"PID={target.ProcessId} | Đang đi ra Điểm chuyển tiếp rồi chọn số {index}...";
+		string result = await Task.Run(() => TransitGateTravelProbe.Run(target, index));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = $"PID={target.ProcessId}\r\n{result}\r\n\r\n"
+			+ "Nhân vật phải đang ở Triều Ca (Map 21). Không cần bật Auto tổng.\r\n"
+			+ "DỊCH CHUYỂN THẬT: nhân vật tự đi ra điểm rồi đi tới map tương ứng với số đã nhập.";
+	}
+
+	// Quy đổi raw sang ô đúng tỉ lệ của game: X chia 256, Y chia 512.
+	private static double GetCellDistance(int firstX, int firstY, int secondX, int secondY) {
+		double deltaX = (firstX - (double)secondX) / 256.0;
+		double deltaY = (firstY - (double)secondY) / 512.0;
+		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+	}
+
+	// Đối chiếu từng bước tìm NPC của Auto với bản decompile AutoFS (WindowQueue.cs:24241-24270, hàm OrderQueue được
+	// gọi bằng OrderQueue("Đại phu", 30) ở MenuAttribute.cs:23958). Gọi đúng những API mà luồng Sửa đồ thật đang gọi
+	// (GameMapReader.Read, RuntimeEntityLocator.TryFindNamedEntity) nên báo cáo phản ánh đúng quyết định sắp diễn ra,
+	// không phải một bản mô phỏng riêng.
+	private static string DescribeAutoFsConformance(GameWindow game) {
+		StringBuilder output = new();
+		output.AppendLine("===== Đối chiếu cách tìm Đại Phu với AutoFS =====");
+		GameSnapshot snapshot = GameMemory.ReadSnapshot(game.ProcessId);
+		GameMapInfo map = GameMapReader.Read(game.ProcessId);
+		if (!map.Success || !map.HasDoctor) {
+			output.AppendLine($"DỪNG | {(map.Success ? $"Map {map.MapId} không có toạ độ Đại Phu trong Data/Maps." : map.FailureReason)}");
+			return output.ToString();
+		}
+		// Khoảng cách tới mốc quyết định số liệu có đọc được hay không: client chỉ nạp entity quanh nhân vật, đứng xa
+		// thì NPC vắng mặt là bình thường chứ không phải lỗi. Bản đầu không in số này nên một lượt bấm từ xa
+		// (PID=34032, 20,85 ô, 2026-09-11) ra dòng "KHÔNG thấy" kèm kết luận sai là NPC vắng khỏi bảng entity.
+		double anchorDistance = GetCellDistance(snapshot.X, snapshot.Y, map.DoctorRawX, map.DoctorRawY);
+		bool nearAnchor = anchorDistance <= ConformanceReadableDistanceCells;
+		output.AppendLine($"Map={map.MapId} | MốcĐạiPhu(Data/Maps)={map.DoctorRawX}/{map.DoctorRawY} | NhânVật={snapshot.X}/{snapshot.Y} | CáchMốc={anchorDistance:F2} ô");
+		if (!nearAnchor) output.AppendLine($"CẢNH BÁO | Đứng cách mốc {anchorDistance:F2} ô (> {ConformanceReadableDistanceCells} ô) nên client chưa nạp NPC. Số liệu dưới đây KHÔNG dùng để kết luận được — bấm lại khi nhân vật đang đứng cạnh Đại Phu.");
+
+		bool found = RuntimeEntityLocator.TryFindNamedEntity(game.ProcessId, "Đại phu", map.DoctorRawX, map.DoctorRawY, out RuntimeEntityLocation doctor, out string reason);
+		output.AppendLine($"[1] Quét index {GameAddresses.Entity.FirstScanIndex}..{GameAddresses.Entity.LastScanIndex} | AutoFS: for (int k = 2; k < 256; k++) | Khớp=CÓ");
+		output.AppendLine($"[2] So tên bằng Contains, KHÔNG lọc EntityType/LifecycleStatus | AutoFS: text.Contains(name) | Khớp=CÓ");
+		output.AppendLine($"[3] KHÔNG loại entity thiếu toạ độ | AutoFS chỉ đọc trường tên, không đọc toạ độ | Khớp=CÓ");
+		if (!found) {
+			output.AppendLine($"[4] KẾT QUẢ: KHÔNG thấy entity 'Đại phu' | {reason}");
+			output.AppendLine(nearAnchor
+				? "     => Đang đứng sát mốc mà vẫn không thấy: nếu KhớpTênKhôngToạĐộ=0 thì NPC thật sự vắng khỏi bảng entity, không phải lỗi bộ lọc."
+				: "     => KHÔNG kết luận được vì đứng quá xa mốc, xem dòng CẢNH BÁO ở trên.");
+			return output.ToString();
+		}
+		bool byIndex = doctor.RawX <= 0 || doctor.RawY <= 0;
+		output.AppendLine($"[4] KẾT QUẢ: thấy '{doctor.Name}' | Index={doctor.Index} | Raw={doctor.RawX}/{doctor.RawY} | CóToạĐộ={(byIndex ? "KHÔNG" : "CÓ")}");
+		output.AppendLine(byIndex
+			? "[5] Sẽ click bằng lệnh 8 + index, đúng cách AutoFS (NetworkSet.DisposeNode(Handle, fontInstance, 8, k)) | Khớp=CÓ"
+			: "[5] Sẽ click theo toạ độ màn hình | AutoFS dùng lệnh 8 + index | Khớp=KHÔNG (giữ nguyên vì đây là đường đã sửa đồ thành công)");
+		return output.ToString();
+	}
+
 }

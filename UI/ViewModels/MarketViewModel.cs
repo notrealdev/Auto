@@ -5,10 +5,10 @@ using Auto.UI.Models;
 
 public sealed class MarketViewModel : ViewModelBase {
 	public static IReadOnlyList<AdvertiseTemplateOption> Templates { get; } = [
-		new("Mua xu", "Mua xu"),
-		new("Bán xu", "Bán xu"),
-		new("Mua máu", "Mua máu"),
-		new("Bán máu", "Bán máu")
+		new("Mua Xu", "Mua xu giá 4.5 ai bán pm nào :0:0:0"),
+		new("Ban Lieu", "Bán 145K liễu mộc sll 110X/100, ai mua pm :E"),
+		new("Mua MHTT", "MUA MHTT, ABPM + giá :B"),
+		new("Mua MHTT 65X/1", "M >>>>>>>>>>>> MHTT 65X/1 ==== SLL ==== ABPM :o")
 	];
 
 	private readonly Settings settings;

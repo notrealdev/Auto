@@ -32,6 +32,30 @@ public static class GameAddresses {
 
 	public static class Entity {
 		public const int PlayerIndex = 1;
+		// Biên quét bảng entity, DÙNG CHUNG cho mọi nơi. Cả hai đều là chỉ số HỢP LỆ, vòng lặp phải dùng "<=".
+		//
+		// Trước đây mỗi nơi tự định nghĩa: Attack/AutoFsClientProfile dùng "index <= 256" còn Utils/RuntimeEntityLocator
+		// dùng "index < 256", lệch nhau đúng ô 256. Chỉ số của cùng một NPC khác nhau ở từng client — repair.log
+		// 2026-09-10 ghi Đại Phu ở index 95, 123, 134, 141, 163, 247 trên 4 client — nên client nào rơi trúng 256 thì
+		// luồng sửa đồ không bao giờ thấy NPC trong khi luồng đánh vẫn thấy.
+		//
+		// Nâng trần 256 -> 511 ngày 2026-09-11. Trần 256 chép theo AutoFS ("for (int k = 2; k < 256; k++)",
+		// WindowQueue.cs:24241) và AutoFS SAI ở chỗ này — bảng entity của client lớn hơn thế nhiều.
+		//
+		// Bằng chứng, EntityTableDumpProbe quét 2..1023 trên PID=22824 đứng cạnh NPC nhiệm vụ:
+		//   !272 Hoàng Thiên Hóa | Type=3 | Raw=54980/94428 | cách nhân vật 0,14 ô   <- NPC cần tìm, ngoài trần cũ
+		//   Quét 2..1023 | TrongDải(<=256)=15 | NGOÀIDẢI(>256)=123
+		// tức Auto chỉ nhìn thấy 15/138 entity có tên. Các NPC khác cũng nằm ngoài: #324 Thổ Hành Tôn,
+		// #343 Nhà chiêm tinh, #350 Thủ khố, #405 Chủ Tiền Trang (đều Type=3).
+		// Đây là nguyên nhân của cả hai sự cố: luồng Sửa đồ quay 469 chuyến không thấy Đại Phu (repair.log
+		// 2026-09-11) và luồng Thám quân không click được NPC (quest.log 2026-09-11).
+		//
+		// Vì sao dừng ở 511 chứ không quét tiếp: cùng bản dump đó, entity lành cuối cùng là #475
+		// (SAOCUNGDUOC | Type=1 | St=7 | Lv=66 | Raw=56060/95359); từ #513 trở lên toàn rác — tên 'ÿÿÿÿ',
+		// Type=1919972096, toạ độ 0/0 — tức đã đọc quá đuôi bảng. Khoảng 476..512 không entity nào có tên.
+		// 512 ô là ranh giới khớp với dữ liệu, quét thêm chỉ rước rác vào bộ lọc mục tiêu.
+		public const int FirstScanIndex = 2;
+		public const int LastScanIndex = 511;
 		public const int Stride = 0xD87C;
 		public const int Handle = 0x0000;
 		public const int SlotIndex = 0x0004;

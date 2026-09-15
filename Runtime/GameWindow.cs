@@ -1,7 +1,8 @@
-// GameWindow.cs
+﻿// GameWindow.cs
 namespace Auto.Runtime;
 
 using Auto.Attack;
+using Auto.DebugTools;
 using Auto.Movement;
 using Auto.Repair;
 using Auto.Sale;
@@ -38,7 +39,17 @@ public class GameWindow {
 
 	public int MoveTargetY { get; set; }
 
-	public string CharacterName { get; set; } = "";
+	// Ghi kèm vào DebugLog để mọi dòng log gắn PID có luôn tên nhân vật. Đây là chỗ duy nhất đăng ký tên, nên
+	// không thể có nơi nào cập nhật tên mà quên báo cho log.
+	public string CharacterName {
+		get => characterName;
+		set {
+			characterName = value;
+			DebugLog.SetProcessName(ProcessId, value);
+		}
+	}
+
+	private string characterName = "";
 
 	public Settings AttackSettings { get; } = new();
 
@@ -49,16 +60,20 @@ public class GameWindow {
 	public Auto.Loot.Engine LootEngine { get; }
 	public Auto.Support.Settings SupportSettings { get; } = new();
 	internal Auto.Support.Engine SupportEngine { get; }
-	internal Auto.Support.PassiveBuffEngine PassiveBuffEngine { get; }
+	internal Auto.Support.BuffEngine BuffEngine { get; }
 	internal InventorySaleEngine InventorySaleEngine { get; }
 	internal AutoFsAttackTransport AutoFsTransport { get; }
 	internal AutoFsActionGate AutoFsActionGate { get; }
 
 	public BasicSettings BasicSettings { get; } = new();
-	internal LowHpReturnTalismanEngine LowHpReturnTalismanEngine { get; }
+	internal LowHpEngine LowHpEngine { get; }
 
 	public Auto.Market.Settings MarketSettings { get; } = new();
-	internal Auto.Market.AutoAdvertiseEngine AutoAdvertiseEngine { get; }
+	internal Auto.Market.ChatEngine ChatEngine { get; }
+
+	public Auto.Quest.Settings QuestSettings { get; } = new();
+
+	public Auto.Quest.ScoutQuestAutomation ScoutQuestAutomation { get; } = new();
 
 	public WeaponRepairMonitor WeaponRepairMonitor { get; } = new();
 
@@ -83,10 +98,10 @@ public class GameWindow {
 		AttackEngine = new Engine(AttackSettings, AutoFsTransport, AutoFsActionGate);
 		LootEngine = new Auto.Loot.Engine(LootSettings, AutoFsTransport, AutoFsActionGate);
 		SupportEngine = new Auto.Support.Engine(SupportSettings, AutoFsTransport);
-		PassiveBuffEngine = new Auto.Support.PassiveBuffEngine(SupportSettings, AutoFsTransport);
+		BuffEngine = new Auto.Support.BuffEngine(SupportSettings, AutoFsTransport);
 		InventorySaleEngine = new InventorySaleEngine(LootSettings, AutoFsTransport);
-		LowHpReturnTalismanEngine = new LowHpReturnTalismanEngine(BasicSettings, AutoFsTransport);
-		AutoAdvertiseEngine = new Auto.Market.AutoAdvertiseEngine(MarketSettings, AutoFsTransport);
+		LowHpEngine = new LowHpEngine(BasicSettings, AutoFsTransport);
+		ChatEngine = new Auto.Market.ChatEngine(MarketSettings, AutoFsTransport);
 	}
 
 	public string DisplayName {

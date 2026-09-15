@@ -8,15 +8,62 @@
 	d:DataContext="{d:DesignInstance Type=vm:InfoViewModel}"
 	mc:Ignorable="d">
 
-	<Border Style="{StaticResource CardBorder}">
-		<StackPanel>
-			<TextBlock Style="{StaticResource SectionLabel}" Text="Ctrl + A" />
-			<TextBlock
-				MaxWidth="440"
-				HorizontalAlignment="Left"
-				Foreground="{StaticResource Brush.TextPrimary}"
-				Text="Bấm Ctrl + A khi cửa sổ game đang foreground sẽ bật/tắt &quot;Tự động đánh&quot; cho đúng tài khoản đó, không đổi các checkbox Tân thủ/Thành thị/Mê cung."
-				TextWrapping="Wrap" />
-		</StackPanel>
-	</Border>
+	<StackPanel>
+		<!--  Toàn bộ mục ở đây CHỈ ĐỌC bộ nhớ client; mục nào gửi lệnh vào game thì nằm ở tab Debug.  -->
+		<Border Margin="0,0,0,10" Style="{StaticResource CardBorder}">
+			<StackPanel>
+				<TextBlock Margin="0,0,0,8" Style="{StaticResource SectionLabel}" Text="Đọc thông tin client" />
+
+				<Grid Margin="0,0,0,10">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*" />
+						<ColumnDefinition Width="Auto" />
+						<ColumnDefinition Width="Auto" />
+					</Grid.ColumnDefinitions>
+					<ComboBox
+						Grid.Column="0"
+						Margin="0,0,8,0"
+						ItemsSource="{Binding Tools}"
+						SelectedItem="{Binding SelectedTool}" />
+					<Button
+						Grid.Column="1"
+						Margin="0,0,8,0"
+						Padding="10,4"
+						Command="{Binding RunToolCommand}"
+						Content="Chạy" />
+					<Button
+						Grid.Column="2"
+						Padding="10,4"
+						Command="{Binding ClearOutputCommand}"
+						Content="Clear" />
+				</Grid>
+
+				<TextBox
+					Height="220"
+					Padding="8,8"
+					AcceptsReturn="True"
+					FontFamily="Consolas"
+					IsReadOnly="True"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding OutputText, Mode=OneWay}"
+					TextAlignment="Left"
+					TextWrapping="NoWrap"
+					VerticalContentAlignment="Top"
+					VerticalScrollBarVisibility="Auto"
+					HorizontalScrollBarVisibility="Auto" />
+			</StackPanel>
+		</Border>
+
+		<Border Style="{StaticResource CardBorder}">
+			<StackPanel>
+				<TextBlock Style="{StaticResource SectionLabel}" Text="Ctrl + A" />
+				<TextBlock
+					MaxWidth="440"
+					HorizontalAlignment="Left"
+					Foreground="{StaticResource Brush.TextPrimary}"
+					Text="Bấm Ctrl + A khi cửa sổ game đang foreground sẽ bật/tắt &quot;Tự động đánh&quot; cho đúng tài khoản đó, không đổi các checkbox Tân thủ/Thành thị/Mê cung."
+					TextWrapping="Wrap" />
+			</StackPanel>
+		</Border>
+	</StackPanel>
 </UserControl>

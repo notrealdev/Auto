@@ -91,6 +91,20 @@ public sealed class Settings {
 	// trong EliteAvoidance.Distance. <= 0 nghĩa là tắt né nhưng vẫn lọc mục tiêu.
 	public int EliteAvoidRadius { get; set; } = 500;
 
+	// Bán kính NHÂN VẬT phải chạy ra khỏi, tách riêng khỏi EliteAvoidRadius vì hai con số phục vụ hai việc khác nhau:
+	// EliteAvoidRadius lọc quái thường quanh boss (AutoFsEntityScanner.cs:145), nâng nó lên thì 3 con boss quanh tâm
+	// bãi quét sạch quái và Auto phải chọn quái xa. Con số dưới đây chỉ dùng cho chính nhân vật.
+	//
+	// 768 raw = 3 ô, chủ dự án chốt 2026-09-11 ("tránh boss tối thiểu là 3 ô thay vì 2 ô").
+	//
+	// Đã thử 1280 (5 ô) và PHẢI hạ xuống: 4 góc trốn nằm ở tâm ± Range/3, quy đổi trục Y thì chỉ cách tâm
+	// 666*1,118 = 745 raw — nhỏ hơn 1280 — nên không góc nào sạch và nhân vật đứng chết một chỗ. Bằng chứng
+	// (movement.log 2026-09-11, PID=34032): ELITE_NO_SAFE_CORNER lúc 14:50:38 / 14:50:48 / 14:50:58 / 14:51:09 đều
+	// ghi đúng một toạ độ Player=63631/90321.
+	// Với 768 thì retreatStep = max(666, 768) = 768, góc cách tâm 768*1,118 = 858 > 768 nên luôn còn lối thoát.
+	// Đổi số này phải kiểm lại bất đẳng thức đó, nếu không lỗi đứng im quay lại ngay.
+	public int ElitePlayerRetreatRadius { get; set; } = 768;
+
 	public int Range { get; set; } = 2000;
 
 	public int CenterX { get; set; }

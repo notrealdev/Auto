@@ -36,12 +36,18 @@ public sealed class Settings {
 		ItemSelections["Đồ Cam"] = true;
 		ItemSelections["Đồ Khác"] = true;
 		ItemSelections["Dược Phẩm"] = true;
+		// Thảo Dược mặc định TẮT (chủ dự án chốt 2026-09-11). Trước lượt này chưa có mục nào chặn chúng nên
+		// 'Liên Kiều' vẫn bị nhặt, xem loot-drops.log 2026-09-11 21:29:35 PID=32196/22824.
+		ItemSelections["Thảo Dược"] = false;
+		// "Vũ khí xanh" mặc định BẬT (chủ dự án chốt 2026-09-12). Nhặt THÊM bản XANH LỤC của các tên trong
+		// AutoFsSpecialItemClassifier.GreenWeaponNames kể cả khi ô "Đồ Lục" đang tắt; không loại bỏ màu nào.
+		ItemSelections[Finder.GreenWeaponSelectionName] = true;
 		ItemSelections["Mảnh, Ngọc"] = true;
 		ItemSelections["Bí Kíp"] = true;
 		ItemSelections["Pháp Bảo"] = true;
 		ItemSelections["Quẻ"] = true;
-		ItemSelections["Lục Đạo"] = false;
-		ItemSelections["Tứ Tượng"] = false;
+		ItemSelections["Lục Đạo"] = true;
+		ItemSelections["Tứ Tượng"] = true;
 		ItemSelections["Nhãn Vạn Tiên Trận"] = true;
 		ExcludedItemSelections["Đồ Trắng"] = false;
 		ExcludedItemSelections["Đồ Xanh"] = false;

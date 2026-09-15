@@ -17,7 +17,7 @@
 	Background="{StaticResource Brush.Background}"
 	WindowStyle="None"
 	AllowsTransparency="False"
-	ResizeMode="CanResizeWithGrip"
+	ResizeMode="CanResize"
 	UseLayoutRounding="True"
 	SnapsToDevicePixels="True"
 	RenderOptions.EdgeMode="Aliased"
@@ -43,6 +43,9 @@
 		<DataTemplate DataType="{x:Type vm:LootViewModel}">
 			<views:LootView />
 		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:QuestViewModel}">
+			<views:QuestView />
+		</DataTemplate>
 		<DataTemplate DataType="{x:Type vm:SupportViewModel}">
 			<views:SupportView />
 		</DataTemplate>
@@ -52,11 +55,27 @@
 		<DataTemplate DataType="{x:Type vm:InfoViewModel}">
 			<views:InfoView />
 		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:LoginViewModel}">
+			<views:LoginView />
+		</DataTemplate>
 		<DataTemplate DataType="{x:Type vm:DebugViewModel}">
 			<views:DebugView />
 		</DataTemplate>
 		<DataTemplate x:Key="AccountRowTemplate" DataType="{x:Type vm:AccountRowViewModel}">
 			<StackPanel>
+				<!--
+					Đặt ContextMenu ở ĐÂY chứ không ở ItemContainerStyle: MenuItem thừa kế DataContext là chính
+					AccountRowViewModel của dòng bị bấm, nên lệnh đóng luôn tác động đúng dòng đó kể cả khi nó
+					chưa được chọn — chuột phải trong WPF không tự chọn ListBoxItem.
+				-->
+				<StackPanel.ContextMenu>
+					<ContextMenu Style="{StaticResource DarkContextMenu}">
+						<MenuItem
+							Click="CloseGameProcess_Click"
+							Header="Đóng cửa sổ game này"
+							Style="{StaticResource DarkMenuItem}" />
+					</ContextMenu>
+				</StackPanel.ContextMenu>
 				<Border x:Name="Separator" Height="1" Margin="0,0,0,4" Background="{StaticResource Brush.Border}" Opacity="0.4" />
 				<Grid Margin="0,0,0,4">
 					<Grid.ColumnDefinitions>
@@ -64,10 +83,18 @@
 						<ColumnDefinition Width="3*" />
 						<ColumnDefinition Width="1*" />
 					</Grid.ColumnDefinitions>
+					<!--
+						Click vào CheckBox thì WPF đánh dấu sự kiện chuột đã xử lý, nên ListBoxItem chứa nó KHÔNG
+						được chọn. Hậu quả: bật Auto cho account này nhưng các tab bên dưới vẫn là cấu hình của
+						account được chọn trước đó, tick nhầm account mà nhìn màn hình không thấy sai chỗ nào.
+						Handler bên dưới chọn luôn dòng vừa bấm.
+					-->
 					<CheckBox
 						Grid.Column="0"
 						Margin="{StaticResource Size.CheckboxLabelGap}"
-						IsChecked="{Binding AutoEnabled}" />
+						Checked="AccountAutoEnabled_Toggled"
+						IsChecked="{Binding AutoEnabled}"
+						Unchecked="AccountAutoEnabled_Toggled" />
 					<TextBlock
 						Grid.Column="1"
 						VerticalAlignment="Center"
@@ -94,6 +121,7 @@
 		<Grid.RowDefinitions>
 			<RowDefinition Height="32" />
 			<RowDefinition Height="*" />
+			<RowDefinition Height="Auto" />
 		</Grid.RowDefinitions>
 
 		<Border
@@ -188,5 +216,21 @@
 				<ContentControl Grid.Row="1" Content="{Binding SelectedTabContent}" />
 			</Grid>
 		</Grid>
+
+		<!--  Thanh trạng thái: tải của chính Auto. "Mức tải" là ước lượng của Auto theo %CPU, KHÔNG phải cột
+		      Power usage của Windows (giá trị đó không có API công khai để đọc).  -->
+		<!--  Nền dùng đúng Brush.AccentMuted của dòng account đang được chọn (AccountListBoxItem, trigger IsSelected),
+		      bo góc 4 cho khớp luôn với RowBorder của dòng đó.  -->
+		<Border
+			Grid.Row="2"
+			Margin="{StaticResource Size.StatusBarMargin}"
+			Padding="10,6"
+			Background="{StaticResource Brush.CheckboxChecked}"
+			CornerRadius="4">
+			<TextBlock
+				FontSize="12"
+				Foreground="{StaticResource Brush.TextPrimary}"
+				Text="{Binding StatusBarText}" />
+		</Border>
 	</Grid>
 </Window>

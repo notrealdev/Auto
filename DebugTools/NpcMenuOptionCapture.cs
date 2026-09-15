@@ -23,10 +23,19 @@ public static class NpcMenuOptionCapture {
 	private const int CurrentSlotStride = 0x69C;
 	private const int CurrentSlotCount = 8;
 	private const int CurrentSlotEvidenceLength = 128;
+	private const int MaximumChildScans = 128;
+	// Sàn 0x10000000 để loại con trỏ trỏ vào ảnh module. Lần chạy PID=34032 (2026-09-11) sàn cũ 0x00100000 cho vtable
+	// 0x0086AA98 ở offset +0x0 lọt qua, probe đọc .rdata và đổ ra nguyên bảng chuỗi tĩnh của client rồi tràn output.
+	// Mọi con trỏ heap thấy trong bản dump đó đều ở dải 0x30xxxxxx.
+	private const uint MinimumHeapPointer = 0x10000000;
+	private const uint MaximumHeapPointer = 0x7FFF0000;
+	private const int MaximumEmittedCandidates = 400;
 	private static readonly TimeSpan CaptureTimeout = TimeSpan.FromSeconds(15);
 
 	// Waits for one NPC menu and lists every option through both confirmed historical layouts without invoking an option.
-	public static string Capture(int processId, string npcLabel) {
+	// requireMenuChange=false đọc ngay popup ĐANG hiện sẵn (ca Điểm chuyển tiếp: popup tự bật khi nhân vật bước lên điểm,
+	// không có cú click nào để tạo ra thay đổi con trỏ so với mốc).
+	public static string Capture(int processId, string npcLabel, bool requireMenuChange = true) {
 		try {
 			using Process process = Process.GetProcessById(processId);
 			IntPtr moduleBase = process.MainModule?.BaseAddress ?? IntPtr.Zero;
@@ -37,10 +46,11 @@ public static class NpcMenuOptionCapture {
 			IntPtr menu = IntPtr.Zero;
 			while (DateTime.UtcNow < deadlineUtc) {
 				menu = reader.ReadPointer32(IntPtr.Add(moduleBase, MenuPointerRva));
-				if (menu != IntPtr.Zero && menu != baselineMenu) break;
+				if (menu != IntPtr.Zero && (! requireMenuChange || menu != baselineMenu)) break;
+				if (! requireMenuChange && menu == IntPtr.Zero) return "NPC_MENU_CAPTURE_FAIL | Không có popup nào đang hiện (con trỏ menu = 0).";
 				Thread.Sleep(50);
 			}
-			if (menu == IntPtr.Zero || menu == baselineMenu) return $"NPC_MENU_CAPTURE_FAIL | Không thấy menu NPC mới trong {CaptureTimeout.TotalSeconds:0} giây | Baseline=0x{baselineMenu.ToInt64():X8}.";
+			if (menu == IntPtr.Zero || (requireMenuChange && menu == baselineMenu)) return $"NPC_MENU_CAPTURE_FAIL | Không thấy menu NPC mới trong {CaptureTimeout.TotalSeconds:0} giây | Baseline=0x{baselineMenu.ToInt64():X8}.";
 
 			StringBuilder output = new();
 			uint vtable = unchecked((uint)reader.ReadInt32(menu));
@@ -138,7 +148,28 @@ public static class NpcMenuOptionCapture {
 		HashSet<long> scannedAddresses = new();
 		HashSet<string> emittedCandidates = new(StringComparer.Ordinal);
 		int candidateCount = AppendTextCandidates(output, reader, "MENU", menu, ObjectScanLength, scannedAddresses, emittedCandidates);
+		candidateCount += AppendChildTextCandidates(output, reader, menu, objectBytes, scannedAddresses, emittedCandidates);
 		output.AppendLine($"CURRENT_TEXT_SUMMARY | CandidateCount={candidateCount}");
+	}
+
+	// Đi theo con trỏ con một tầng và quét text trong từng object con.
+	// Vì sao cần: popup Điểm chuyển tiếp (PID=34032, 2026-09-11) có câu thoại "Bạn muốn chuyển đến đâu?" nằm ngay trong
+	// object menu ở +0x1084, nhưng KHÔNG có tên điểm đến nào trong cả 16KB — nên danh sách nằm ở object khác mà object
+	// menu trỏ tới. Bản cũ chỉ quét đúng object menu nên không thể thấy.
+	private static int AppendChildTextCandidates(StringBuilder output, MemoryReader reader, IntPtr menu, byte[] objectBytes, HashSet<long> scannedAddresses, HashSet<string> emittedCandidates) {
+		scannedAddresses.Add(menu.ToInt64());
+		int found = 0;
+		int scannedChildren = 0;
+		// Bỏ offset 0: đó là vtable, không phải object con.
+		for (int offset = 4; offset + 4 <= objectBytes.Length && scannedChildren < MaximumChildScans && emittedCandidates.Count < MaximumEmittedCandidates; offset += 4) {
+			uint candidate = BitConverter.ToUInt32(objectBytes, offset);
+			if (candidate < MinimumHeapPointer || candidate > MaximumHeapPointer || (candidate & 3) != 0) continue;
+			if (scannedAddresses.Contains(candidate)) continue;
+			scannedChildren++;
+			found += AppendTextCandidates(output, reader, $"CHILD@MENU+0x{offset:X}", new IntPtr(candidate), ChildPointerScanLength, scannedAddresses, emittedCandidates);
+		}
+		output.AppendLine($"CURRENT_CHILD_SUMMARY | ĐãQuét={scannedChildren} object con | Trần={MaximumChildScans} | SốChuỗiĐãIn={emittedCandidates.Count}/{MaximumEmittedCandidates}");
+		return found;
 	}
 
 	// Emits plausible null-terminated strings from one readable object without interpreting them as confirmed menu options.
@@ -158,7 +189,9 @@ public static class NpcMenuOptionCapture {
 					string decoded = LegacyVietnameseText.Decode(bytes);
 					int letterCount = decoded.Count(char.IsLetterOrDigit);
 					string key = Convert.ToHexString(bytes);
-					if (letterCount >= 3 && emittedCandidates.Add(key)) {
+					// Bỏ đường dẫn sprite: 69 chuỗi tìm được ở PID=34032 hầu hết là ".spr", làm trôi mất phần chữ thật.
+					bool spritePath = decoded.Contains(".spr", StringComparison.OrdinalIgnoreCase);
+					if (letterCount >= 3 && ! spritePath && emittedCandidates.Add(key)) {
 						long textAddress = address.ToInt64() + blockOffset + start;
 						output.AppendLine($"NPC_MENU_TEXT_CANDIDATE | Source={source} | Address=0x{textAddress:X8} | ObjectOffset=+0x{blockOffset + start:X} | TextHex={key} | Decoded={decoded}");
 						found++;

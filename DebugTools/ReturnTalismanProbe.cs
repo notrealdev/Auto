@@ -7,8 +7,8 @@ using Auto.Utils;
 // Chẩn đoán tính năng "Hồi thành phù khi HP <=". Chủ dự án báo tính năng chưa hoạt động nhưng chưa xác định
 // được hỏng ở khâu nào, mà log runtime chỉ hiện lỗi khi HP đã tụt dưới ngưỡng — rất khó dựng lại theo ý muốn.
 //
-// Probe đi qua ĐÚNG thứ tự các cổng mà LowHpReturnTalismanEngine.Tick kiểm, và gọi thẳng
-// LowHpReturnTalismanEngine.TryFindTalisman thay vì chép lại, để kết quả nói về code đang ship.
+// Probe đi qua ĐÚNG thứ tự các cổng mà LowHpEngine.Tick kiểm, và gọi thẳng
+// LowHpEngine.TryFindTalisman thay vì chép lại, để kết quả nói về code đang ship.
 //
 // Kiểm tra: chỉ đọc bộ nhớ, không gửi lệnh nào.
 // Dùng thật: GỬI LỆNH VÀO GAME, nhân vật sẽ dịch chuyển về thành và mất một Hồi thành phù. Chỉ chạy khi
@@ -17,9 +17,7 @@ public static class ReturnTalismanProbe {
 	private const string BuildStamp = "RETURN-TALISMAN-20260909-10";
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	// Phải khớp NativeBuildStamp trong Native/SystemUint/SystemUint.cpp.
-	private const ulong ExpectedNativeBuildStamp = 20260909;
-	private const int UseConfirmTimeoutMilliseconds = 8000;
-	private const int UsePollMilliseconds = 250;
+	private const ulong ExpectedNativeBuildStamp = 20260910;
 	private const int QuickSlotContainer = 11;
 	private const int QuickSlotCount = 4;
 
@@ -35,7 +33,7 @@ public static class ReturnTalismanProbe {
 			GameMapInfo map = GameMapReader.Read(game.ProcessId);
 			bool snapshotUsable = snapshot.Success && snapshot.Hp > 0 && snapshot.MaxHp > 0;
 			bool belowThreshold = snapshotUsable && snapshot.Hp * 100 <= settings.LowHpReturnTalismanThreshold * snapshot.MaxHp;
-			bool found = LowHpReturnTalismanEngine.TryFindTalisman(game.ProcessId, out int memoryIndex, out int container, out int itemId, out string itemName, out string findError, out List<string> candidateSummaries);
+			bool found = LowHpEngine.TryFindTalisman(game.ProcessId, out int memoryIndex, out int container, out int itemId, out string itemName, out string findError, out List<string> candidateSummaries);
 
 			// Cổng 0 chặn TRƯỚC mọi thứ khác và trước đây probe không hề kiểm: lần chạy 2026-09-09 trên PID 22056
 			// bị "Master automation switch is disabled." đúng ở đây, sau khi đã báo mọi cổng khác đều ĐẠT.
@@ -87,71 +85,12 @@ public static class ReturnTalismanProbe {
 		return "KẾT LUẬN=CÁC CỔNG ĐỌC ĐƯỢC ĐỀU ĐẠT | phần còn lại chỉ kiểm được bằng \"Dùng Hồi thành phù bằng phím tắt\".";
 	}
 
-	// Dùng bùa bằng PHÍM TẮT trang bị nhanh. Đây là đường DUY NHẤT còn lại, và cũng là đường luồng thật dùng.
-	//
-	// Chủ dự án cho biết 2026-09-09: trong game, vật phẩm nằm ở ô trang bị nhanh (container 11, đánh số 1..4 trên
-	// màn hình) thì bấm đúng phím số đó là dùng được. Đây là đường mà CHÍNH CLIENT xử lý nên không phụ thuộc
-	// hằng số opcode nào của Auto.
-	//
-	// Slot trong bộ nhớ đếm từ 0 nên phím hiển thị là slot + 1.
-	public static string UseByHotkey(GameWindow game) {
-		StringBuilder output = new();
-		output.AppendLine("===== Hồi thành phù: dùng bằng phím tắt =====");
-		output.AppendLine($"TALISMAN_HOTKEY_START | BuildStamp={BuildStamp} | Mode=GAME_WRITE | ProcessId={game.ProcessId}");
-
-		try {
-			GameMapInfo before = GameMapReader.Read(game.ProcessId);
-			if (! LowHpReturnTalismanEngine.TryFindTalisman(game.ProcessId, out int memoryIndex, out int container, out int itemId, out string itemName, out string findError)) {
-				return output.Append($"TALISMAN_HOTKEY_FAIL | Không tìm thấy bùa | {findError}").ToString();
-			}
-			if (container != QuickSlotContainer || memoryIndex < 0 || memoryIndex >= QuickSlotCount) {
-				return output.Append($"TALISMAN_HOTKEY_FAIL | Bùa không nằm trong trang bị nhanh | Container={container} (cần {QuickSlotContainer}) | Slot={memoryIndex} | Kéo bùa vào một trong {QuickSlotCount} ô trang bị nhanh rồi chạy lại.").ToString();
-			}
-
-			int quantityBefore = ReadQuantity(game.ProcessId, itemId);
-			int key = memoryIndex + 1;
-			output.AppendLine($"Trước khi dùng: MapId={before.MapId} | Tên={itemName} | ItemId={itemId} | Slot={memoryIndex} | Phím={key} | SốLượng={quantityBefore}");
-
-			// Gọi đúng hàm mà luồng thật dùng, chỉ khác bản ForDebug bỏ công tắc tổng — probe chép lại chuỗi gửi
-			// thì chỉ chứng minh bản chép chạy được, không chứng minh code đang ship chạy được.
-			if (! game.AutoFsTransport.TryUseQuickSlotHotkeyForDebug(game.Handle, memoryIndex, out string sendError)) {
-				return output.Append($"TALISMAN_HOTKEY_FAIL | Không gửi được phím | {sendError}").ToString();
-			}
-			output.AppendLine($"Đã gửi phím {key} tới cửa sổ game, đang chờ...");
-
-			DateTime deadline = DateTime.UtcNow.AddMilliseconds(UseConfirmTimeoutMilliseconds);
-			int quantityAfter = quantityBefore;
-			while (DateTime.UtcNow < deadline) {
-				Thread.Sleep(UsePollMilliseconds);
-				quantityAfter = ReadQuantity(game.ProcessId, itemId);
-				GameMapInfo current = GameMapReader.Read(game.ProcessId);
-				if (current.Success && current.MapId > 0 && before.MapId > 0 && current.MapId != before.MapId) {
-					output.AppendLine($"TALISMAN_HOTKEY_OK | MapId {before.MapId} -> {current.MapId} | SốLượng {quantityBefore} -> {quantityAfter} | phím tắt dùng được.");
-					return output.ToString();
-				}
-			}
-
-			output.AppendLine($"TALISMAN_HOTKEY_NO_MAP_CHANGE | Map ID vẫn {before.MapId} sau {UseConfirmTimeoutMilliseconds}ms | SốLượng {quantityBefore} -> {quantityAfter}");
-			output.AppendLine(quantityBefore > 0 && quantityAfter >= 0 && quantityAfter < quantityBefore
-				? "KẾT LUẬN=PHÍM TẮT DÙNG ĐƯỢC | bùa bị trừ nên client đã thi hành."
-				: IsMultiCharge(itemName)
-					? "KẾT LUẬN=KHÔNG KẾT LUẬN ĐƯỢC | bùa Siêu cấp dùng nhiều lần nên số lượng đứng yên là bình thường; chỉ Map ID mới nói được."
-				: quantityBefore > 0 && quantityAfter == quantityBefore
-					? "KẾT LUẬN=PHÍM TẮT KHÔNG ĂN | client không nhận phím gửi nền; phải bấm tay trong game để so sánh."
-					: $"KẾT LUẬN=KHÔNG ĐỌC ĐƯỢC SỐ LƯỢNG | Trước={quantityBefore} Sau={quantityAfter}.");
-			return output.ToString();
-		} catch (Exception ex) {
-			output.AppendLine($"TALISMAN_HOTKEY_FAIL | {ex.GetType().Name}: {ex.Message}");
-			return output.ToString();
-		}
-	}
-
 	// "Hồi thành phù (Siêu cấp)" có SỐ LƯỢNG = 1 nhưng dùng được nhiều lần (chủ dự án cho biết 2026-09-09,
 	// khoảng 100 lượt). Với loại đó số lượng KHÔNG giảm sau khi dùng, nên "SốLượng n -> n" không còn là bằng
 	// chứng lệnh trượt — chỉ Map ID mới nói được. Bản thường thì ngược lại, dùng một lần là mất.
 	private static bool IsMultiCharge(string itemName) => itemName.Contains("Siêu", StringComparison.OrdinalIgnoreCase);
 
-	// Số lượng nằm trong bản ghi vật phẩm của ItemTable, cùng đường mà LowHpReturnTalismanEngine dùng để đọc tên.
+	// Số lượng nằm trong bản ghi vật phẩm của ItemTable, cùng đường mà LowHpEngine dùng để đọc tên.
 	private static int ReadQuantity(int processId, int itemId) {
 		try {
 			using MemoryReader reader = new(processId);

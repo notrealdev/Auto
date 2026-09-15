@@ -138,4 +138,37 @@ namespace GameClientAddresses {
 	constexpr uintptr_t ChannelActivateFunctionRva = 0x000AE3C0;
 	constexpr uintptr_t ChatSendFunctionRva = 0x000B8620;
 	constexpr size_t ChatPacketBufferSize = 0x600;
+
+	// --- Đăng nhập ---
+	//
+	// Dịch ngược từ DLL của AutoFS (D:\G\DEV\Resource\Auto\Lib\SystemUint.dll, PE 32-bit, 577.536 byte, 02/11/2024).
+	// Cách tìm: WndProc của nó ở VA 0x10002950, so message với global 0x1008B6A0 rồi tra hai bảng —
+	// bảng byte tại 0x10004168 (chỉ số case theo wParam 0..0x137) và bảng dword tại 0x10003F34 (địa chỉ handler).
+	// Năm handler lấy được: 280 -> 0x100039E2, 281 -> 0x10003A1D, 282 -> 0x10003A58, 283 -> 0x10003B12,
+	// 284 -> 0x10003B63.
+	//
+	// AutoFS ghi địa chỉ game ở dạng VA tuyệt đối; Game.exe có ImageBase = 0x00400000 (đọc header 2026-09-12) nên
+	// RVA = VA - 0x400000.
+	//
+	// CHƯA VERIFY trên client 1.28 đang chạy: DLL nguồn build 11/2024, và stride record item dưới đất của nó là 920
+	// trong khi client này là 932 — tức đã khác bản. Ba mục audit 28/29/30 bên dưới sinh ra để đo đúng chuyện đó.
+	constexpr uintptr_t LoginNoticeDialogRva = 0x00354D5C;   // lệnh 280: hộp "Khuyến cáo chơi game"
+	constexpr uintptr_t LoginVersionDialogRva = 0x00354C50;  // lệnh 281: hộp "Thông tin phiên bản"
+	constexpr uintptr_t LoginServerDialogRva = 0x00354DD4;   // lệnh 282: hộp "Chọn máy chủ"
+	// obj -> +0x54 lấy khung giao diện, khung -> +0x58 lấy đối tượng nhận sự kiện, gọi vtable[0x10] của nó.
+	constexpr size_t LoginDialogFrameOffset = 0x54;
+	constexpr size_t LoginDialogDispatcherOffset = 0x58;
+	// Ô lưu dòng đang chọn của một danh sách, ghi thẳng trước khi bắn sự kiện chọn.
+	constexpr size_t LoginListSelectionOffset = 0x88;
+	constexpr size_t LoginServerListOffset = 0x970;   // obj -> +0x970: danh sách máy chủ
+	constexpr size_t LoginEnterButtonOffset = 0x106C; // obj -> +0x106C: nút "Vào trò chơi"
+	constexpr int LoginListSelectEvent = 0x691;       // chọn một dòng trong danh sách (ModalConfirmEvent 0x565 là bấm nút)
+	// Lệnh 284: gọi thiscall 0x00576450 với this = 0x00774140 và hai chuỗi tài khoản/mật khẩu, rồi ba hàm cdecl dọn dẹp.
+	constexpr uintptr_t LoginSubmitContextRva = 0x00374140;
+	constexpr uintptr_t LoginSubmitFunctionRva = 0x00176450;
+	constexpr uintptr_t LoginAfterSubmitFunctionARva = 0x000247C0; // gọi với (1, 5, 0, 0)
+	constexpr uintptr_t LoginAfterSubmitFunctionBRva = 0x00025EB0; // gọi với (0)
+	constexpr uintptr_t LoginAfterSubmitFunctionCRva = 0x00026F90; // gọi với (1)
+	// AutoFS cấp đúng 32 byte cho mỗi chuỗi (lệnh 284 xoá 8 dword cho mỗi vùng đệm trước khi trả).
+	constexpr size_t LoginCredentialBufferSize = 32;
 }

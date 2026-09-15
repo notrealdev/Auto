@@ -1,0 +1,15 @@
+{
+	// Lúc build WPF, MSBuild tự sinh file tạm "Auto_<hash>_wpftmp.csproj" cho lượt biên dịch XAML rồi xoá ngay.
+	// File watcher của extension C# kịp thấy file được tạo, bắn didChangeWatchedFiles và cố nạp nó như một project;
+	// tới lúc nạp thì MSBuild đã xoá nên báo "Could not find file ... _wpftmp.csproj".
+	// Loại hẳn mẫu tên này khỏi watcher để extension không nhìn thấy file tạm ngay từ đầu.
+	"files.watcherExclude": {
+		"**/*_wpftmp.csproj": true
+	},
+	"files.exclude": {
+		"**/*_wpftmp.csproj": true
+	},
+	"search.exclude": {
+		"**/*_wpftmp.csproj": true
+	}
+}

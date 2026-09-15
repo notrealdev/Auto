@@ -37,8 +37,17 @@ namespace {
 	// native, không có cách nào biết tiến trình game đang chạy bản cũ hay bản mới — mà đo trên bản cũ thì mọi
 	// kết luận đều vô nghĩa. Bump số này MỖI LẦN sửa native.
 	constexpr WPARAM NativeBuildStampCommand = 322;
-	constexpr int NativeBuildStamp = 20260909;
-	constexpr int AuditEntryCount = 28;
+	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
+	constexpr WPARAM LoginNoticeCommand = 280;
+	constexpr WPARAM LoginVersionCommand = 281;
+	constexpr WPARAM LoginSelectServerCommand = 282;
+	constexpr WPARAM LoginTypeCharacterCommand = 283;
+	constexpr WPARAM LoginSubmitCommand = 284;
+	// Chỉ dùng để DÒ: bấm nút xác nhận của hộp thoại mà con trỏ nằm ở RVA truyền trong lParam. Địa chỉ hộp thoại của
+	// AutoFS sai trên client 1.28 (audit 2026-09-12 PID=11704 trả FAIL_UNREADABLE), nên phải thử từng ứng viên.
+	constexpr WPARAM LoginProbeDialogCommand = 285;
+	constexpr int NativeBuildStamp = 20260913;
+	constexpr int AuditEntryCount = 31;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
 
@@ -52,12 +61,19 @@ namespace {
 	int pendingMovementX = 0;
 	char pendingScript[MaximumScriptLength + 1]{};
 	size_t pendingScriptLength = 0;
+	// Tài khoản và mật khẩu gom dần qua lệnh 283, giống hai vùng đệm 0x1008B678 / 0x1008B1B0 của DLL AutoFS.
+	char pendingLoginUser[GameClientAddresses::LoginCredentialBufferSize]{};
+	char pendingLoginPassword[GameClientAddresses::LoginCredentialBufferSize]{};
 
 	using PrepareFunction = void(__thiscall*)(void*, int, void*, int);
 	using DialogOptionFunction = int(__thiscall*)(void*, int, int, int);
 	using ModalEventFunction = int(__thiscall*)(void*, int, void*, int);
 	using AttackFunction = int(__thiscall*)(void*, int, uintptr_t);
 	using SelectGroundItemFunction = int(__thiscall*)(void*, int);
+	// Lệnh 284 của AutoFS: thiscall 4 đối số tự dọn stack, rồi ba hàm cdecl (tổng cộng add esp, 0x18).
+	using LoginSubmitFunction = int(__thiscall*)(void*, const char*, const char*, int, int);
+	using LoginCleanupFunction4 = void(__cdecl*)(int, int, int, int);
+	using LoginCleanupFunction1 = void(__cdecl*)(int);
 	using GroundCoordinateConverterFunction = void(__thiscall*)(void*, int*, int*);
 	using ResetPickupFunction = void(__thiscall*)(void*);
 	using PickupMovementFunction = void(__thiscall*)(void*, int, int, int, int);
@@ -282,8 +298,17 @@ namespace {
 		return true;
 	}
 
+	// Upper bound used to be 9 with no recorded reason, most likely copied from the 8-slot NPC menu layout.
+	// The Di ngoai phu destination menu has 23 rows, so that bound silently rejected rows 10-22: the C# side
+	// only checks that PostMessageA succeeded, so it reported success while nothing reached the client.
+	// Measured 2026-09-10 on PID 22056 with TalismanTravelProbe: indices 0, 1, 7 and 8 teleported correctly,
+	// indices 16, 18, 22 and 23 produced "KHONG doi map sau 15000ms" even after scrolling the menu to the bottom.
+	// The new bound is still a sanity guard - the client function is called with a raw index and nothing here
+	// knows how it validates - it is just wide enough for every menu observed so far.
+	constexpr int MaximumDialogOptionIndex = 63;
+
 	bool TrySelectDialogOption(int optionIndex) {
-		if (optionIndex < -1 || optionIndex > 9) {
+		if (optionIndex < -1 || optionIndex > MaximumDialogOptionIndex) {
 			return false;
 		}
 		uint8_t* gameBase = nullptr;
@@ -409,15 +434,34 @@ namespace {
 			return false;
 		}
 		auto movement = reinterpret_cast<PickupMovementFunction>(gameBase + GameClientAddresses::PickupMovementFunctionRva);
+		auto clickGround = reinterpret_cast<PickupFunction>(gameBase + GameClientAddresses::PickupFunctionRva);
 		void* entityTable = *reinterpret_cast<void**>(gameBase + GameClientAddresses::EntityTableRva);
 		if (!IsExecutableAddress(reinterpret_cast<void*>(movement)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(clickGround)) ||
 			entityTable == nullptr ||
-			memcmp(reinterpret_cast<void*>(movement), PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature)) != 0) {
+			memcmp(reinterpret_cast<void*>(movement), PickupMovementFunctionSignature, sizeof(PickupMovementFunctionSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(clickGround), PickupFunctionSignature, sizeof(PickupFunctionSignature)) != 0) {
 			return false;
 		}
+		// PHẢI khớp ĐÚNG trình tự ba bước của nhánh nhặt đồ (TryDispatchPickupMove ngay bên dưới). Bản trước chỉ gọi
+		// mỗi movement(...) ở giữa, thiếu cả reset lẫn clickGround — và đó là toàn bộ khác biệt so với nhánh nhặt vốn
+		// chạy tốt (loot-drops.log có LOOT_PICKED_UP kèm bằng chứng TúiTrước/TúiSau).
+		//
+		// Hậu quả đo được trên Release/Diagnostics/movement.log ngày 2026-09-15, 849 lệnh ELITE_RETREAT theo dõi
+		// tiếp 15 giây sau khi gửi:
+		//   TỚI ĐƯỢC đích  =  22 (2,6%)
+		//   đi được một phần= 168 (19,8%)
+		//   KHÔNG tiến được = 659 (77,6%)
+		// Chủ dự án mô tả đúng hiện tượng này: nhân vật nhảy sang chỗ mới rồi bị giật ngược về ngay lập tức, tức
+		// client dịch cục bộ nhưng server không nhận -> rubber-band.
+		//
+		// reset dùng CoordinateOpcode với (-1,-1) là XOÁ trạng thái di chuyển cũ, không phải đặt đích mới, nên KHÔNG
+		// sinh lá cờ trên màn hình — nhánh nhặt vẫn gọi nó và chủ dự án xác nhận nhặt đồ không hiện cờ.
+		TryDispatchMovementReset();
 		void* playerEntity = reinterpret_cast<uint8_t*>(entityTable) +
 			GameClientAddresses::PlayerEntityIndex * GameClientAddresses::EntityStride;
 		movement(playerEntity, 3, rawX, rawY, 0);
+		clickGround(rawX, rawY);
 		pendingMovementX = 0;
 		return true;
 	}
@@ -907,6 +951,22 @@ namespace {
 		return ContainsAttackWriterSignature(attack) ? 1 : 11;
 	}
 
+	// Bốn hàm của lệnh 284 nằm tĩnh trong ảnh, không qua con trỏ nào, nên chỉ cần kiểm chúng có phải vùng mã lệnh không.
+	int AuditLoginSubmitFunctions(uint8_t* gameBase) {
+		const uintptr_t functionRvas[] = {
+			GameClientAddresses::LoginSubmitFunctionRva,
+			GameClientAddresses::LoginAfterSubmitFunctionARva,
+			GameClientAddresses::LoginAfterSubmitFunctionBRva,
+			GameClientAddresses::LoginAfterSubmitFunctionCRva
+		};
+		for (uintptr_t functionRva : functionRvas) {
+			if (!IsExecutableAddress(gameBase + functionRva)) {
+				return 10;
+			}
+		}
+		return IsReadableAddress(gameBase + GameClientAddresses::LoginSubmitContextRva) ? 1 : 13;
+	}
+
 	int AuditAddress(int index) {
 		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
 		if (!HasSupportedGameImage(gameBase)) {
@@ -946,8 +1006,105 @@ namespace {
 			case 25: return AuditCodeSignature(gameBase, GameClientAddresses::ChatEncodeFunctionRva, 0, ChatEncodeFunctionSignature, sizeof(ChatEncodeFunctionSignature));
 			case 26: return AuditCodeSignature(gameBase, GameClientAddresses::ChannelActivateFunctionRva, 0, ChannelActivateFunctionSignature, sizeof(ChannelActivateFunctionSignature));
 			case 27: return AuditCodeSignature(gameBase, GameClientAddresses::ChatSendFunctionRva, 0, ChatSendFunctionSignature, sizeof(ChatSendFunctionSignature));
+			// Ba mục đăng nhập. Ba hộp thoại chỉ tồn tại ở màn đăng nhập nên lúc đã vào game chúng trả 4 (chưa kết luận
+			// được), không phải hỏng — chạy audit ngay sau khi client mở lên mới đọc ra kết quả thật.
+			case 28: return AuditGlobalPointer(gameBase, GameClientAddresses::LoginNoticeDialogRva, true);
+			case 29: return AuditGlobalPointer(gameBase, GameClientAddresses::LoginServerDialogRva, true);
+			case 30: return AuditLoginSubmitFunctions(gameBase);
 			default: return 0;
 		}
+	}
+
+	// Khuôn chung của cả ba hộp thoại đăng nhập, đọc từ handler 280/281/282 của DLL AutoFS:
+	//   dialog   = *(gameBase + dialogRva)
+	//   control  = *(dialog + controlOffset)          (+0x54 khung chính, +0x970 danh sách máy chủ, +0x106C nút vào game)
+	//   receiver = *(control + 0x58)
+	//   receiver->vtable[0x10](receiver, eventId, control, parameter)
+	// Với sự kiện chọn dòng (0x691) thì AutoFS ghi thẳng chỉ số vào control+0x88 trước khi gọi.
+	bool TryDispatchLoginControlEvent(uintptr_t dialogRva, size_t controlOffset, int eventId, int parameter, bool writeSelection) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + dialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return false;
+		}
+		void* control = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(dialog) + controlOffset);
+		if (control == nullptr || !IsReadableAddress(control)) {
+			return false;
+		}
+		void* receiver = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(control) + GameClientAddresses::LoginDialogDispatcherOffset);
+		if (receiver == nullptr || !IsReadableAddress(receiver)) {
+			return false;
+		}
+		auto receiverVtable = *reinterpret_cast<uint8_t**>(receiver);
+		if (!IsReadableAddress(receiverVtable)) {
+			return false;
+		}
+		auto dispatchEvent = reinterpret_cast<ModalEventFunction>(
+			*reinterpret_cast<void**>(receiverVtable + GameClientAddresses::ModalEventMethodVtableOffset));
+		if (!IsExecutableAddress(reinterpret_cast<void*>(dispatchEvent))) {
+			return false;
+		}
+		if (writeSelection) {
+			*reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(control) + GameClientAddresses::LoginListSelectionOffset) = parameter;
+		}
+		dispatchEvent(receiver, eventId, control, parameter);
+		return true;
+	}
+
+	// Lệnh 282 làm ba việc liên tiếp: chọn phân vùng, chọn máy chủ, rồi bấm "Vào trò chơi".
+	bool TryDispatchLoginSelectServer(int partitionIndex, int serverIndex) {
+		if (!TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginDialogFrameOffset,
+			GameClientAddresses::LoginListSelectEvent, partitionIndex, true)) {
+			return false;
+		}
+		if (!TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginServerListOffset,
+			GameClientAddresses::LoginListSelectEvent, serverIndex, true)) {
+			return false;
+		}
+		return TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginEnterButtonOffset,
+			GameClientAddresses::ModalConfirmEvent, 0, false);
+	}
+
+	// Lệnh 283 KHÔNG gọi game: AutoFS chỉ nối ký tự vào vùng đệm của chính DLL rồi tới lệnh 284 mới gửi cả chuỗi.
+	bool TryAppendLoginCharacter(int fieldIndex, char value) {
+		char* target = fieldIndex == 0 ? pendingLoginUser : pendingLoginPassword;
+		size_t length = 0;
+		while (length < GameClientAddresses::LoginCredentialBufferSize && target[length] != '\0') {
+			length++;
+		}
+		if (length + 1 >= GameClientAddresses::LoginCredentialBufferSize) {
+			return false;
+		}
+		target[length] = value;
+		target[length + 1] = '\0';
+		return true;
+	}
+
+	bool TryDispatchLoginSubmit() {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		if (AuditLoginSubmitFunctions(gameBase) != 1) {
+			return false;
+		}
+		auto submitLogin = reinterpret_cast<LoginSubmitFunction>(gameBase + GameClientAddresses::LoginSubmitFunctionRva);
+		auto cleanupA = reinterpret_cast<LoginCleanupFunction4>(gameBase + GameClientAddresses::LoginAfterSubmitFunctionARva);
+		auto cleanupB = reinterpret_cast<LoginCleanupFunction1>(gameBase + GameClientAddresses::LoginAfterSubmitFunctionBRva);
+		auto cleanupC = reinterpret_cast<LoginCleanupFunction1>(gameBase + GameClientAddresses::LoginAfterSubmitFunctionCRva);
+		submitLogin(gameBase + GameClientAddresses::LoginSubmitContextRva, pendingLoginUser, pendingLoginPassword, 1, 0);
+		cleanupA(1, 5, 0, 0);
+		cleanupB(0);
+		cleanupC(1);
+		// AutoFS xoá sạch hai vùng đệm ngay sau khi gửi, không giữ mật khẩu lại trong tiến trình game.
+		for (size_t index = 0; index < GameClientAddresses::LoginCredentialBufferSize; index++) {
+			pendingLoginUser[index] = '\0';
+			pendingLoginPassword[index] = '\0';
+		}
+		return true;
 	}
 
 	LRESULT CALLBACK ReceiverWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1016,6 +1173,33 @@ namespace {
 			}
 			if (wParam == CastSkillCommand) {
 				return TryDispatchCastSkill(static_cast<int>(lParam));
+			}
+			if (wParam == LoginNoticeCommand) {
+				return TryDispatchLoginControlEvent(GameClientAddresses::LoginNoticeDialogRva, GameClientAddresses::LoginDialogFrameOffset,
+					GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
+			}
+			if (wParam == LoginVersionCommand) {
+				return TryDispatchLoginControlEvent(GameClientAddresses::LoginVersionDialogRva, GameClientAddresses::LoginDialogFrameOffset,
+					GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
+			}
+			if (wParam == LoginSelectServerCommand) {
+				uint32_t packedServer = static_cast<uint32_t>(lParam);
+				int partitionIndex = static_cast<int16_t>(packedServer & 0xFFFF);
+				int serverIndex = static_cast<int16_t>(packedServer >> 16);
+				return TryDispatchLoginSelectServer(partitionIndex, serverIndex) ? 1 : 0;
+			}
+			if (wParam == LoginTypeCharacterCommand) {
+				uint32_t packedCharacter = static_cast<uint32_t>(lParam);
+				int fieldIndex = static_cast<int16_t>(packedCharacter & 0xFFFF);
+				char value = static_cast<char>(static_cast<uint8_t>(packedCharacter >> 16));
+				return TryAppendLoginCharacter(fieldIndex, value) ? 1 : 0;
+			}
+			if (wParam == LoginSubmitCommand) {
+				return TryDispatchLoginSubmit() ? 1 : 0;
+			}
+			if (wParam == LoginProbeDialogCommand) {
+				return TryDispatchLoginControlEvent(static_cast<uintptr_t>(static_cast<uint32_t>(lParam)),
+					GameClientAddresses::LoginDialogFrameOffset, GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
 			}
 			if (wParam == AttackCommand) {
 				uint32_t packedTarget = static_cast<uint32_t>(lParam);

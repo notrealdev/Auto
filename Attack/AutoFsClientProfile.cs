@@ -5,8 +5,8 @@ using Auto.Utils;
 internal static class AutoFsClientProfile {
 	public const int EntityTablePointer = GameAddresses.Globals.EntityTable;
 	public const int EntityStride = GameAddresses.Entity.Stride;
-	public const int FirstEntityIndex = 2;
-	public const int LastEntityIndex = 256;
+	public const int FirstEntityIndex = GameAddresses.Entity.FirstScanIndex;
+	public const int LastEntityIndex = GameAddresses.Entity.LastScanIndex;
 	public const int PlayerIndex = 1;
 	public const int EntityType = GameAddresses.Entity.Type;
 	public const int Level = GameAddresses.Entity.Level;

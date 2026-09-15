@@ -8,6 +8,12 @@ internal sealed class AutoFsOrderQueue {
 	private const double ArrivalDistance = 1.5;
 	private const int MapReadyDelayMilliseconds = 500;
 	private const int RetryIntervalMilliseconds = 800;
+	// Riêng lúc đã đứng lên cổng: đứng im là BÌNH THƯỜNG, vì đang chờ server đổi map. Dùng chung ngưỡng 800ms với
+	// đường đi thường thì nhân vật vừa lên cổng đã bị kéo ngược về điểm tiếp cận rồi phải đi lại từ đầu — chủ dự án
+	// quan sát 2026-09-09 ở cả luồng nhiệm vụ lẫn luồng Tự lên bãi. Giữ nguyên 800ms cho các nhánh khác để không làm
+	// chậm phát hiện kẹt. Phải khớp AutoFsTrainingOrderQueue.PortalStandStillMilliseconds — hai file này là hai bản
+	// riêng của cùng một hàng đợi, sửa một bên mà quên bên kia thì hai luồng hành xử khác nhau.
+	private const int PortalStandStillMilliseconds = 2000;
 	private const int PortalRecoveryMilliseconds = 20000;
 	private int commandedMapId;
 	private int commandedRawX;
@@ -77,7 +83,7 @@ internal sealed class AutoFsOrderQueue {
 		// 1.5 ô. Tuyến 20->32 (4.78 ô) kẹt vô hạn, log back-to-training.log 2026-09-08 01:43-01:50.
 		// ShouldRetry chỉ trả true khi toạ độ KHÔNG đổi suốt 800ms, nên nhân vật đang đi thì không bị gọi ngược nữa.
 		// Trường hợp tới được cổng mà map không đổi vẫn có PortalRecovery20s ở khối ngay trên lo.
-		if (crossingPortal && approachDistance > ArrivalDistance && ShouldRetry(game)) {
+		if (crossingPortal && approachDistance > ArrivalDistance && ShouldRetry(game, PortalStandStillMilliseconds)) {
 			ResetPortalAttempt();
 			InvalidateActiveCommand();
 			return SendWhenNeeded(game, map.MapId, transition.Approach.RawX, transition.Approach.RawY, $"ReApproach={transition.FromMapId}->{transition.ToMapId}", out detail);
@@ -154,7 +160,9 @@ internal sealed class AutoFsOrderQueue {
 		return false;
 	}
 
-	private bool ShouldRetry(GameWindow game) {
+	private bool ShouldRetry(GameWindow game) => ShouldRetry(game, RetryIntervalMilliseconds);
+
+	private bool ShouldRetry(GameWindow game, int standStillMilliseconds) {
 		int rawX = game.X;
 		int rawY = game.Y;
 		if (rawX != observedRawX || rawY != observedRawY) {
@@ -163,8 +171,8 @@ internal sealed class AutoFsOrderQueue {
 			lastProgressUtc = DateTime.UtcNow;
 			return false;
 		}
-		return DateTime.UtcNow - lastCommandUtc >= TimeSpan.FromMilliseconds(RetryIntervalMilliseconds) &&
-			DateTime.UtcNow - lastProgressUtc >= TimeSpan.FromMilliseconds(RetryIntervalMilliseconds);
+		return DateTime.UtcNow - lastCommandUtc >= TimeSpan.FromMilliseconds(standStillMilliseconds) &&
+			DateTime.UtcNow - lastProgressUtc >= TimeSpan.FromMilliseconds(standStillMilliseconds);
 	}
 
 	private void RecordCommand(GameWindow game) {

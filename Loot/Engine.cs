@@ -153,6 +153,15 @@ public sealed class Engine {
 				lastError = "";
 				LogScanSummary(result, context.DropLog);
 				LogScanRejections(result, context.DropLog);
+				// LogFilterDecisions viết ra từ lâu nhưng KHÔNG NƠI NÀO GỌI, nên dòng LOOT_FILTER — dòng duy nhất ghi
+				// lại vì sao một món được nhận hay bị loại — chưa bao giờ xuất hiện trong log. Hậu quả đã gặp thật
+				// 2026-09-11: một account nhặt nhầm đồ trắng 'Vũ Khúc Chiến Ngoa' mà grep cả Diagnostics lẫn
+				// DiagnosticsBeta ra 0 dòng, không truy được do tick màu, do ô 'Vật phẩm' khớp chuỗi con, hay do
+				// byte màu rơi vào nhánh 'Đồ Khác'.
+				// Không đi qua LogLootDiagnostic: bộ lọc ở đó chỉ giữ dòng có FAIL/REJECTED/SKIPPED/SLOT_LEFT/RETRY/
+				// COOLDOWN nên sẽ vứt luôn dòng này. Số dòng vẫn có trần vì loggedFilterDecisions lọc trùng theo
+				// MemoryFingerprint, mỗi item chỉ ghi một lần.
+				LogFilterDecisions(result, context.DropLog);
 				RemoveExpiredFailedCoordinates(DateTime.UtcNow, context.DropLog, context.ProcessId);
 				if (actionGate.IsLootSuspended) {
 					LogSuspensionState(context.DropLog, context.ProcessId, "AFTER_SCAN");
@@ -247,6 +256,9 @@ public sealed class Engine {
 		LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_START | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Record=0x{candidate.Address.ToInt64():X8} | Group={classification.Group} | AutoFsCategory={AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw)} | Color={classification.Color} | AttributeClass={classification.AttributeClass} | QualityA={candidate.QualityCodeA} | QualityB={candidate.QualityCodeB} | Raw={coordinate.X}/{coordinate.Y} | Internal={candidate.InternalX}/{candidate.InternalY}");
 		string outcome = "LOOP_EXITED";
 		bool retryPolicyLogged = false;
+		// Đếm túi TRƯỚC khi gửi lệnh nhặt. Không có con số này thì không tài nào phân biệt "mình nhặt được" với
+		// "người khác nhặt mất": cả hai đều kết thúc bằng SLOT_LEFT_GROUND_ID_ZERO y hệt nhau.
+		bool inventoryCountReadable = finder.TryCountInInventory(context.ProcessId, candidate.ItemNameRaw, out int inventoryCountBefore);
 
 		try {
 			while (! token.IsCancellationRequested && settings.Enabled && ! IsManualInputActive()) {
@@ -315,7 +327,33 @@ public sealed class Engine {
 			if (token.IsCancellationRequested) outcome = "CANCELLED";
 			else if (! settings.Enabled) outcome = "LOOT_DISABLED";
 			else if (IsManualInputActive()) outcome = "MANUAL_INPUT_PRIORITY";
-			LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_END | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | Attempts={pendingPickupAttempts} | NearAttempts={pendingNearPickupAttempts} | Prepared={approachPrepared} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Raw={coordinate.X}/{coordinate.Y}");
+			// Món rời ô đất: đếm lại túi để biết nó vào túi AI. Tăng thì là mình, không tăng thì người khác nhặt mất.
+			// Chủ dự án chốt 2026-09-14: chỉ account thật sự nhặt được mới được ghi dòng nhặt, nên nhánh
+			// TAKEN_BY_OTHER cố ý im lặng — đó chính là 645 dòng SLOT_LEFT_GROUND_ID_ZERO gây hiểu nhầm "nhân vật
+			// B, C nhặt món của A" trong log ngày 14/09.
+			if (outcome.StartsWith("SLOT_LEFT", StringComparison.Ordinal)) {
+				bool afterReadable = finder.TryCountInInventory(context.ProcessId, candidate.ItemNameRaw, out int inventoryCountAfter);
+				string inventoryEvidence = inventoryCountReadable && afterReadable
+					? $"TúiTrước={inventoryCountBefore} | TúiSau={inventoryCountAfter}"
+					: $"TúiTrước={(inventoryCountReadable ? inventoryCountBefore.ToString() : "không đọc được")} | TúiSau={(afterReadable ? inventoryCountAfter.ToString() : "không đọc được")}";
+				if (inventoryCountReadable && afterReadable && inventoryCountAfter > inventoryCountBefore) {
+					// Dòng DUY NHẤT khẳng định một món đã vào túi account này. Tên lấy từ ô đất lúc lọc, còn số lượng
+					// lấy từ túi, nên nếu client nhặt nhầm món khác thì TúiSau của tên này sẽ KHÔNG tăng.
+					//
+					// Nhóm tiêu hao/nguyên liệu nhặt liên tục thì đổi sang nhãn LOOT_ROUTINE_PICKUP để rơi sang
+					// loot-scan.log, giữ loot-drops.log chỉ còn món đáng chú ý (chủ dự án chốt 2026-09-15).
+					// Đo trên chính loot-drops.log 2 tiếng ngày 14/09: 81/94 dòng là dược phẩm, 12/94 là Tứ Tượng.
+					// KHÔNG xoá hẳn — vẫn cần để truy khi nghi nhặt sai hoặc kiểm giới hạn số lượng dược phẩm.
+					AutoFsSpecialItemCategory category = AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw);
+					string marker = IsRoutinePickup(classification, category) ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
+					context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={pendingPickupAttempts} | Raw={coordinate.X}/{coordinate.Y}");
+				} else if (! inventoryCountReadable || ! afterReadable) {
+					// Không đọc được túi thì KHÔNG được im lặng: im lặng ở đây sẽ giấu luôn cả lượt nhặt thật.
+					LogLootDiagnostic(context.DropLog, $"LOOT_PICKUP_UNVERIFIED | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | {inventoryEvidence} | Reason=INVENTORY_READ_FAILED");
+				}
+			} else {
+				LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_END | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | Attempts={pendingPickupAttempts} | NearAttempts={pendingNearPickupAttempts} | Prepared={approachPrepared} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Raw={coordinate.X}/{coordinate.Y}");
+			}
 			ClearPending();
 		}
 	}
@@ -365,15 +403,44 @@ public sealed class Engine {
 		return (int)(delta / GameAddresses.Item.GroundRecordStride);
 	}
 
+	// Kiểm lại ô đất TRƯỚC khi gửi lệnh 9, dùng chung đúng ReadGroundSlot mà đường lệnh 78 đang dùng.
+	//
+	// Vì sao thêm: đường lệnh 78 kiểm GroundId + trạng thái + nguyên byte tên + toạ độ mỗi vòng lặp, còn đường này
+	// bắn thẳng candidate.Index lấy từ lượt quét trước, không đọc lại gì. Bảng đất 127 ô được tái sử dụng, nên nếu
+	// món hợp lệ ở ô N biến mất và client thả món khác vào đúng ô N trong khoảng giữa lúc đọc bảng và lúc gửi lệnh
+	// thì lệnh 9 trúng món mới. Vòng quét chạy mỗi 200ms trên nhiều account, cửa sổ race hẹp nhưng không bằng 0.
+	//
+	// GIẢ THUYẾT, CHƯA VERIFY: đây là nguyên nhân vụ một account nhặt nhầm đồ trắng 'Vũ Khúc Chiến Ngoa'
+	// (2026-09-11, đúng một lần trong cả phiên). Dòng LOOT_SELECT_SKIPPED_SLOT_CHANGED bên dưới là thứ sẽ xác nhận hoặc bác
+	// bỏ. Phép kiểm này đúng bất kể giả thuyết có đúng hay không: gửi lệnh vào ô không còn giữ món đã lọc là sai.
 	private void SelectNearbyGroundItems(IEnumerable<LootSnapshot> candidates, GameSnapshot snapshot, IntPtr currentGameWindow, Action<string>? currentLog, Action<string>? currentDropLog) {
+		using MemoryReader reader = new(snapshot.ProcessId);
+		IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
+		if (moduleBase == IntPtr.Zero) return;
+		IntPtr groundTablePointer = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Item.GroundRecordTablePointer));
+		if (groundTablePointer == IntPtr.Zero) return;
+		long groundTable = groundTablePointer.ToInt64();
 		foreach (LootSnapshot candidate in candidates) {
 			if (GetScanDistance(snapshot, candidate) >= NearRawDistance) continue;
-			if (! transport.TrySendCommand(currentGameWindow, AutoFsSelectGroundItemCommand, candidate.Index, out string error)) {
-				LogErrorOnce(currentLog, snapshot.ProcessId, error);
-				LogLootDiagnostic(currentDropLog, $"LOOT_COMMAND_FAILED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Payload={candidate.Index} | Index={candidate.Index} | Name={candidate.ItemNameRaw} | Phase=SCAN_NEAR | Reason={error}");
+			int itemIndex = GetRecordIndex(candidate, groundTable);
+			GroundSlotReading slot = ReadGroundSlot(reader, moduleBase, groundTable, itemIndex, candidate);
+			if (! slot.Matches) {
+				LogLootDiagnostic(currentDropLog, $"LOOT_SELECT_SKIPPED_SLOT_CHANGED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Index={itemIndex} | ScanIndex={candidate.Index} | Name={candidate.ItemNameRaw} | ExpectedGroundId={candidate.GroundId} | CurrentGroundId={slot.GroundId} | ExpectedRaw={candidate.RawX}/{candidate.RawY} | CurrentRaw={slot.RawX}/{slot.RawY} | Reason={slot.Reason}");
 				continue;
 			}
-			LogLootDiagnostic(currentDropLog, $"LOOT_COMMAND_POSTED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Payload={candidate.Index} | Index={candidate.Index} | Name={candidate.ItemNameRaw} | Phase=SCAN_NEAR | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={candidate.RawX}/{candidate.RawY} | Distance={GetScanDistance(snapshot, candidate):F0}");
+			// Gửi ĐÚNG số ô vừa được kiểm, không phải candidate.Index. Trước 2026-09-14 chỗ này kiểm ô itemIndex
+			// (suy từ địa chỉ record) nhưng lại bắn candidate.Index (số thứ tự lúc quét) — hai giá trị khác nhau về
+			// bản chất, chính dòng log cũ cũng in chúng thành hai trường Index và ScanIndex. Đường lệnh 78 bên dưới
+			// luôn dùng itemIndex, nên chỉ đường này lệch.
+			if (itemIndex != candidate.Index) {
+				LogLootDiagnostic(currentDropLog, $"LOOT_SELECT_INDEX_MISMATCH | PID={snapshot.ProcessId} | Name={candidate.ItemNameRaw} | RecordIndex={itemIndex} | ScanIndex={candidate.Index} | Record=0x{candidate.Address.ToInt64():X8} | Action=GỬI_THEO_RecordIndex");
+			}
+			if (! transport.TrySendCommand(currentGameWindow, AutoFsSelectGroundItemCommand, itemIndex, out string error)) {
+				LogErrorOnce(currentLog, snapshot.ProcessId, error);
+				LogLootDiagnostic(currentDropLog, $"LOOT_COMMAND_FAILED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Payload={itemIndex} | Index={itemIndex} | ScanIndex={candidate.Index} | Name={candidate.ItemNameRaw} | Phase=SCAN_NEAR | Reason={error}");
+				continue;
+			}
+			LogLootDiagnostic(currentDropLog, $"LOOT_COMMAND_POSTED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Payload={itemIndex} | Index={itemIndex} | ScanIndex={candidate.Index} | Name={candidate.ItemNameRaw} | Phase=SCAN_NEAR | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={candidate.RawX}/{candidate.RawY} | Distance={GetScanDistance(snapshot, candidate):F0}");
 		}
 	}
 
@@ -459,9 +526,21 @@ public sealed class Engine {
 		foreach (string rejection in result.SpriteRejectedDetails) currentDropLog($"LOOT_SCAN_REJECTED | PID={result.ProcessId} | {rejection}");
 	}
 
+	// Bốn nhóm chủ dự án chốt 2026-09-15 là "nhặt thường xuyên, không cần nằm trong log nhặt".
+	// Dược Phẩm nhận diện bằng AttributeClass == 1 — cùng phép thử mà Finder.cs:122 dùng để quyết định có nhặt hay
+	// không, nên hai chỗ không thể lệch nhau. Ba nhóm còn lại đã có sẵn mã riêng trong AutoFsSpecialItemCategory.
+	private static bool IsRoutinePickup(ItemClassification classification, AutoFsSpecialItemCategory category) {
+		if (classification.AttributeClass == 1) return true;                       // Dược Phẩm
+		if (classification.Group == ItemGroup.Herbal) return true;                 // Thảo Dược theo GroundKind
+		return category is AutoFsSpecialItemCategory.Herb                          // Thảo Dược theo tên
+			or AutoFsSpecialItemCategory.FourSymbols                               // Tứ Tượng
+			or AutoFsSpecialItemCategory.SixPaths;                                 // Lục Đạo
+	}
+
 	// Chỉ ghi sự kiện lỗi, từ chối, bỏ qua hoặc retry bất thường; không ghi vòng scan thành công.
 	private void LogLootDiagnostic(Action<string>? currentDropLog, string message) {
 		if (!settings.LogCandidates || currentDropLog == null) return;
+		// Dòng nhặt THÀNH CÔNG không đi qua đây: nó gọi thẳng context.DropLog vì không mang từ khoá lỗi nào.
 		if (!message.Contains("FAIL", StringComparison.OrdinalIgnoreCase) &&
 			!message.Contains("REJECTED", StringComparison.OrdinalIgnoreCase) &&
 			!message.Contains("SKIPPED", StringComparison.OrdinalIgnoreCase) &&

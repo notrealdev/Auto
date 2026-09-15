@@ -3,7 +3,7 @@ namespace Auto.Loot;
 using System.Globalization;
 using System.Text;
 
-public enum AutoFsSpecialItemCategory { None, SkillBook, Artifact, Trigram, SixPaths, FourSymbols, ImmortalFormationLabel }
+public enum AutoFsSpecialItemCategory { None, SkillBook, Artifact, Trigram, SixPaths, FourSymbols, ImmortalFormationLabel, Herb, GreenWeapon }
 
 public static class AutoFsSpecialItemClassifier {
 	private static readonly HashSet<string> SkillBookNames = new(StringComparer.OrdinalIgnoreCase) {
@@ -30,8 +30,70 @@ public static class AutoFsSpecialItemClassifier {
 		"Đoản Kiếm", "Đoạn Kiếm", "Mảnh Giáp", "Toái Giáp", "Băng Cơ", "Ngọc Cốt", "Mặt Quỷ", "Quỷ Diện", "Hỏa Vũ"
 	};
 
+	// Thảo Dược. Nhận diện BẰNG TÊN chứ không bằng trường phân loại trong record.
+	//
+	// Vì sao không dùng ItemGroup.Herbal đã có sẵn: nhánh đó không bao giờ chạy được. Nó so GroundKind với 10, mà
+	// GroundKind đọc ở offset GroundRecordKind (0x1C) — ĐÚNG offset mà AutoFsGroundItemScanner dùng làm điều kiện
+	// "đang nằm trên đất" (groundState != 3 thì bỏ qua), nên mọi item lọt qua vòng quét đều có GroundKind = 3.
+	// Lỗi này đã ghi trong Resource/CLIENT-UPDATE-RECOVERY.md dòng 175 (2026-08-28) và xác nhận lại bằng bản đổ
+	// record ngày 2026-09-11: cả ba ô 3/5/9 đều ra +0x01C=0x00000003.
+	//
+	// Cũng KHÔNG dùng được QualityCodeB: bản đổ record 2026-09-11 PID=32196 cho thấy 'Liên Kiều' và 'Mặc Long Quy'
+	// đều có +0x0B0 = 0x01000030, tức AttributeClass = 3 — trùng đúng nhóm 'Mảnh, Ngọc'. Đó chính là lý do thảo dược
+	// vẫn bị nhặt suốt: 'Mảnh, Ngọc' mặc định BẬT nên nhánh AttributeClass == 3 trong Finder.ShouldPick cho qua.
+	// Dò cả 233 DWORD của hai record cũng không thấy trường nào tách được thảo dược khỏi mảnh/ngọc.
+	//
+	// So khớp ĐÚNG TUYỆT ĐỐI sau chuẩn hoá, cùng lý do với Lục Đạo ở dưới: bao hàm hai chiều có thể nuốt nhầm món
+	// khác có tên dài hơn chứa đúng chuỗi này. Ở đây bắt buộc phải tuyệt đối: bảng vật phẩm còn có
+	// 'Tinh Hoa Mặc Long Quy' (mã 965, "Sản vật gia công cấp 8") KHÔNG phải thảo dược nhưng chứa nguyên tên món 919.
+	//
+	// Nguồn: bảng vật phẩm trích từ settings.pak của client, D:\G\Tools\FSData\Data\settings.pak.txt, cột "Mã,Tên".
+	// Lọc mọi dòng có mô tả "(Thảo Dược cấp N)" ra đúng 16 món, mã liên tiếp 910..925 — trọn một khối, không sót.
+	// Ghi kèm mã và cấp để lần sau đối chiếu lại được với file gốc.
+	private static readonly HashSet<string> HerbNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Bạch Trà",            // 910, cấp 1
+		"Địa Hoàng",           // 911, cấp 1
+		"Huyên thảo",          // 912, cấp 1
+		"Cát Căn",             // 913, cấp 2
+		"Liên Kiều",           // 914, cấp 3
+		"Lạc Thạch Đằng",      // 915, cấp 4
+		"Tiên Hạc Thảo",       // 916, cấp 5
+		"Bạch Phụ Tử",         // 917, cấp 6
+		"Hà Thủ Ô",            // 918, cấp 7
+		"Mặc Long Quy",        // 919, cấp 8
+		"Mặc Long Đảm",        // 920, cấp 8
+		"Phục Thần Tử",        // 921, cấp 9
+		"Trường Bạch Sâm",     // 922, cấp 9
+		"Tiên Vân Lão Sâm",    // 923, cấp 10
+		"Tuyết Chi Phục Linh", // 924, cấp 10
+		"Long Huyết Linh Chi"  // 925, cấp 10
+	};
+
+	// Nhóm "Vũ khí xanh". Chủ dự án cung cấp 2026-09-12: rìu (phủ) từ level 40 tới 100.
+	//
+	// Nhóm này KHÁC mọi nhóm còn lại ở chỗ nó CHỈ THÊM, không bao giờ bớt: nó nhận thêm bản XANH LỤC
+	// (QualityCodeA & 0xFF == 2) của các tên dưới đây, còn màu khác vẫn theo nguyên ô tick màu. Các ô Đồ Lục/Vàng/Cam
+	// giữ quyền ưu tiên số 1 (chủ dự án chốt 2026-09-12). Điều kiện màu nằm ở Finder.ShouldPick chứ không ở đây,
+	// vì lớp này chỉ nhìn thấy tên.
+	//
+	// So khớp ĐÚNG TUYỆT ĐỐI, cùng lý do với Thảo Dược và Lục Đạo. Đã rà 7 tên này với toàn bộ luật phía dưới
+	// (2026-09-12): không tên nào bị nhóm khác nuốt, không tên nào là chuỗi con của tên khác. Chỗ suýt trúng duy nhất
+	// là Pháp Bảo 'Lạc Hồn Chung' so với 'Lạc Hồn phủ' — phép so của Pháp Bảo là
+	// "LAC HON CHUNG".Contains("LAC HON PHU") nên không khớp.
+	private static readonly HashSet<string> GreenWeaponNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Phục Thế phủ",
+		"Lạc Hồn phủ",
+		"Thất bảo phủ",
+		"Tụ Tiên phủ",
+		"Tuyệt Tiên phủ",
+		"Hỗn Thiên phủ",
+		"Diệt Thần phủ"
+	};
+
 	public static AutoFsSpecialItemCategory Classify(string rawName) {
 		string name = ToAsciiUpper(NormalizeGroundName(rawName));
+		if (GreenWeaponNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.GreenWeapon;
+		if (HerbNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Herb;
 		// Kiểm tra Lục Đạo trước Bí Kíp/Bảo Vật và so khớp đúng tuyệt đối (không bao hàm):
 		// tên món Lục Đạo luôn là tên đầy đủ của chính món đó (vd. "Băng Cơ"), trong khi Bí Kíp lại có tên dài chứa
 		// đúng từ đó (vd. "Băng Cơ Tuyết Cốt"). Bao hàm 2 chiều đều có thể nuốt nhầm; so khớp đúng tuyệt đối mới tránh cả 2 chiều.

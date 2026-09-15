@@ -6,6 +6,31 @@ using Auto.Utils;
 internal sealed class AutoFsEntityScanner {
 	private const int AutoFsMaximumPlayerDistance = 9999;
 
+	// Khối đầu bản ghi entity, gom ba trường mà vòng lọc cần đọc cho MỌI entity: Level (0x0024), EntityType (0x0028)
+	// và LifecycleStatus (0x01E8). Suy ra từ chính AutoFsClientProfile nên đổi offset bên đó là ở đây tự theo.
+	private const int HeaderBase = AutoFsClientProfile.Level;
+	private const int HeaderLevelOffset = AutoFsClientProfile.Level - HeaderBase;
+	private const int HeaderTypeOffset = AutoFsClientProfile.EntityType - HeaderBase;
+	private const int HeaderStatusOffset = AutoFsClientProfile.LifecycleStatus - HeaderBase;
+	private const int EntityHeaderSize = HeaderStatusOffset + sizeof(int);
+
+	// Bao lâu mới quét lại ĐỦ 510 ô một lần. Giữa hai lần đó chỉ đọc lại những ô đã biết là đang có entity.
+	//
+	// Vì sao cần (đo thật, perf.log 2026-09-14): vòng này chạy 79 lần/giây cho 5-6 account, mỗi lượt 510 lần đọc
+	// => ~40.000 lần đọc bộ nhớ mỗi giây, và đối chiếu với CPU thật của tiến trình (179ms/s) thì nó cùng vòng
+	// ĐọcĐệ chiếm gần như toàn bộ CPU của Auto. Số ô thực sự có entity chỉ khoảng 140/510.
+	//
+	// ĐÁNH ĐỔI, nói rõ: quái xuất hiện ở ô TRƯỚC ĐÓ TRỐNG sẽ được thấy chậm tối đa bằng khoảng này. Quái chết rồi
+	// chọn con khác KHÔNG bị ảnh hưởng (con kia đã nằm sẵn trong danh sách ô sống), và ô đang có quái vẫn được đọc
+	// lại mỗi lượt nên máu/toạ độ luôn tươi.
+	private const int FullSweepIntervalMilliseconds = 500;
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, LiveSlotCache> liveSlotsByProcess = new();
+
+	private sealed class LiveSlotCache {
+		public DateTime NextFullSweepUtc;
+		public int[] Indices = [];
+	}
+
 	public static int ReadCurrentTargetIndex(int processId) {
 		try {
 			using MemoryReader reader = new(processId);
@@ -37,6 +62,8 @@ internal sealed class AutoFsEntityScanner {
 	// eliteCollector: truyền vào một danh sách rỗng để nhận thêm mọi quái thủ lĩnh/boss quanh tâm bãi. Bỏ trống thì
 	// bước gom bị tắt hoàn toàn, không tốn thêm lần đọc bộ nhớ nào — các overload cũ giữ nguyên hành vi.
 	public IReadOnlyList<AutoFsEntity> Scan(MemoryReader reader, Settings settings, out int playerX, out int playerY, out int playerLifecycleStatus, bool includeAllTargetTypes = false, int preferredTargetIndex = -1, List<AutoFsEntity>? eliteCollector = null) {
+		long profilerStart = HotPathProfiler.Begin();
+		try {
 		playerX = 0;
 		playerY = 0;
 		playerLifecycleStatus = -1;
@@ -55,13 +82,34 @@ internal sealed class AutoFsEntityScanner {
 		(int centerX, int centerY) = GetCenter(settings, playerX, playerY);
 		List<AutoFsEntity> entities = new();
 		List<(int X, int Y)> elitePositions = new();
+		// Một buffer duy nhất cho cả lượt quét, cấp phát ở đây (biến cục bộ) thay vì field để không phải lo hai luồng
+		// dùng chung: ngoài worker Đánh còn có đường liệt kê ComboBox gọi Scan từ luồng giao diện.
+		byte[] header = new byte[EntityHeaderSize];
 
-		for (int index = AutoFsClientProfile.FirstEntityIndex; index <= AutoFsClientProfile.LastEntityIndex; index++) {
+		// Đường liệt kê cho ComboBox luôn quét đủ; vòng chọn mục tiêu thì quét đủ theo chu kỳ, xen giữa là quét
+		// nhanh trên danh sách ô đã biết có entity.
+		LiveSlotCache slotCache = liveSlotsByProcess.GetOrAdd(reader.ProcessId, _ => new LiveSlotCache());
+		int[] knownLiveSlots;
+		bool fullSweep;
+		lock (slotCache) {
+			knownLiveSlots = slotCache.Indices;
+			fullSweep = includeAllTargetTypes || knownLiveSlots.Length == 0 || DateTime.UtcNow >= slotCache.NextFullSweepUtc;
+		}
+		List<int>? liveSlotsFound = fullSweep ? new List<int>(160) : null;
+		int sweepLength = fullSweep ? AutoFsClientProfile.LastEntityIndex - AutoFsClientProfile.FirstEntityIndex + 1 : knownLiveSlots.Length;
+
+		for (int slot = 0; slot < sweepLength; slot++) {
+			int index = fullSweep ? AutoFsClientProfile.FirstEntityIndex + slot : knownLiveSlots[slot];
 			IntPtr entityBase = GetEntityBase(tableBase, index, layout.EntityStride);
-			int status = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.LifecycleStatus));
+			// MỘT lần đọc lấy cả Level (0x0024), EntityType (0x0028) và LifecycleStatus (0x01E8) — ba trường nằm gọn
+			// trong 456 byte. Trước đây là hai lần gọi ReadProcessMemory riêng cho mỗi entity trong 510 entity.
+			// Đo ngày 2026-09-14: 510 entity × 2 lần đọc 4-byte = 0,29 ms; × 1 lần đọc 456-byte = 0,15 ms.
+			if (! reader.ReadInto(IntPtr.Add(entityBase, AutoFsClientProfile.Level), header, EntityHeaderSize)) continue;
+			int status = BitConverter.ToInt32(header, HeaderStatusOffset);
 			if (status == AutoFsClientProfile.FinishedStatus) continue;
 
-			int type = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.EntityType));
+			int level = BitConverter.ToInt32(header, HeaderLevelOffset);
+			int type = BitConverter.ToInt32(header, HeaderTypeOffset);
 			bool acceptedType = includeAllTargetTypes
 				? type == AutoFsClientProfile.MonsterType || type == AutoFsClientProfile.PlayerType
 				// "Chỉ đánh Boss" là luồng song song với "Đánh quái", không phụ thuộc: bật nó thì quái vẫn được nhận vào
@@ -71,12 +119,19 @@ internal sealed class AutoFsEntityScanner {
 
 			byte[] nameBytes = ReadName(reader, entityBase);
 			if (nameBytes.Length == 0) continue;
+			// Ghi nhận ô có QUÁI THẬT (đã qua lọc loại và CÓ TÊN), không phải mọi ô "chưa kết thúc".
+			//
+			// Bản trước ghi ngay sau phép kiểm status và KHÔNG ăn thua gì — đo được ở perf.log 2026-09-14 22:01:
+			// QuétĐánh vẫn 1988-2033us/lần, y hệt mức 2125us/lần trước khi thêm cache. Lý do: ô TRỐNG không mang
+			// status = FinishedStatus (6) nên chúng lọt qua phép kiểm đó, danh sách "ô sống" gom gần đủ 510 ô và
+			// lượt quét nhanh hoá ra vẫn là quét đủ. Đặt ở đây thì danh sách chỉ còn đúng số quái thật.
+			liveSlotsFound?.Add(index);
 			string name = LegacyVietnameseText.Decode(nameBytes);
 
 			// Đọc toạ độ TRƯỚC bộ lọc tên. Hai phép lọc độc lập nhau nên tập kết quả không đổi, nhưng nhờ vậy
 			// nhánh gom quái thủ lĩnh ngay dưới có sẵn toạ độ mà không phải đọc bộ nhớ thêm lần nữa.
-			int x = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.RawX));
-			int y = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.RawY));
+			// RawX (0x434C) và RawY (0x4350) liền nhau nên đọc chung một lần.
+			if (! reader.TryReadInt32Pair(IntPtr.Add(entityBase, AutoFsClientProfile.RawX), out int x, out int y)) continue;
 			if (x <= 0 || y <= 0) continue;
 
 			// Gom riêng quái thủ lĩnh/boss TRƯỚC bộ lọc tên. Lý do: khi người dùng chọn đích danh một loại quái thì
@@ -90,9 +145,9 @@ internal sealed class AutoFsEntityScanner {
 				if (eliteToCenter <= Math.Max(settings.Range, 1) + Math.Max(settings.EliteAvoidRadius, 0)) {
 					elitePositions.Add((x, y));
 					if (eliteCollector != null) {
+						// level đã đọc chung với type ở trên, chỉ còn phải đọc thêm hp.
 						int eliteHp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
-						int eliteLevel = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Level));
-						eliteCollector.Add(new AutoFsEntity(index, type, status, name, nameBytes, eliteLevel, eliteHp, x, y, GetMapDistance(playerX, playerY, x, y), eliteToCenter, centerX, centerY, index == currentTargetIndex));
+						eliteCollector.Add(new AutoFsEntity(index, type, status, name, nameBytes, level, eliteHp, x, y, GetMapDistance(playerX, playerY, x, y), eliteToCenter, centerX, centerY, index == currentTargetIndex));
 					}
 				}
 			}
@@ -126,16 +181,54 @@ internal sealed class AutoFsEntityScanner {
 			if (distanceToPlayer > AutoFsMaximumPlayerDistance) continue;
 
 			int hp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
-			int level = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Level));
+			// Xác quái: máu đã về 0 nhưng client chưa kịp lật LifecycleStatus sang FinishedStatus. Trước đây không có
+			// bộ lọc nào trên hp nên nó vẫn nằm trong danh sách ứng viên, và vì khoá sắp xếp đặt IsCurrentTarget lên
+			// trên khoảng cách nên Auto bám luôn cái xác, bắn lệnh đánh mỗi 50ms cho tới khi client tự dọn.
+			// Chính Engine.cs đã thấy chuyện này từ trước mà không xử lý — nó ghi CURRENT_TARGET_ZERO_HP_OBSERVED
+			// với Action=OBSERVE_ONLY.
+			// Đường liệt kê cho ComboBox (includeAllTargetTypes) KHÔNG lọc: ở đó cần thấy đủ tên quái để chọn.
+			if (!includeAllTargetTypes && hp <= 0) continue;
 			entities.Add(new AutoFsEntity(index, type, status, name, nameBytes, level, hp, x, y, distanceToPlayer, distanceToCenter, centerX, centerY, index == currentTargetIndex));
+		}
+
+		// Chốt danh sách ô sống cho các lượt quét nhanh kế tiếp. Chỉ lượt quét ĐỦ mới được ghi: lượt quét nhanh vốn
+		// chỉ nhìn một phần bảng nên danh sách nó thấy luôn hẹp hơn, ghi đè vào là danh sách teo dần mỗi lượt.
+		if (liveSlotsFound != null && ! includeAllTargetTypes) {
+			lock (slotCache) {
+				slotCache.Indices = liveSlotsFound.ToArray();
+				slotCache.NextFullSweepUtc = DateTime.UtcNow.AddMilliseconds(FullSweepIntervalMilliseconds);
+			}
 		}
 
 		// Vùng cấm quanh thủ lĩnh: loại nốt QUÁI THƯỜNG đứng trong bán kính. Đây mới là chỗ xử lý đúng vấn đề — bỏ
 		// riêng con thủ lĩnh thì auto vẫn bị đám quái thường đứng sát nó kéo thẳng vào ổ.
 		// Bật/tắt bằng chính ô "Không đánh Boss" (chốt với chủ dự án 2026-09-07), không có công tắc riêng.
 		// includeAllTargetTypes là đường liệt kê cho ComboBox nên không lọc.
+		// KHÔNG loại con ĐANG ĐÁNH DỞ: vùng cấm chỉ dùng để CHỌN mục tiêu mới, không dùng để bỏ mục tiêu đang đánh.
+		//
+		// Bản trước loại cả nó. Vùng cấm tính theo khoảng cách QUÁI-tới-BOSS chứ không phải nhân vật-tới-boss, nên
+		// boss đi ngang qua con quái đang đánh là con đó biến khỏi danh sách ngay giữa trận, kể cả khi nhân vật đứng
+		// rất xa boss. Khối sắp xếp ngay bên dưới cố giữ IsCurrentTarget nhưng vô nghĩa vì RemoveAll chạy trước.
+		// Chủ dự án báo 2026-09-11: "đôi khi ngoài phạm vi của boss nhưng tao vẫn thấy nhân vật tự chuyển target".
+		// Miễn trừ chỉ có hiệu lực khi NHÂN VẬT đang ở ngoài vùng an toàn của chính nó. Tránh boss là ưu tiên số 1
+		// (chủ dự án chốt 2026-09-11): khi nhân vật đã bị kéo vào trong bán kính, con đang đánh dở cũng bị bỏ, nếu
+		// không thì trốn xong lại quay vào đúng con đó rồi lại trốn — giằng co vô hạn.
 		if (!includeAllTargetTypes && settings.DoNotAttackBoss && settings.EliteAvoidRadius > 0 && elitePositions.Count > 0) {
-			entities.RemoveAll(entity => entity.Type == AutoFsClientProfile.MonsterType && EliteAvoidance.IsNearAnyElite(entity.RawX, entity.RawY, elitePositions, settings.EliteAvoidRadius));
+			// BẤT BIẾN: con quái được phép đánh phải NẰM Ở CHỖ NHÂN VẬT ĐƯỢC PHÉP ĐỨNG.
+			//
+			// Trước đây hai bán kính này độc lập nhau và mặc định lệch hẳn: EliteAvoidRadius=500 lọc quái, còn
+			// ElitePlayerRetreatRadius=768 cấm nhân vật đứng. Con quái nằm trong dải 500..768 vừa được phép đánh vừa
+			// nằm ở chỗ bị cấm đứng, nên hai luật đá nhau và sinh vòng lặp CHẮC CHẮN, không phải hãn hữu:
+			// trốn đẩy ra ngoài 768 -> hết trốn -> luồng đánh kéo vào con cách boss 600 -> lại vi phạm -> trốn tiếp.
+			// Chủ dự án báo 2026-09-15: "đi đến đích xong bị kéo về chỗ cũ ngay lập tức" và "cứ đi qua đi lại".
+			//
+			// Lấy sàn bằng bán kính cấm đứng thì dải mâu thuẫn biến mất. Vẫn cho phép đặt EliteAvoidRadius LỚN hơn
+			// nếu muốn né rộng hơn nữa; chỉ chặn không cho nhỏ hơn.
+			int monsterAvoidRadius = Math.Max(settings.EliteAvoidRadius, Math.Max(settings.ElitePlayerRetreatRadius, 0));
+			bool playerInsideRetreatZone = EliteAvoidance.IsNearAnyElite(playerX, playerY, elitePositions, settings.ElitePlayerRetreatRadius);
+			entities.RemoveAll(entity => entity.Type == AutoFsClientProfile.MonsterType
+				&& (playerInsideRetreatZone || !entity.IsCurrentTarget)
+				&& EliteAvoidance.IsNearAnyElite(entity.RawX, entity.RawY, elitePositions, monsterAvoidRadius));
 		}
 
 		// Giữ nguyên quái đang target (game tự báo qua CurrentTargetIndex) cho tới khi nó chết/rời danh sách ứng viên,
@@ -148,6 +241,9 @@ internal sealed class AutoFsEntityScanner {
 			return targetPriority != 0 ? targetPriority : left.Distance.CompareTo(right.Distance);
 		});
 		return entities;
+		} finally {
+			HotPathProfiler.End(HotPathProfiler.AttackScan, profilerStart);
+		}
 	}
 
 	private static IntPtr GetEntityBase(IntPtr tableBase, int index, int stride) => IntPtr.Add(tableBase, index * stride);

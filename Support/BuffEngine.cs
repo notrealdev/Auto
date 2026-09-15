@@ -6,7 +6,7 @@ using Auto.Attack;
 // Vòng lặp gốc (VectorFactory.SplitDisk, khôi phục từ IL vì ILSpy không dịch được) chạy mãi khi đang auto:
 // với mỗi skill được tích thì gửi gói bật skill rồi Thread.Sleep(350) trước khi sang skill kế tiếp.
 // DEV auto giữ nguyên nhịp 350 ms nhưng chuyển sang mô hình tick để không chiếm thread riêng cho mỗi account.
-internal sealed class PassiveBuffEngine {
+internal sealed class BuffEngine {
 	private const int SkillIntervalMilliseconds = 350;
 	// Sau khi tạm dừng lâu (đổi cấu hình, tắt auto) thì bỏ phần nợ thay vì bắn dồn một loạt.
 	private const int MaximumCatchUpMilliseconds = 3000;
@@ -25,13 +25,24 @@ internal sealed class PassiveBuffEngine {
 	private string lastStateLine = "";
 	private string lastFailureLine = "";
 
-	public PassiveBuffEngine(Settings settings, AutoFsAttackTransport transport) {
+	public BuffEngine(Settings settings, AutoFsAttackTransport transport) {
 		this.settings = settings;
 		this.transport = transport;
 	}
 
 	// Gửi lần lượt từng skill đang bật, mỗi lần cách nhau đúng nhịp 350 ms của AutoFS.
-	public void Tick(int processId, IntPtr gameWindow, bool attackEnabled, Action<string> log) {
+	// skillsAllowedHere: cùng quy tắc với Support.Engine — trong thành game CẤM dùng kỹ năng nên gửi gói bật lại ở đó
+	// chỉ tổ ném lệnh đi vô ích. Khối này không chiếm quyền điều khiển nên hậu quả nhẹ hơn nhánh heal, nhưng vẫn là
+	// cùng một lỗi: cast mà không biết chỗ đứng có cast được không.
+	public void Tick(int processId, IntPtr gameWindow, bool attackEnabled, bool skillsAllowedHere, Action<string> log) {
+		if (!skillsAllowedHere) {
+			// LogStateChange tự chống lặp nên gọi mỗi nhịp cũng chỉ ra một dòng.
+			LogStateChange(log, processId, "SKIPPED_OUTSIDE_TRAINING_MAP", "Không đứng ở map bãi nên coi như trong thành, game cấm dùng kỹ năng");
+			pendingSkills.Clear();
+			nextSendUtc = DateTime.MinValue;
+			nextSkillIndex = 0;
+			return;
+		}
 		BuildPendingSkills(attackEnabled);
 		if (pendingSkills.Count == 0) {
 			LogStateChange(log, processId, "IDLE", DescribeReason(attackEnabled));

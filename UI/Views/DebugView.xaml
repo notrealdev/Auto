@@ -36,6 +36,31 @@
 					Content="Clear" />
 			</Grid>
 
+			<!--  Chỉ tool "Điểm chuyển tiếp: thử số thứ tự" đọc ô này; các tool khác bỏ qua.  -->
+			<StackPanel
+				Margin="0,0,0,10"
+				Orientation="Horizontal">
+				<TextBlock
+					VerticalAlignment="Center"
+					Style="{StaticResource FieldLabel}"
+					Text="Lệnh" />
+				<TextBox
+					Width="60"
+					Margin="8,0,0,0"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding TransitGateCommand, UpdateSourceTrigger=PropertyChanged}" />
+				<TextBlock
+					Margin="16,0,0,0"
+					VerticalAlignment="Center"
+					Style="{StaticResource FieldLabel}"
+					Text="Số thứ tự điểm đến" />
+				<TextBox
+					Width="60"
+					Margin="8,0,0,0"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding TransitGateOptionIndex, UpdateSourceTrigger=PropertyChanged}" />
+			</StackPanel>
+
 			<TextBox
 				Height="160"
 				Padding="8,8"

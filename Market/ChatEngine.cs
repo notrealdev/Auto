@@ -3,7 +3,7 @@ namespace Auto.Market;
 using Auto.Attack;
 using Auto.Utils;
 
-internal sealed class AutoAdvertiseEngine {
+internal sealed class ChatEngine {
 	private const int InterChannelDelayMilliseconds = 5000;
 	private const int MaximumMessageLength = 199;
 	// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng đọc byte thật qua ChannelManagerProbe (PID=26056) — delta +0x2020 khớp Count=7 hợp lệ và cả 4 mã kênh (Cận/Giao/Khu vực/Lãnh địa) khớp tuyệt đối với hằng số đã có sẵn bên dưới.
@@ -30,7 +30,7 @@ internal sealed class AutoAdvertiseEngine {
 	public bool IsConfigured => settings.AutoAdvertise && ! string.IsNullOrWhiteSpace(settings.AdvertiseText) &&
 		(settings.NearbyEnabled || settings.AreaEnabled || settings.TradeEnabled || settings.TerritoryEnabled);
 
-	public AutoAdvertiseEngine(Settings settings, AutoFsAttackTransport transport) {
+	public ChatEngine(Settings settings, AutoFsAttackTransport transport) {
 		this.settings = settings;
 		this.transport = transport;
 	}

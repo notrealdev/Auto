@@ -17,6 +17,18 @@ public sealed class WeaponRepairAutomation {
 	private const int DoctorEntityLoadTimeoutMilliseconds = 15000;
 	private const int MaximumDoctorClickAttempts = 6;
 	private const int MaximumMovementFailures = 3;
+	// Hỏng liên tiếp bao nhiêu lần thì bắt đầu giãn nhịp, và giãn bao lâu.
+	// Hai lần đầu vẫn thử lại ngay vì phần lớn lỗi là thoáng qua (entity chưa kịp tải, modal chưa kịp đóng).
+	private const int AbortsBeforeBackoff = 3;
+	private const int AbortBackoffSeconds = 15;
+	// Trần bỏ cuộc: giãn nhịp 15 giây không đủ khi nguyên nhân hỏng KHÔNG tự hết, vì yêu cầu sửa vẫn treo nên
+	// repairPriority trong AccountEngineCoordinator luôn đúng, cứ mỗi nhịp lại Cancel luồng lên bãi và chặn cả
+	// nhánh khôi phục chống đứng im. Bằng chứng (Release/Diagnostics 2026-09-11): PID=22824 quay 469 chuyến từ
+	// 05:58:15 tới 12:37, HỏngLiênTiếp lên tới 470, 5119 dòng đều "TênKhớp=0"; back-to-training.log chỉ có 2 dòng
+	// "đã ghi nhớ" và KHÔNG dòng "bắt đầu" nào; heartbeat cùng lúc ghi HP=448/448 và RepairBusy=True.
+	// Đối chứng: không tài khoản nào khác sinh nổi một dòng HỏngLiênTiếp, nên ngưỡng 5 nằm trên mọi giá trị từng đo.
+	private const int AbortsBeforeGiveUp = 5;
+	private const int GiveUpCooldownSeconds = 600;
 	private const int StuckDetectionMilliseconds = 8000;
 	private const int SaleTriggerCheckMilliseconds = 1000;
 	private const int AutoFsDialogPollMilliseconds = 300;
@@ -63,6 +75,10 @@ public sealed class WeaponRepairAutomation {
 	private bool runSaleThisVisit;
 	private bool runRepairThisVisit;
 	private bool repairRequestedThisVisit;
+	// Số lần luồng sửa đồ hỏng LIÊN TIẾP. Về 0 ngay khi có một chuyến hoàn tất.
+	private int consecutiveAbortCount;
+	// Mỗi chuyến chỉ dùng đường click theo toạ độ ĐÚNG MỘT LẦN, không thì nó thành vòng lặp mới.
+	private bool doctorCoordinateFallbackUsed;
 	private DateTime nextSaleTriggerCheckUtc;
 	private string lastSaleTriggerState = "";
 
@@ -168,7 +184,20 @@ public sealed class WeaponRepairAutomation {
 					break;
 				}
 				if (!RuntimeEntityLocator.TryFindNamedEntity(game.ProcessId, "Đại phu", doctorRawX, doctorRawY, out RuntimeEntityLocation doctor, out string findReason)) {
-					if (HasTimedOut()) return AbortAndRetry(game, $"Không thấy entity Đại Phu sau {DoctorEntityLoadTimeoutMilliseconds}ms | {findReason}", log);
+					if (HasTimedOut()) {
+						// FALLBACK: hết giờ chờ entity thì vẫn click một lần theo toạ độ trong Data\Maps thay vì bỏ chuyến.
+						// ClickDoctor chỉ cần RawX/RawY (Index và Handle chỉ để ghi log), nên đường này dùng được ngay.
+						// Trước đây không có nhánh này: tìm không thấy entity là bỏ hẳn, và nếu nguyên nhân không tự hết thì
+						// account quay vòng vô hạn — repair.log 2026-09-10 ghi PID=22824 quay 218 vòng, không lần nào tới
+						// được bước click.
+						if (!doctorCoordinateFallbackUsed) {
+							doctorCoordinateFallbackUsed = true;
+							log?.Invoke($"Sửa đồ | không thấy entity Đại Phu, chuyển sang click theo toạ độ Data/Maps | Đích={doctorRawX}/{doctorRawY} | {findReason}");
+							ClickDoctor(game, snapshot, new RuntimeEntityLocation(-1, 0, doctorRawX, doctorRawY, 0, 0, "Đại phu (toạ độ Data/Maps)", 0), log);
+							break;
+						}
+						return AbortAndRetry(game, $"Không thấy entity Đại Phu sau {DoctorEntityLoadTimeoutMilliseconds}ms, click theo toạ độ cũng không mở được hội thoại | {findReason}", log);
+					}
 					nextActionUtc = DateTime.UtcNow.AddSeconds(1);
 					if (DateTime.UtcNow >= nextDoctorEntityLogUtc) {
 						nextDoctorEntityLogUtc = DateTime.UtcNow.AddSeconds(5);
@@ -275,7 +304,21 @@ public sealed class WeaponRepairAutomation {
 						nextActionUtc = DateTime.UtcNow;
 						break;
 					}
-					return Fail(game, "Không mở được xác nhận sửa đồ sau một lần click; giữ nguyên vị trí và giao diện hiện tại.", log);
+					// Dùng nốt hạn mức 3 lần đã có sẵn thay vì FAIL ngay ở lần đầu.
+					//
+					// ClickRepair chỉ đếm repairClickAttempts khi TryOpenRepairAllConfirmation trả về FALSE. Nhánh này
+					// là trường hợp ngược lại: lệnh trả về TRUE nhưng popup không hiện — và nó FAIL luôn ở lần 1,
+					// không đụng tới hạn mức. Bằng chứng (repair.log 2026-09-12, PID=22824): 09:44:10.911 ghi
+					// "gọi lệnh nội bộ Sửa toàn bộ | Lần=1/3", 09:44:10.925 ghi "Returned=T", rồi 09:44:16.958 FAIL
+					// với đúng chữ "sau một lần click". Chính chuyến trước đó lúc 09:43:36 chạy cùng y hệt chuỗi lệnh
+					// này và thành công (độ bền 2->16), nên đây là lỗi thoáng qua, đáng thử lại.
+					if (repairClickAttempts < MaximumRepairCommandAttempts) {
+						log?.Invoke($"Sửa đồ | đã gửi lệnh sửa nhưng xác nhận không hiện, thử lại | Lần={repairClickAttempts}/{MaximumRepairCommandAttempts}");
+						state = RepairState.ClickingRepair;
+						nextActionUtc = DateTime.UtcNow.AddMilliseconds(1000);
+						break;
+					}
+					return Fail(game, $"Không mở được xác nhận sửa đồ sau {MaximumRepairCommandAttempts} lần click; giữ nguyên vị trí và giao diện hiện tại.", log);
 				}
 				break;
 			case RepairState.ClickingConfirm:
@@ -351,8 +394,22 @@ public sealed class WeaponRepairAutomation {
 		return true;
 	}
 
-	public void Cancel(GameWindow game) {
+	// Huỷ chuyến sửa đang chạy. BẮT BUỘC có lý do — cùng khuôn với ReturnToTrainingAutomation.Cancel.
+	//
+	// Bản trước không nhận lý do và không ghi một dòng nào, trong khi AccountEngineCoordinator gọi nó ở 7 chỗ. Hậu
+	// quả thật (2026-09-12, PID=22824): chuyến về bãi bị xoá sạch lúc ~09:43:54 mà repair.log không có dấu vết, phải
+	// dò chéo sang buff.log mới thấy "BUFF_CAST_CONFIRMED | Exclusive=True" lúc 09:43:53.836 rồi "Sửa đồ bắt đầu"
+	// lúc 09:43:54.051 — cách nhau 215ms.
+	public void Cancel(GameWindow game, Action<string>? log, string reason) {
 		if (!IsBusy) return;
+		// Chuyến ĐÃ sửa xong mà bị huỷ trên đường về vẫn phải báo cho monitor.
+		//
+		// ConfirmRepairCompleted trước đây chỉ được gọi trong Complete(), tức chỉ khi đã về tới bãi. Bị huỷ giữa
+		// đường thì yêu cầu sửa còn treo, HasPendingRepairRequest vẫn true, nên nhịp sau lập tức đi sửa lại dù độ bền
+		// đã tốt. Đúng vòng lặp đã xảy ra: 09:43:39 "Sửa toàn bộ thành công | Độ bền thấp nhất=2->16" (ngưỡng 2),
+		// 15 giây sau đã quay đầu về NPC, và chính chuyến thừa đó mới là chuyến hỏng rồi kẹt 3 giờ 39 phút.
+		if (repairCompletionConfirmed) game.WeaponRepairMonitor.ConfirmRepairCompleted();
+		log?.Invoke($"Sửa đồ huỷ | {reason} | Trạng thái={state} | ĐãSửaXong={repairCompletionConfirmed}");
 		game.InventorySaleEngine.Reset();
 		Reset();
 	}
@@ -447,8 +504,14 @@ public sealed class WeaponRepairAutomation {
 
 	private void ClickDoctor(GameWindow game, GameSnapshot snapshot, RuntimeEntityLocation doctor, Action<string>? log) {
 		doctorClickAttempts++;
-		log?.Invoke($"Sửa đồ | click entity Đại Phu | Index={doctor.Index} | Handle={doctor.Handle} | Raw={doctor.RawX}/{doctor.RawY} | LệchMap={doctor.DistanceToAnchor:F2}");
-		bool clicked = FullMouseHandlerPickupCommand.TryClickRawPosition(game.ProcessId, game.Handle, snapshot.X, snapshot.Y, doctor.RawX, doctor.RawY, out _, out string result);
+		// Entity khớp tên nhưng không có toạ độ thì click theo toạ độ màn hình vô nghĩa. AutoFS không bao giờ dùng
+		// toạ độ cho NPC tìm theo tên: nó gửi thẳng lệnh kèm index (WindowQueue.cs:24268). Đường toạ độ vẫn giữ
+		// nguyên cho entity CÓ toạ độ vì đó là đường đã sửa đồ thành công trên các account khác.
+		bool byIndex = doctor.Index >= 0 && (doctor.RawX <= 0 || doctor.RawY <= 0);
+		log?.Invoke($"Sửa đồ | click entity Đại Phu | Index={doctor.Index} | Handle={doctor.Handle} | Raw={doctor.RawX}/{doctor.RawY} | LệchMap={doctor.DistanceToAnchor:F2} | Cách={(byIndex ? "AUTOFS_INDEX" : "TOẠ_ĐỘ")}");
+		bool clicked = byIndex
+			? game.AutoFsTransport.TrySelectEntity(game.Handle, doctor.Index, out string result)
+			: FullMouseHandlerPickupCommand.TryClickRawPosition(game.ProcessId, game.Handle, snapshot.X, snapshot.Y, doctor.RawX, doctor.RawY, out _, out result);
 		if (!clicked) {
 			if (doctorClickAttempts < MaximumDoctorClickAttempts) {
 				bool moveSent = TryAutoFsMovement(game, doctorRawX, doctorRawY, out string moveResult);
@@ -582,6 +645,8 @@ public sealed class WeaponRepairAutomation {
 	private bool Complete(GameWindow game, Action<string>? log) {
 		game.InventorySaleEngine.Reset();
 		if (repairCompletionConfirmed) game.WeaponRepairMonitor.ConfirmRepairCompleted();
+		// Một chuyến trót lọt xoá chuỗi hỏng: lần hỏng tiếp theo lại được thử lại ngay như bình thường.
+		consecutiveAbortCount = 0;
 		game.WeaponRepairMonitor.ResetCache();
 		game.WeaponRepairMonitor.ScheduleImmediateCheck();
 		log?.Invoke(debugMode
@@ -602,15 +667,22 @@ public sealed class WeaponRepairAutomation {
 			Reset();
 			return true;
 		}
-		if (interactionLocked) {
-			log?.Invoke("Sửa đồ FAIL | " + reason + " | Đã khóa tại NPC; tắt rồi bật lại Sửa đồ để thử lại.");
-			state = RepairState.PausedAtDoctor;
-				return true;
-		}
-		if (repairRequestedThisVisit) {
-			log?.Invoke("Sửa đồ FAIL | " + reason + " | Giữ quyền điều khiển tại Đại Phu vì độ bền chưa được xác nhận đã sửa; không cho phép quay lại bãi.");
-			state = RepairState.PausedAtDoctor;
-				return true;
+		// Hỏng ở NPC thì NHẢ QUYỀN rồi xếp lại, không đứng khoá vô hạn nữa (chủ dự án chốt cách A, 2026-09-12).
+		//
+		// Bản trước đặt state = PausedAtDoctor rồi return. Mà PausedAtDoctor chỉ có "break;" trong máy trạng thái và
+		// IsBusy => state != Idle, nên repairPriority ở AccountEngineCoordinator true vĩnh viễn: Tự lên bãi bị Cancel
+		// mỗi nhịp, và nhánh chống đứng im 10 giây bị chính điều kiện !repairPriority tắt tiếng. Bằng chứng
+		// (2026-09-12, PID=22824): FAIL lúc 09:44:16, heartbeat 13:23:52 vẫn ở 58958/96143 cạnh Đại Phu — 3 giờ 39
+		// phút, và anti-afk.log không có một dòng nào của PID này sau 09:44.
+		//
+		// AbortAndRetry đã làm đúng cách A sẵn: giãn 15s sau AbortsBeforeBackoff lần, và sau AbortsBeforeGiveUp lần
+		// thì DeferRepairRequest(600s) để HasPendingRepairRequest về false — có thế repairPriority mới thật sự nhả.
+		//
+		// Gửi ESC trước khi nhả: interactionLocked nghĩa là giao diện NPC đang mở, trả quyền cho luồng Đánh mà vẫn
+		// để shop che màn hình thì nhân vật đứng im kiểu khác.
+		if (interactionLocked || repairRequestedThisVisit) {
+			BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+			return AbortAndRetry(game, reason + (interactionLocked ? " | Đã gửi ESC đóng giao diện NPC." : " | Độ bền chưa được xác nhận đã sửa."), log);
 		}
 		log?.Invoke("Sửa đồ FAIL | " + reason);
 		Reset();
@@ -620,11 +692,34 @@ public sealed class WeaponRepairAutomation {
 	// Giải phóng quyền điều khiển và xếp lại kiểm tra thay vì giữ account vô hạn trong flow lỗi.
 	private bool AbortAndRetry(GameWindow game, string reason, Action<string>? log) {
 		game.InventorySaleEngine.Reset();
-		if (repairRequestedThisVisit) {
-			game.WeaponRepairMonitor.ResetCache();
-			game.WeaponRepairMonitor.ScheduleImmediateCheck("sau khi luồng sửa đồ bị gián đoạn");
+		// Đếm số lần hỏng LIÊN TIẾP rồi giãn dần, thay vì lần nào cũng xếp kiểm tra lại ngay.
+		//
+		// Không có chốt này thì AbortAndRetry -> ScheduleImmediateCheck -> vào lại luồng sửa đồ trong cùng một nhịp,
+		// và nếu nguyên nhân hỏng không tự hết thì account kẹt vĩnh viễn ở chỗ NPC. Bằng chứng
+		// (Release/Diagnostics/repair.log 2026-09-10): PID=22824 quay 194 vòng từ 22:29:21 tới 23:19:45 — 50 phút
+		// đứng nguyên tại 58973/96155 trên Map 37, mỗi vòng đều là "Chưa thấy entity có tên 'Đại phu'" rồi hoãn rồi
+		// bắt đầu lại sau 0,12 giây. Heartbeat cùng khoảng ghi đúng một toạ độ ở cả ba nhịp 23:17/23:18/23:19.
+		consecutiveAbortCount++;
+		// Quá trần thì BỎ HẲN yêu cầu sửa lần này, không chỉ giãn nhịp. Phải xoá yêu cầu thì HasPendingRepairRequest
+		// mới về false, repairPriority mới nhả, luồng lên bãi và nhánh chống đứng im mới chạy được. Độ bền vẫn thấp
+		// nên WeaponRepairMonitor.Tick sẽ tự yêu cầu lại sau khi hết quãng nghỉ.
+		if (consecutiveAbortCount >= AbortsBeforeGiveUp) {
+			log?.Invoke($"Sửa đồ BỎ CUỘC | {reason} | HỏngLiênTiếp={consecutiveAbortCount} | NghỉLại={GiveUpCooldownSeconds}s | Action=Xoá yêu cầu sửa, trả quyền cho luồng đánh và lên bãi");
+			consecutiveAbortCount = 0;
+			game.WeaponRepairMonitor.DeferRepairRequest(GiveUpCooldownSeconds, "sau khi luồng sửa đồ bỏ cuộc vì hỏng liên tiếp");
+			Reset();
+			return false;
 		}
-		log?.Invoke("Sửa đồ hoãn | " + reason + " | Đã giải phóng quyền điều khiển và xếp lại kiểm tra.");
+		int retryDelaySeconds = consecutiveAbortCount < AbortsBeforeBackoff ? 0 : AbortBackoffSeconds;
+		// Xếp lịch cho CẢ chuyến chỉ-bán, không riêng chuyến có yêu cầu sửa.
+		//
+		// Bản trước bọc toàn bộ khối này trong "if (repairRequestedThisVisit)", nên chuyến chỉ bán mà hỏng thì không
+		// gọi ScheduleDelayedCheck lẫn ScheduleImmediateCheck — bộ đếm vẫn tăng nhưng chốt giãn nhịp không có tác dụng
+		// ở nhánh đó. Chỉ ResetCache mới cần giữ trong điều kiện cũ vì nó là cache độ bền, chuyến bán không đụng tới.
+		if (repairRequestedThisVisit) game.WeaponRepairMonitor.ResetCache();
+		if (retryDelaySeconds > 0) game.WeaponRepairMonitor.ScheduleDelayedCheck(retryDelaySeconds, "sau khi luồng sửa đồ hỏng liên tiếp");
+		else game.WeaponRepairMonitor.ScheduleImmediateCheck("sau khi luồng sửa đồ bị gián đoạn");
+		log?.Invoke($"Sửa đồ hoãn | {reason} | HỏngLiênTiếp={consecutiveAbortCount} | ThửLạiSau={retryDelaySeconds}s | Đã giải phóng quyền điều khiển và xếp lại kiểm tra.");
 		Reset();
 		return false;
 	}
@@ -698,6 +793,7 @@ public sealed class WeaponRepairAutomation {
 		successConfirmationCount = 0;
 		movementFailures = 0;
 		doctorClickAttempts = 0;
+		doctorCoordinateFallbackUsed = false;
 		debugMode = false;
 		debugRunRequested = false;
 		saleRequestPending = false;

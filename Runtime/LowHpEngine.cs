@@ -3,7 +3,7 @@ namespace Auto.Runtime;
 using Auto.Attack;
 using Auto.Utils;
 
-internal sealed class LowHpReturnTalismanEngine {
+internal sealed class LowHpEngine {
 	private const int MaximumNameLength = 64;
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	private const int DispatchRetryMilliseconds = 1000;
@@ -26,7 +26,7 @@ internal sealed class LowHpReturnTalismanEngine {
 	private bool returnToTrainingRequested;
 	private string lastFailure = "";
 
-	public LowHpReturnTalismanEngine(BasicSettings settings, AutoFsAttackTransport transport) {
+	public LowHpEngine(BasicSettings settings, AutoFsAttackTransport transport) {
 		this.settings = settings;
 		this.transport = transport;
 	}

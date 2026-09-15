@@ -448,6 +448,59 @@
 		</Setter>
 	</Style>
 
+	<!--  Menu chuột phải: WPF mặc định vẽ theo theme sáng của Windows, lạc hẳn giữa giao diện tối nên phải tạo kiểu riêng.  -->
+	<Style x:Key="DarkContextMenu" TargetType="ContextMenu">
+		<Setter Property="Background" Value="{StaticResource Brush.SurfaceElevated}" />
+		<Setter Property="BorderBrush" Value="{StaticResource Brush.Border}" />
+		<Setter Property="BorderThickness" Value="1" />
+		<Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+		<Setter Property="Padding" Value="0,4" />
+		<Setter Property="HasDropShadow" Value="False" />
+		<!--
+			PHẢI thay cả Template, không được chỉ đặt Background. Template mặc định của ContextMenu vẽ sẵn một dải
+			gutter icon bên trái (rộng ~28px, tô bằng màu hệ thống), nằm ngoài tầm với của Background nên nó vẫn
+			sáng trắng và đè lên chữ — đúng ô trắng chủ dự án thấy 2026-09-15. Dựng lại template trần: một Border
+			bọc ItemsPresenter, không gutter, không chrome nào khác.
+		-->
+		<Setter Property="Template">
+			<Setter.Value>
+				<ControlTemplate TargetType="ContextMenu">
+					<Border
+						Padding="{TemplateBinding Padding}"
+						Background="{TemplateBinding Background}"
+						BorderBrush="{TemplateBinding BorderBrush}"
+						BorderThickness="{TemplateBinding BorderThickness}"
+						CornerRadius="4"
+						SnapsToDevicePixels="True">
+						<ItemsPresenter />
+					</Border>
+				</ControlTemplate>
+			</Setter.Value>
+		</Setter>
+	</Style>
+
+	<Style x:Key="DarkMenuItem" TargetType="MenuItem">
+		<Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+		<Setter Property="Padding" Value="12,6" />
+		<Setter Property="Template">
+			<Setter.Value>
+				<ControlTemplate TargetType="MenuItem">
+					<Border x:Name="ItemBorder" Padding="{TemplateBinding Padding}" Background="Transparent">
+						<ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+					</Border>
+					<ControlTemplate.Triggers>
+						<Trigger Property="IsHighlighted" Value="True">
+							<Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource Brush.AccentMuted}" />
+						</Trigger>
+						<Trigger Property="IsEnabled" Value="False">
+							<Setter Property="Foreground" Value="{StaticResource Brush.TextDisabled}" />
+						</Trigger>
+					</ControlTemplate.Triggers>
+				</ControlTemplate>
+			</Setter.Value>
+		</Setter>
+	</Style>
+
 	<Style x:Key="AccountListBoxItem" TargetType="ListBoxItem">
 		<Setter Property="Padding" Value="4,2" />
 		<Setter Property="Background" Value="Transparent" />

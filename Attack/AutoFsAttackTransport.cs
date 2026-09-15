@@ -7,6 +7,12 @@ internal sealed class AutoFsAttackTransport {
 	private const string SourceLibraryName = "SystemUint.Source.dll";
 	private const string HookMessageName = "WM_HOOK_WRITE";
 	private const int AttackCommand = 300;
+	// Lệnh AutoFS dùng để click entity đã tìm thấy theo TÊN, truyền thẳng index chứ không qua toạ độ màn hình.
+	// Bằng chứng: WindowQueue.cs:24241-24270, vòng "for (int k = 2; k < 256; k++)" chỉ đọc trường tên rồi
+	// "NetworkSet.DisposeNode(Handle, NetworkSet.fontInstance, 8, k); return true;". Bốn call site của lệnh 8 trong
+	// toàn bộ bản decompile đều nằm trong đúng hàm tìm NPC theo tên này.
+	// Cùng không gian lệnh với đường di chuyển Auto đang chạy (32/0, 0/x, 5/x), nên không phải cơ chế mới.
+	private const int SelectEntityCommand = 8;
 	private const int NativeBuildStampCommand = 322;
 	public const int QuickSlotContainer = 11;
 	public const int QuickSlotCount = 4;
@@ -21,7 +27,7 @@ internal sealed class AutoFsAttackTransport {
 	private const int AuditAddressCommand = 320;
 	private const int MaximumPassiveBuffSkillId = 0x7CF;
 	private const uint SendMessageTimeoutMilliseconds = 500;
-	// Buff bị động bắn lại mỗi 350 ms (PassiveBuffEngine.SkillIntervalMilliseconds) nên KHÔNG được chờ tới 500 ms:
+	// Buff bị động bắn lại mỗi 350 ms (BuffEngine.SkillIntervalMilliseconds) nên KHÔNG được chờ tới 500 ms:
 	// mọi lệnh gửi đồng bộ đều nằm trong khoá syncRoot của AutoFsActionGate, dùng chung với TryRunAttack/RunLoot/
 	// RunMovement, nên một lần chờ quá hạn khoá luôn cả vòng đánh của account đó.
 	// Runtime beta 2026-09-06 22:40-22:44: 597/5095 dòng BUFF_PASSIVE_FAILED với Win32Error=1460 (ERROR_TIMEOUT),
@@ -85,6 +91,17 @@ internal sealed class AutoFsAttackTransport {
 		return TrySendCommand(gameWindow, AttackCommand, payload, out error);
 	}
 
+	// Click entity theo index đúng cách AutoFS làm với NPC tìm theo tên. Dùng khi entity không có toạ độ nên đường
+	// click theo toạ độ màn hình không áp dụng được.
+	public bool TrySelectEntity(IntPtr gameWindow, int entityIndex, out string error) {
+		error = "";
+		if (gameWindow == IntPtr.Zero || entityIndex < AutoFsClientProfile.FirstEntityIndex || entityIndex > AutoFsClientProfile.LastEntityIndex) {
+			error = $"Invalid HWND/index: 0x{gameWindow.ToInt64():X8}/{entityIndex}.";
+			return false;
+		}
+		return TrySendCommand(gameWindow, SelectEntityCommand, entityIndex, out error);
+	}
+
 	public void Stop() {
 	}
 
@@ -104,7 +121,7 @@ internal sealed class AutoFsAttackTransport {
 	// Đây là đường DUY NHẤT để dùng vật phẩm. Lệnh 310 đã bị gỡ ngày 2026-09-09: đo trên PID 22056 nó chạy trọn
 	// native tới return 1 nhưng game KHÔNG trừ vật phẩm (SốLượng 1 -> 1) và không đổi map, trong khi đường phím tắt
 	// cho SốLượng 1 -> 0 và MapId 37 -> 21. Đợt dò tìm hàm dùng vật phẩm thật của client sau đó cũng không ra kết
-	// quả (chi tiết ở LowHpReturnTalismanEngine), nên hệ quả đã chấp nhận: vật phẩm phải nằm ở ô trang bị nhanh.
+	// quả (chi tiết ở LowHpEngine), nên hệ quả đã chấp nhận: vật phẩm phải nằm ở ô trang bị nhanh.
 	//
 	// Ô trang bị nhanh hiện trên màn hình đánh số 1..4, slot trong bộ nhớ đếm từ 0.
 	public bool TryUseQuickSlotHotkey(IntPtr gameWindow, int slotIndex, out string error) {
@@ -115,8 +132,23 @@ internal sealed class AutoFsAttackTransport {
 		return TryUseQuickSlotHotkeyCore(gameWindow, slotIndex, false, out error);
 	}
 
-	public bool TryUseQuickSlotHotkeyForDebug(IntPtr gameWindow, int slotIndex, out string error) {
-		return TryUseQuickSlotHotkeyCore(gameWindow, slotIndex, true, out error);
+	// Bản chẩn đoán của TrySendCommand: bỏ qua công tắc Auto tổng nhưng GIỮ khoá chống gửi trùng, đúng lý do đã
+	// ghi ở AutoFsActionGate.RunDebugCommand. Cần cho luồng Bán chạy tay — nó phải chạy lúc Auto tổng đang TẮT,
+	// nếu không các engine khác cùng chen lệnh vào và làm bẩn phép đo.
+	public bool TrySendCommandForDebug(IntPtr gameWindow, int command, int payload, out string error) {
+		string currentError = "";
+		bool sent = actionGate.RunDebugCommand(() => TrySendCommandCore(gameWindow, command, payload, out currentError));
+		error = currentError;
+		return sent;
+	}
+
+	// Bản CÓ XÁC NHẬN của TrySendCommandForDebug: chờ native trả kết quả thay vì chỉ post vào hàng đợi. Cần cho việc
+	// dò số thứ tự — không có nó thì không phân biệt được "native từ chối" với "client nhận nhưng bỏ qua".
+	public bool TrySendConfirmedCommandForDebug(IntPtr gameWindow, int command, int payload, out string error) {
+		string currentError = "";
+		bool sent = actionGate.RunDebugCommand(() => TrySendConfirmedCommandCore(gameWindow, command, payload, out currentError));
+		error = currentError;
+		return sent;
 	}
 
 	private bool TryUseQuickSlotHotkeyCore(IntPtr gameWindow, int slotIndex, bool debugRun, out string error) {

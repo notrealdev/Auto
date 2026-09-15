@@ -1,0 +1,90 @@
+﻿<UserControl
+	x:Class="Auto.UI.Views.QuestView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:QuestViewModel}"
+	mc:Ignorable="d">
+
+	<StackPanel>
+		<!--
+			Nhãn và thứ tự lấy từ BAML của AutoFS (view/pages/nhiệmvụ/hằngngày/thámquân.baml, bàothương.baml).
+			AutoFS ẩn/hiện ComboBox tu luyện và Thẻ Kim Dật theo cbb_LoạiNV, nhưng không đọc được index nào ứng
+			với trạng thái nào nên ở đây để luôn hiện, không đoán.
+
+			Khác AutoFS ở hai chỗ, theo yêu cầu chủ dự án: mỗi nhiệm vụ có công tắc bật/tắt riêng, và hai ô
+			"Hồi thành phù" / "Hồi thành phù (Siêu cấp)" gộp làm một — engine tự dùng bản nào có trong ô nhanh.
+			Bật "Làm nhiệm vụ" là khoá Đánh và Sửa đồ cho tới khi làm xong lượt.
+		-->
+		<Expander Header="Thám quân" IsExpanded="False" Style="{StaticResource CollapsibleCard}">
+			<StackPanel>
+				<CheckBox
+					Margin="0,0,0,10"
+					Content="Làm nhiệm vụ"
+					IsChecked="{Binding ScoutEnabled}" />
+
+				<Grid Margin="0,0,0,10">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="Auto" />
+						<ColumnDefinition Width="110" />
+						<ColumnDefinition Width="130" />
+					</Grid.ColumnDefinitions>
+					<TextBlock
+						Grid.Column="0"
+						Margin="0,0,10,0"
+						Style="{StaticResource FieldLabel}"
+						Text="Loại nhiệm vụ:" />
+					<ComboBox
+						Grid.Column="1"
+						Margin="0,0,6,0"
+						SelectedIndex="{Binding ScoutQuestType}">
+						<ComboBoxItem Content="Free" />
+						<ComboBoxItem Content="Max" />
+					</ComboBox>
+					<ComboBox Grid.Column="2" SelectedIndex="{Binding ScoutCultivationType}">
+						<ComboBoxItem Content="Thường" />
+						<ComboBoxItem Content="Nhân đôi" />
+					</ComboBox>
+				</Grid>
+				<CheckBox
+					Margin="0,0,0,10"
+					Content="Sử dụng Thẻ Kim Dật"
+					IsChecked="{Binding ScoutUseGoldenCard}" />
+
+				<TextBlock
+					Margin="0,0,0,6"
+					Style="{StaticResource FieldLabel}"
+					Text="Đường đi:" />
+				<CheckBox
+					Margin="0,0,0,10"
+					Content="Di ngoại phù &amp; Phù đặc biệt"
+					IsChecked="{Binding ScoutOutboundTravelTalisman}" />
+
+				<TextBlock
+					Margin="0,0,0,6"
+					Style="{StaticResource FieldLabel}"
+					Text="Đường về:" />
+				<Grid Margin="0,0,0,8">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="Auto" />
+						<ColumnDefinition Width="130" />
+					</Grid.ColumnDefinitions>
+					<CheckBox
+						Grid.Column="0"
+						Margin="0,0,10,0"
+						VerticalAlignment="Center"
+						Content="Khứ lai phù"
+						IsChecked="{Binding ScoutReturnRoundTripTalisman}" />
+					<ComboBox Grid.Column="1" SelectedIndex="{Binding ScoutReturnRoundTripTalismanType}">
+						<ComboBoxItem Content="Tự sát" />
+						<ComboBoxItem Content="Về Diêu Trì" />
+					</ComboBox>
+				</Grid>
+				<CheckBox Content="Hồi thành phù" IsChecked="{Binding ScoutReturnTownTalisman}" />
+			</StackPanel>
+		</Expander>
+
+	</StackPanel>
+</UserControl>

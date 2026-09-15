@@ -6,8 +6,11 @@ using System.Text;
 public static class RuntimeEntityLocator {
 	private const int GlobalEntityTableOffset = GameAddresses.Globals.EntityTable;
 	private const int EntityStride = GameAddresses.Entity.Stride;
-	private const int ScanCount = 256;
-	private const int FirstEntityIndex = 2;
+	// Dùng chung biên với luồng đánh (GameAddresses.Entity), không tự định nghĩa lại.
+	private const int FirstEntityIndex = GameAddresses.Entity.FirstScanIndex;
+	private const int LastEntityIndex = GameAddresses.Entity.LastScanIndex;
+	// Số tên gần đích nhất đem ra in khi tìm không thấy, đủ để biết bảng entity có đọc được không.
+	private const int DiagnosticNameCount = 5;
 	private const int HandleOffset = GameAddresses.Entity.Handle;
 	private const int HpOffset = GameAddresses.Entity.Hp;
 	private const int NameOffset = GameAddresses.Entity.Name;
@@ -36,7 +39,11 @@ public static class RuntimeEntityLocator {
 
 			double bestDistance = double.MaxValue;
 			int namedEntityCount = 0;
-			for (int index = FirstEntityIndex; index < ScanCount; index++) {
+			int readableEntityCount = 0;
+			RuntimeEntityLocation positionlessMatch = RuntimeEntityLocation.Empty;
+			int positionlessMatchCount = 0;
+			List<(double Distance, int Index, string Name)> nearbyNames = [];
+			for (int index = FirstEntityIndex; index <= LastEntityIndex; index++) {
 				long entityAddressValue = tableBaseValue + (long)index * EntityStride;
 				if (entityAddressValue < MinimumLikelyAddress || entityAddressValue > MaximumUserModeAddress) continue;
 				IntPtr entityAddress = new((int)entityAddressValue);
@@ -45,19 +52,35 @@ public static class RuntimeEntityLocator {
 				if (nameLength < 0) nameLength = NameLength;
 				if (nameLength == 0) continue;
 				string name = LegacyVietnameseText.Decode(nameBytes.AsSpan(0, nameLength).ToArray()).Trim();
+				byte[] position = reader.ReadBytes(IntPtr.Add(entityAddress, PositionOffset), 8);
+				if (position.Length < 8) continue;
+				int rawX = ReadInt32(position, 0);
+				int rawY = ReadInt32(position, 4);
+				// Entity KHÔNG có toạ độ vẫn phải được xét tên. AutoFS tìm NPC theo tên chỉ đọc đúng trường tên,
+				// không đọc toạ độ và không có bộ lọc nào theo toạ độ (WindowQueue.cs:24241-24270: vòng
+				// "for (int k = 2; k < 256; k++)" chỉ gọi DisposeNode(..., O_Name, 30) rồi so Contains).
+				// Bản cũ ở đây "continue" ngay khi rawX/rawY <= 0, nên nếu NPC nằm trong nhóm đó thì nó vô hình
+				// với luồng Sửa đồ mà log không để lại dấu vết — đúng nhóm chưa loại trừ được của sự cố PID=22824.
+				if (rawX <= 0 || rawY <= 0) {
+					if (! NormalizeName(name).Contains(normalizedExpectedName, StringComparison.OrdinalIgnoreCase)) continue;
+					positionlessMatchCount++;
+					if (positionlessMatch.Index < 0) {
+						int positionlessHandle = reader.ReadInt32(IntPtr.Add(entityAddress, HandleOffset));
+						positionlessMatch = new RuntimeEntityLocation(index, positionlessHandle, 0, 0, 0, 0, name, double.MaxValue);
+					}
+					continue;
+				}
+				readableEntityCount++;
+				double distance = GetDistance(rawX, rawY, targetRawX, targetRawY);
+				// Gom mọi tên đọc được kèm khoảng cách, để lúc tìm không thấy còn phân biệt được "bảng entity đọc hỏng"
+				// với "NPC vẫn ở đó nhưng mang tên khác". Lọc lấy vài con gần nhất ở dưới.
+				nearbyNames.Add((distance, index, name));
 				if (!NormalizeName(name).Contains(normalizedExpectedName, StringComparison.OrdinalIgnoreCase)) continue;
 				namedEntityCount++;
 				int handle = reader.ReadInt32(IntPtr.Add(entityAddress, HandleOffset));
 				byte[] hp = reader.ReadBytes(IntPtr.Add(entityAddress, HpOffset), 8);
-				byte[] position = reader.ReadBytes(IntPtr.Add(entityAddress, PositionOffset), 8);
-				if (position.Length < 8) continue;
 				int currentHp = hp.Length >= 8 ? ReadInt32(hp, 0) : 0;
 				int maximumHp = hp.Length >= 8 ? ReadInt32(hp, 4) : 0;
-				int rawX = ReadInt32(position, 0);
-				int rawY = ReadInt32(position, 4);
-				if (rawX <= 0 || rawY <= 0) continue;
-
-				double distance = GetDistance(rawX, rawY, targetRawX, targetRawY);
 				RuntimeEntityLocation candidate = new(index, handle, rawX, rawY, currentHp, maximumHp, name, distance);
 				if (distance >= bestDistance) continue;
 				bestDistance = distance;
@@ -65,7 +88,14 @@ public static class RuntimeEntityLocator {
 			}
 
 			if (location.Index >= 0) return true;
-			reason = $"Chưa thấy entity có tên '{expectedName}' theo phép quét AutoFS index 2..255 | TênKhớpNhưngThiếuTọaĐộ={namedEntityCount}.";
+			// Không con nào khớp tên mà có toạ độ, nhưng có con khớp tên KHÔNG toạ độ thì vẫn trả về: nó vẫn click
+			// được bằng lệnh theo index giống AutoFS, chỉ là không click được theo toạ độ.
+			if (positionlessMatch.Index >= 0) {
+				location = positionlessMatch;
+				return true;
+			}
+			string nearest = string.Join(", ", nearbyNames.OrderBy(entry => entry.Distance).Take(DiagnosticNameCount).Select(entry => $"#{entry.Index}:'{entry.Name}'@{entry.Distance:F1}"));
+			reason = $"Chưa thấy entity có tên '{expectedName}' | Quét index {FirstEntityIndex}..{LastEntityIndex} | ĐọcĐược={readableEntityCount} | TênKhớp={namedEntityCount} | KhớpTênKhôngToạĐộ={positionlessMatchCount} | GầnĐíchNhất=[{nearest}]";
 			return false;
 		} catch (Exception ex) {
 			reason = ex.Message;

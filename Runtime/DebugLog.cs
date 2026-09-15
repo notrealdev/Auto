@@ -31,10 +31,14 @@ public static class DebugLog {
 	private static readonly string advertiseLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "chat.log");
 	private static readonly string comboScanLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "scan-list-item.log");
 	private static readonly string addressAuditLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "address-audit.log");
+	private static readonly string questLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "quest.log");
+	private static readonly string perfLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "perf.log");
+	private static readonly string clientEventLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "client-freeze.log");
 	private const int MaximumFlushCharacters = 64000;
 	private const long MaximumLogBytes = 5L * 1024L * 1024L;
 	private static readonly ConcurrentQueue<RuntimeLogEntry> pendingRuntimeLines = new();
 	private static readonly ConcurrentDictionary<int, byte> enabledProcessLogs = new();
+	private static readonly ConcurrentDictionary<int, string> processNames = new();
 	private static int autoLoggingEnabled;
 	private static int runtimeWriterRunning;
 
@@ -42,6 +46,27 @@ public static class DebugLog {
 		if (Volatile.Read(ref autoLoggingEnabled) == 0) return;
 		if (string.IsNullOrWhiteSpace(text)) return;
 		QueueRuntimeLog(FormatLine(text));
+	}
+
+	// Dòng đo hiệu năng: KHÔNG gắn PID (nó tổng hợp mọi account) và không đi qua bộ lọc verbose, vì đây là thứ duy
+	// nhất trả lời được "đoạn nào ăn CPU" và nó chỉ ghi 10 giây một dòng.
+	public static void AddPerf(string text) {
+		if (Volatile.Read(ref autoLoggingEnabled) == 0) return;
+		if (string.IsNullOrWhiteSpace(text)) return;
+		QueueLog(perfLogPath, FormatLine(text));
+	}
+
+	// Mọi bằng chứng về vòng đời và sự cố của client gom về MỘT file: treo, mất cửa sổ, bị đóng tay.
+	//
+	// Vì sao tách riêng: sự cố treo hiếm nhưng quan trọng, trước đây bằng chứng nằm lẫn trong auto-runtime.log cùng
+	// hàng nghìn dòng khác nên phải lọc mới thấy. Gom vào client-freeze.log thì lúc gặp treo chỉ cần gửi đúng file này.
+	//
+	// Cố tình KHÔNG đi qua CanLogProcess như AddForProcess: log của một account có thể đang bị tắt, mà đây lại là
+	// thứ phải bắt cho bằng được. Các dòng gọi vào đây đều tự mang sẵn PID trong nội dung.
+	public static void AddClientEvent(string text) {
+		if (Volatile.Read(ref autoLoggingEnabled) == 0) return;
+		if (string.IsNullOrWhiteSpace(text)) return;
+		QueueLog(clientEventLogPath, FormatLine(text));
 	}
 
 	public static void AddForProcess(int processId, string text) {
@@ -114,12 +139,22 @@ public static class DebugLog {
 		return false;
 	}
 
+	// loot-drops.log CHỈ chứa vật phẩm mà CHÍNH account đó đã nhặt ĐƯỢC (chủ dự án chốt 2026-09-14, nhắc lần hai).
+	//
+	// Trước đây file này nhận mọi dòng của luồng nhặt, nên nó là nhật ký QUÉT ĐỒ DƯỚI ĐẤT chứ không phải nhật ký
+	// nhặt: đo trên chính loot-drops.log ngày 2026-09-14 có 1152 dòng LOOT_FILTER (phần lớn Accepted=False, tức món
+	// account KHÔNG nhặt) so với chỉ 91 dòng LOOT_PICKED_UP. Món do account khác nhặt mất cũng nằm trong đó.
+	//
+	// Mọi dòng chẩn đoán còn lại chuyển hết sang loot-scan.log, không mất dữ liệu để truy lỗi.
+	// Giữ lại SESSION_ vì chúng phân định ranh giới phiên chạy, không phải bản ghi vật phẩm nào.
 	public static void AddLootDrop(string text) {
 		if (Volatile.Read(ref autoLoggingEnabled) == 0) return;
 		if (string.IsNullOrWhiteSpace(text)) return;
 		if (IsSuppressedVerbose(text)) return;
+		bool pickedUp = text.Contains("LOOT_PICKED_UP", StringComparison.OrdinalIgnoreCase)
+			|| text.Contains("SESSION_", StringComparison.OrdinalIgnoreCase);
 		string path;
-		lock (runtimeLogLock) path = text.Contains("LOOT_SCAN", StringComparison.OrdinalIgnoreCase) ? lootScanLogPath : lootDropLogPath;
+		lock (runtimeLogLock) path = pickedUp ? lootDropLogPath : lootScanLogPath;
 		QueueLog(path, FormatLine(text));
 	}
 
@@ -156,6 +191,8 @@ public static class DebugLog {
 		string? dedicatedPath = null;
 		// Phải đứng trước mọi nhánh khác: tên mục audit có chứa REPAIR_ và CHAT_ nên sẽ bị định tuyến nhầm nếu xét sau.
 		if (text.Contains("ADDRESS_AUDIT_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = addressAuditLogPath;
+		// Nhiệm vụ phải xét sớm: dòng nhiệm vụ có chứa "đang di chuyển"/"Đổi map" nên xét sau sẽ rơi nhầm sang movement.log.
+		else if (text.Contains("Thám quân", StringComparison.OrdinalIgnoreCase) || text.Contains("Bào thương", StringComparison.OrdinalIgnoreCase) || text.Contains("QUEST_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = questLogPath;
 		// "Sửa toàn bộ"/"độ bền" phải nằm cùng nhánh: các dòng như "Trang bị cần Sửa toàn bộ | Độ bền thấp nhất=..."
 		// không chứa chữ "Sửa đồ" nên trước đây rơi nhầm xuống auto-runtime.log.
 		else if (text.Contains("Sửa đồ", StringComparison.OrdinalIgnoreCase) || text.Contains("Sửa toàn bộ", StringComparison.OrdinalIgnoreCase) || text.Contains("độ bền", StringComparison.OrdinalIgnoreCase) || text.Contains("Dịch vụ NPC", StringComparison.OrdinalIgnoreCase) || text.Contains("REPAIR_", StringComparison.OrdinalIgnoreCase)) dedicatedPath = repairLogPath;
@@ -175,8 +212,40 @@ public static class DebugLog {
 		else QueueLog(dedicatedPath, line);
 	}
 
+	// Gắn tên nhân vật ngay sau PID để đọc log không phải dò ngược PID nào là account nào.
+	//
+	// Hai dạng dòng phải xử lý khác nhau: dòng nơi gọi TỰ ghi "PID=..." ở giữa câu (ví dụ "Nhân vật chết AutoFS |
+	// PID=16428 | Status=7") thì chèn tên vào đúng chỗ đó; dòng chưa có PID thì thêm cả cụm vào đầu.
+	//
+	// Chưa biết tên thì giữ nguyên như cũ, KHÔNG chèn chuỗi rỗng hay "?" — lúc client mất nhân vật
+	// (Snapshot=False/NameReadFailed) tên đọc ra rỗng, và tên cũ vẫn hữu ích hơn một ô trống.
 	private static string EnsureProcessScope(int processId, string text) {
-		return text.Contains($"PID={processId}", StringComparison.OrdinalIgnoreCase) ? text : $"PID={processId} | {text}";
+		string token = $"PID={processId}";
+		string scoped = processNames.TryGetValue(processId, out string? name) && name.Length > 0
+			? $"{token} | {name}"
+			: token;
+		if (! text.Contains(token, StringComparison.OrdinalIgnoreCase)) return $"{scoped} | {text}";
+		return scoped == token ? text : ReplaceFirstProcessToken(text, token, scoped);
+	}
+
+	// Chỉ thay lần xuất hiện ĐẦU TIÊN, và chỉ khi ngay sau nó không phải chữ số — nếu không "PID=1" sẽ khớp nhầm
+	// vào "PID=16428" rồi cắt đôi số.
+	private static string ReplaceFirstProcessToken(string text, string token, string replacement) {
+		int index = text.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+		while (index >= 0) {
+			int after = index + token.Length;
+			if (after >= text.Length || ! char.IsDigit(text[after])) {
+				return string.Concat(text.AsSpan(0, index), replacement, text.AsSpan(after));
+			}
+			index = text.IndexOf(token, after, StringComparison.OrdinalIgnoreCase);
+		}
+		return text;
+	}
+
+	// Nơi gọi duy nhất là setter GameWindow.CharacterName, nên tên luôn theo kịp lần đọc snapshot gần nhất.
+	public static void SetProcessName(int processId, string name) {
+		if (processId <= 0 || string.IsNullOrWhiteSpace(name)) return;
+		processNames[processId] = name.Trim();
 	}
 
 	public static void SetProcessLoggingEnabled(int processId, bool enabled) {

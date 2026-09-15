@@ -9,6 +9,8 @@ public static class WindowScanner {
 	private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
 	public static List<GameWindow> FindGameWindows() {
+		long profilerStart = HotPathProfiler.Begin();
+		try {
 		List<GameWindow> games = new List<GameWindow>();
 
 		EnumWindows((hWnd, lParam) => {
@@ -48,6 +50,9 @@ public static class WindowScanner {
 		}, IntPtr.Zero);
 
 		return games.OrderByDescending(GetProcessStartTimeSafe).ToList();
+		} finally {
+			HotPathProfiler.End(HotPathProfiler.WindowScan, profilerStart);
+		}
 	}
 
 	public static bool IsWindowAlive(IntPtr handle) {

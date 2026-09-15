@@ -34,6 +34,34 @@ public static class GameMapReader {
 		}
 	}
 
+	// Đọc toạ độ Đại Phu của MỘT map bất kỳ theo số map, không cần map đó đang mở.
+	// Cần cho nhiệm vụ Thám Quân: popup chỉ cho biết tên map đích, mà Đại Phu ở map đó mới là NPC phải tới gặp.
+	public static bool TryReadDoctorPoint(int mapId, out int rawX, out int rawY, out string failureReason) {
+		rawX = 0;
+		rawY = 0;
+		failureReason = "";
+		if (mapId <= 0) {
+			failureReason = $"MapId không hợp lệ | MapId={mapId}";
+			return false;
+		}
+		string mapPath = Path.Combine(AppContext.BaseDirectory, "Data", "Maps", $"{mapId}.map");
+		if (! File.Exists(mapPath)) {
+			failureReason = $"Không tìm thấy file map | Path={mapPath}";
+			return false;
+		}
+		string? doctorLine = File.ReadLines(mapPath).FirstOrDefault(line => line.StartsWith("Dai Phu=", StringComparison.OrdinalIgnoreCase));
+		if (doctorLine == null) {
+			failureReason = $"File map không khai báo Dai Phu | MapId={mapId}";
+			return false;
+		}
+		string[] parts = doctorLine[(doctorLine.IndexOf('=') + 1)..].Trim().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+		if (parts.Length != 2 || ! int.TryParse(parts[0], out rawX) || ! int.TryParse(parts[1], out rawY)) {
+			failureReason = $"Toạ độ Dai Phu không hợp lệ | MapId={mapId} | Value={doctorLine}";
+			return false;
+		}
+		return true;
+	}
+
 	public static IReadOnlyList<GameMapNpc> ReadNpcs(GameMapInfo map) {
 		if (!map.Success || string.IsNullOrWhiteSpace(map.MapPath) || !File.Exists(map.MapPath)) return Array.Empty<GameMapNpc>();
 		List<GameMapNpc> npcs = new();

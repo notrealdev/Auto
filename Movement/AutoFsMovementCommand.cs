@@ -27,16 +27,44 @@ internal static class AutoFsMovementCommand {
 		return moved;
 	}
 
+	// Bản chẩn đoán của TryMoveTo: bỏ qua công tắc Auto tổng nhưng vẫn giữ khoá chống gửi trùng, cùng lý do đã ghi ở
+	// AutoFsActionGate.RunDebugCommand. Công cụ chẩn đoán do chủ dự án bấm từng lần và thường phải chạy lúc tài khoản
+	// đang tắt; không có đường này thì probe không đi được bước nào.
+	public static bool TryMoveToForDebug(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
+		result = "";
+		if (! game.RuntimeLayout.MovementReady) {
+			result = "Runtime movement layout is unavailable: " + game.RuntimeLayout.DescribeUnavailable(RuntimeSubsystem.MovementTransport);
+			return false;
+		}
+		if (destinationRawX <= 0 || destinationRawY <= 0) {
+			result = $"AutoFS SAFE_REJECT | Raw={destinationRawX}/{destinationRawY}";
+			return false;
+		}
+		int dispatchX = destinationRawX / 32;
+		int dispatchY = destinationRawY / 32;
+		string movementResult = "";
+		bool moved = game.AutoFsActionGate.RunDebugCommand(() => TryMoveToCore(game, destinationRawX, destinationRawY, dispatchX, dispatchY, true, out movementResult));
+		result = movementResult;
+		return moved;
+	}
+
 	private static bool TryMoveToCore(GameWindow game, int destinationRawX, int destinationRawY, int dispatchX, int dispatchY, out string result) {
-		if (!game.AutoFsTransport.TrySendCommand(game.Handle, ResetCommand, 0, out string resetError)) {
+		return TryMoveToCore(game, destinationRawX, destinationRawY, dispatchX, dispatchY, false, out result);
+	}
+
+	private static bool TryMoveToCore(GameWindow game, int destinationRawX, int destinationRawY, int dispatchX, int dispatchY, bool debugRun, out string result) {
+		bool Send(int command, int payload, out string error) => debugRun
+			? game.AutoFsTransport.TrySendCommandForDebug(game.Handle, command, payload, out error)
+			: game.AutoFsTransport.TrySendCommand(game.Handle, command, payload, out error);
+		if (!Send(ResetCommand, 0, out string resetError)) {
 			result = $"AutoFS command {ResetCommand} FAIL | {resetError}";
 			return false;
 		}
-		if (!game.AutoFsTransport.TrySendCommand(game.Handle, XCommand, dispatchX, out string xError)) {
+		if (!Send(XCommand, dispatchX, out string xError)) {
 			result = $"AutoFS command {XCommand} FAIL | {xError}";
 			return false;
 		}
-		if (!game.AutoFsTransport.TrySendCommand(game.Handle, YCommand, dispatchY, out string yError)) {
+		if (!Send(YCommand, dispatchY, out string yError)) {
 			result = $"AutoFS command {YCommand} FAIL | {yError}";
 			return false;
 		}

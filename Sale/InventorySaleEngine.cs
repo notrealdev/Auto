@@ -16,6 +16,7 @@ internal sealed class InventorySaleEngine {
 	private readonly LootSettings settings;
 	private readonly AutoFsAttackTransport transport;
 	private bool active;
+	private bool debugBypassMasterSwitch;
 	private int nextMemoryIndex;
 	private int pendingMemoryIndex = -1;
 	private int pendingItemId;
@@ -31,14 +32,28 @@ internal sealed class InventorySaleEngine {
 		this.transport = transport;
 	}
 
-	public void Start(Action<string>? log) {
+	public void Start(Action<string>? log) => Start(log, false);
+
+	// bypassMasterSwitch: dành cho nút "Bán ngay" ở tab Debug. Nút đó BẮT BUỘC Auto tổng phải tắt để không tranh chấp
+	// với Đánh/Nhặt/Sửa đồ, nhưng khi Auto tổng tắt thì AutoFsActionGate.AutomationEnabled cũng false và
+	// TrySendCommand trả thẳng "Master automation switch is disabled" — tự mâu thuẫn, không bán được gì.
+	// Đường ForDebug bỏ công tắc tổng nhưng VẪN giữ khoá syncRoot nên không có chuyện hai lệnh chồng nhau.
+	public void Start(Action<string>? log, bool bypassMasterSwitch) {
 		Reset();
+		debugBypassMasterSwitch = bypassMasterSwitch;
 		active = true;
 		log?.Invoke("SALE_START | Slots=35 | Command=47 | Safety=WHITE_BLUE_MEDICINE_ONLY | GreenYellowSpecialUnknown=BLOCKED");
 	}
 
+	private bool TrySend(IntPtr gameWindowHandle, int command, int payload, out string error) {
+		return debugBypassMasterSwitch
+			? transport.TrySendCommandForDebug(gameWindowHandle, command, payload, out error)
+			: transport.TrySendCommand(gameWindowHandle, command, payload, out error);
+	}
+
 	public void Reset() {
 		active = false;
+		debugBypassMasterSwitch = false;
 		nextMemoryIndex = 0;
 		pendingMemoryIndex = -1;
 		pendingItemId = 0;
@@ -142,7 +157,7 @@ internal sealed class InventorySaleEngine {
 					nextMemoryIndex++;
 					continue;
 				}
-				if (! transport.TrySendCommand(gameWindowHandle, SaleCommand, itemId, out string error)) return Fail("SALE_COMMAND_FAILED | " + error, out failureReason);
+				if (! TrySend(gameWindowHandle, SaleCommand, itemId, out string error)) return Fail("SALE_COMMAND_FAILED | " + error, out failureReason);
 				pendingMemoryIndex = nextMemoryIndex;
 				pendingItemId = itemId;
 				pendingDeadlineUtc = DateTime.UtcNow.AddMilliseconds(ConfirmationMilliseconds);
@@ -151,7 +166,7 @@ internal sealed class InventorySaleEngine {
 			}
 
 			if (soldItemCount > 0 && ! arrangementPosted) {
-				if (! transport.TrySendCommand(gameWindowHandle, ArrangeInventoryCommand, 1, out string arrangeError)) return Fail("SALE_ARRANGE_COMMAND_FAILED | " + arrangeError, out failureReason);
+				if (! TrySend(gameWindowHandle, ArrangeInventoryCommand, 1, out string arrangeError)) return Fail("SALE_ARRANGE_COMMAND_FAILED | " + arrangeError, out failureReason);
 				arrangementPosted = true;
 				arrangementDeadlineUtc = DateTime.UtcNow.AddMilliseconds(ArrangementWaitMilliseconds);
 				log?.Invoke($"SALE_ARRANGE_POSTED | Command={ArrangeInventoryCommand} | Payload=1 | Sold={soldItemCount} | WaitMs={ArrangementWaitMilliseconds} | Delivery=POSTED | Acceptance=UNVERIFIED");
