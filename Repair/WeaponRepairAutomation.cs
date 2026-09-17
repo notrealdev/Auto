@@ -17,6 +17,15 @@ public sealed class WeaponRepairAutomation {
 	private const int DoctorEntityLoadTimeoutMilliseconds = 15000;
 	private const int MaximumDoctorClickAttempts = 6;
 	private const int MaximumMovementFailures = 3;
+	// Trần cho nhánh "lệnh gửi OK nhưng nhân vật không tiến thêm". Mỗi lần cách nhau StuckDetectionMilliseconds
+	// (8 giây), nên 10 lần = ~80 giây đứng yên hoàn toàn mới bỏ cuộc — thừa sức cho một chuyến bình thường, vốn
+	// chỉ dài chừng 13 ô.
+	//
+	// Vì sao phải có: trước đây nhánh này KHÔNG có trần và cũng không có deadline, lại còn đặt movementFailures = 0
+	// mỗi lượt, nên MaximumMovementFailures không bao giờ chạm tới. Mà nhánh nó bảo vệ (gửi lệnh lỗi) thực tế không
+	// xảy ra: toàn bộ log đêm 2026-09-15 -> 16 có 0 dòng "PostMessageA failed". Kết quả đo được: PID=15592 gửi lại
+	// tuyến 550 lần liên tục từ 09:20 tới 10:35 mà không lần nào bỏ cuộc.
+	private const int MaximumStalledRouteResends = 10;
 	// Hỏng liên tiếp bao nhiêu lần thì bắt đầu giãn nhịp, và giãn bao lâu.
 	// Hai lần đầu vẫn thử lại ngay vì phần lớn lỗi là thoáng qua (entity chưa kịp tải, modal chưa kịp đóng).
 	private const int AbortsBeforeBackoff = 3;
@@ -69,6 +78,10 @@ public sealed class WeaponRepairAutomation {
 	private double bestNavigationDistance;
 	private DateTime lastMovementUtc;
 	private int movementFailures;
+	// Đếm số lần gửi LẠI nguyên tuyến mà nhân vật vẫn không tiến thêm được tí nào về phía Đại Phu.
+	// Khác movementFailures: cái kia chỉ đếm lúc LỆNH không gửi đi được, cái này đếm lúc lệnh gửi đi bình thường
+	// nhưng vô tác dụng — đó mới là ca thật sự xảy ra.
+	private int stalledRouteResends;
 	private bool debugMode;
 	private bool debugRunRequested;
 	private bool saleRequestPending;
@@ -163,7 +176,11 @@ public sealed class WeaponRepairAutomation {
 					} else {
 						movementFailures = 0;
 						lastMovementUtc = DateTime.UtcNow;
-						log?.Invoke($"Sửa đồ | đứng yên 8 giây, đã gửi lại nguyên tuyến tới Đại Phu | Đích={doctorRawX}/{doctorRawY} | {moveResult}");
+						stalledRouteResends++;
+						if (stalledRouteResends >= MaximumStalledRouteResends) {
+							return Fail(game, $"Gửi lại tuyến tới Đại Phu {stalledRouteResends} lần mà không tiến thêm được ô nào; bỏ chuyến để nhả quyền điều khiển | HiệnTại={snapshot.X}/{snapshot.Y} | Đích={doctorRawX}/{doctorRawY} | Còn={doctorDistance:F2}", log);
+						}
+						log?.Invoke($"Sửa đồ | đứng yên 8 giây, đã gửi lại nguyên tuyến tới Đại Phu | Lần={stalledRouteResends}/{MaximumStalledRouteResends} | Đích={doctorRawX}/{doctorRawY} | {moveResult}");
 					}
 				}
 				if (DateTime.UtcNow >= nextProgressLogUtc) {
@@ -472,6 +489,7 @@ public sealed class WeaponRepairAutomation {
 		bestNavigationDistance = GetDistance(rawX, rawY, targetRawX, targetRawY);
 		lastMovementUtc = DateTime.UtcNow;
 		movementFailures = 0;
+		stalledRouteResends = 0;
 	}
 
 	private void ObserveNavigationProgress(int rawX, int rawY, int targetRawX, int targetRawY) {
@@ -497,6 +515,9 @@ public sealed class WeaponRepairAutomation {
 		if (distance <= bestNavigationDistance - MinimumNavigationProgress) {
 			bestNavigationDistance = distance;
 			lastMovementUtc = DateTime.UtcNow;
+			// Tiến thật được một đoạn thì xoá bộ đếm bỏ cuộc: trần chỉ nhằm chặn ca đứng yên HOÀN TOÀN, không phải
+			// phạt một chuyến đi chậm hay phải vòng qua vật cản.
+			stalledRouteResends = 0;
 		}
 	}
 
@@ -504,9 +525,17 @@ public sealed class WeaponRepairAutomation {
 
 	private void ClickDoctor(GameWindow game, GameSnapshot snapshot, RuntimeEntityLocation doctor, Action<string>? log) {
 		doctorClickAttempts++;
-		// Entity khớp tên nhưng không có toạ độ thì click theo toạ độ màn hình vô nghĩa. AutoFS không bao giờ dùng
-		// toạ độ cho NPC tìm theo tên: nó gửi thẳng lệnh kèm index (WindowQueue.cs:24268). Đường toạ độ vẫn giữ
-		// nguyên cho entity CÓ toạ độ vì đó là đường đã sửa đồ thành công trên các account khác.
+		// Entity khớp tên nhưng không có toạ độ thì click theo toạ độ màn hình vô nghĩa. AutoFS không dùng toạ độ cho
+		// NPC tìm theo tên: nó gửi lệnh 8 kèm index (WindowQueue.cs:24293-24318). Đường toạ độ vẫn giữ nguyên cho
+		// entity CÓ toạ độ vì đó là đường duy nhất đo được là mở được cửa hàng.
+		//
+		// ĐÃ THỬ và ĐÃ HOÀN NGUYÊN 2026-09-17: đổi thành "hễ có index là đi đường index" cho đúng khuôn AutoFS.
+		// Kết quả đo trên PID=25800 lúc 22:37-22:38 (repair.log): 20/20 lần gửi lệnh 8 với Index=84 KHÔNG mở được
+		// cửa hàng, 0 chuyến hoàn tất, cuối cùng BỎ CUỘC. Phiên liền trước với đường toạ độ: 5/5 lần mở được
+		// ShopState=2 trong ~1,7s. Riêng 1 lần lệnh 8 có mở ra một menu nhưng nội dung là tên file .spr
+		// (MenuState=0x25E13F48, Match=NOT_FOUND), tức chưa xác định được lệnh 8 chọn trúng cái gì.
+		// Chưa rõ vì sao: AutoFS sau lệnh 8 còn gọi ClearControl(0,1500) rồi NavigateSelection(num4, 99)
+		// (MenuAttribute.cs:23958-23966) — Auto chưa port hai bước đó. Muốn theo AutoFS thì phải port đủ chuỗi.
 		bool byIndex = doctor.Index >= 0 && (doctor.RawX <= 0 || doctor.RawY <= 0);
 		log?.Invoke($"Sửa đồ | click entity Đại Phu | Index={doctor.Index} | Handle={doctor.Handle} | Raw={doctor.RawX}/{doctor.RawY} | LệchMap={doctor.DistanceToAnchor:F2} | Cách={(byIndex ? "AUTOFS_INDEX" : "TOẠ_ĐỘ")}");
 		bool clicked = byIndex
@@ -734,7 +763,10 @@ public sealed class WeaponRepairAutomation {
 		}
 	}
 
-	private static void ReadShopState(int processId, out uint modalState, out uint shopState) {
+	// internal chứ không private: lớp giám sát đứng im ở Runtime/AccountEngineCoordinator.cs cũng cần biết có giao
+	// diện nào đang mở không trước khi gửi ESC. Cho nó gọi lại hàm này thay vì chép đôi ModalStateOffset/ShopStateOffset
+	// sang chỗ khác — chép đôi hằng số địa chỉ đúng là nguyên nhân của vụ toạ độ 0x75F4.
+	internal static void ReadShopState(int processId, out uint modalState, out uint shopState) {
 		modalState = 0;
 		shopState = 0;
 		try {

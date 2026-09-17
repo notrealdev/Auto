@@ -3,6 +3,7 @@ namespace Auto.UI.ViewModels;
 using System.Collections.ObjectModel;
 using System.Windows.Threading;
 using Auto.Login;
+using Auto.Runtime;
 
 // Một dòng account trong danh sách. Ô tick khớp cột Checked của AutoFS (StoreOptions.cs:54 —
 // nó bỏ tick sau khi đã khởi động account đó).
@@ -111,7 +112,10 @@ public sealed class LoginViewModel : ViewModelBase {
 		StatusText = "Đã yêu cầu dừng.";
 	}
 
+	// Ghi ra file TRƯỚC rồi mới lên giao diện: dispatcher.Invoke chặn luồng đăng nhập cho tới khi luồng UI rảnh, nên
+	// nếu giao diện đang kẹt thì dòng log vẫn phải được giữ lại. Đăng nhập chỉ chạy một lượt, mất dòng nào là mất hẳn.
 	private void Append(string line) {
+		DebugLog.AddLoginEvent(line);
 		dispatcher.Invoke(() => LogText += $"{DateTime.Now:HH:mm:ss} | {line}\r\n");
 	}
 }

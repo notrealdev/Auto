@@ -501,6 +501,26 @@ public sealed class Engine {
 
 	private bool TryRetreatFromElites(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int playerLifecycleStatus, Action<string>? currentTargetMovementLog) {
 		bool retreating = TryRetreatFromElitesCore(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog);
+		// HẾT ĐỢT TRỐN THÌ PHẢI BỎ ĐÍCH ĐANG GIỮ.
+		//
+		// Đích trốn chỉ được xoá ở khối khởi động lại worker, không bao giờ xoá khi đợt trốn kết thúc bình thường
+		// (nhánh "không còn đứng gần thủ lĩnh nào" của TryRetreatFromElitesCore trả false). Nên đợt trốn KẾ TIẾP —
+		// có khi nhiều phút sau, từ một chỗ hoàn toàn khác — vẫn rơi vào nhánh "giữ đích" và còn ghi đè đích vừa
+		// tính bằng cái đích cũ đó.
+		//
+		// Đo trên Release/Diagnostics/movement.log, phiên 11:48-15:00 ngày 2026-09-17, 3198 dòng ELITE_RETREAT:
+		//   1728 cặp liên tiếp dùng CÙNG một đích; 824 cặp (48%) trong số đó cách nhau hơn 10 giây, tức là đợt trốn
+		//   mới dùng lại đích của đợt cũ. Cặp xa nhất cách 586 giây: PID 36320, 12:09:22 -> 12:19:08, đích giữ
+		//   nguyên 62717/91215 trong khi nhân vật đã đi từ 63487/90156 sang 62893/90722.
+		//   Hậu quả: 0/1728 lần nhân vật vào được trong 128 raw của đích (ngưỡng EliteRetreatArrivalRaw), và 57%
+		//   số lần nó còn XA đích hơn lần trước (lệch trung bình +315 raw mỗi lần gửi lại).
+		if (! retreating) {
+			eliteWalkDestinationX = 0;
+			eliteWalkDestinationY = 0;
+			eliteWalkObservedX = 0;
+			eliteWalkObservedY = 0;
+			eliteWalkProgressUtc = DateTime.MinValue;
+		}
 		retreatingFromElite = retreating;
 		return retreating;
 	}

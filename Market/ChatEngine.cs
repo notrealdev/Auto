@@ -4,7 +4,11 @@ using Auto.Attack;
 using Auto.Utils;
 
 internal sealed class ChatEngine {
-	private const int InterChannelDelayMilliseconds = 5000;
+	// Khoảng chờ tối thiểu giữa HAI LẦN GỬI BẤT KỲ, không riêng lúc đổi kênh: Tick chặn ở "now < nextChannelUtc"
+	// trước khi xét từng kênh, nên hằng số này là sàn chung cho mọi tin nhắn.
+	// Khác với DelaySeconds của từng kênh — cái đó do chủ dự án đặt trong giao diện và không bị chỗ này đụng tới.
+	// Hạ 5000 -> 1000 ngày 2026-09-17 theo yêu cầu của chủ dự án.
+	private const int InterChannelDelayMilliseconds = 1000;
 	private const int MaximumMessageLength = 199;
 	// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng đọc byte thật qua ChannelManagerProbe (PID=26056) — delta +0x2020 khớp Count=7 hợp lệ và cả 4 mã kênh (Cận/Giao/Khu vực/Lãnh địa) khớp tuyệt đối với hằng số đã có sẵn bên dưới.
 	private const int ChannelManagerRva = 0x004F5174;

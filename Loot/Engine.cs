@@ -21,7 +21,8 @@ public sealed class Engine {
 	private readonly AutoFsAttackTransport transport;
 	private readonly AutoFsActionGate actionGate;
 	private readonly object syncRoot = new();
-	private readonly HashSet<int> loggedFilterDecisions = new();
+	// Khoá = MemoryFingerprint của món, giá trị = phán quyết lần ghi gần nhất. Xem LogFilterDecisions.
+	private readonly Dictionary<int, string> loggedFilterDecisions = new();
 	private readonly Dictionary<(int X, int Y), DateTime> failedCoordinates = new();
 	private CancellationTokenSource? workerCancellation;
 	private Task? worker;
@@ -256,16 +257,30 @@ public sealed class Engine {
 		LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_START | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Record=0x{candidate.Address.ToInt64():X8} | Group={classification.Group} | AutoFsCategory={AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw)} | Color={classification.Color} | AttributeClass={classification.AttributeClass} | QualityA={candidate.QualityCodeA} | QualityB={candidate.QualityCodeB} | Raw={coordinate.X}/{coordinate.Y} | Internal={candidate.InternalX}/{candidate.InternalY}");
 		string outcome = "LOOP_EXITED";
 		bool retryPolicyLogged = false;
-		// Đếm túi TRƯỚC khi gửi lệnh nhặt. Không có con số này thì không tài nào phân biệt "mình nhặt được" với
+		// Chụp TOÀN BỘ túi TRƯỚC khi gửi lệnh nhặt. Không có nó thì không tài nào phân biệt "mình nhặt được" với
 		// "người khác nhặt mất": cả hai đều kết thúc bằng SLOT_LEFT_GROUND_ID_ZERO y hệt nhau.
-		bool inventoryCountReadable = finder.TryCountInInventory(context.ProcessId, candidate.ItemNameRaw, out int inventoryCountBefore);
+		//
+		// Trước đây chỉ đếm ĐÚNG MỘT tên (tên món đang chờ). Đó là chỗ hở: nếu client nhặt trúng món KHÁC thì số
+		// lượng của tên đang chờ không tăng, và cả hai nhánh ghi log bên dưới đều không nhận — không một dòng nào
+		// được ghi. Đo được ngày 2026-09-17: PID 43596 có "Đấu Trận Chiến Ngoa" (đồ trắng) nằm trong túi, trong khi
+		// loot-scan.log ghi 29/29 lần lọc đều Accepted=False và không có dòng nhặt nào ở bất kỳ file log nào.
+		// Chụp cả bảng thì lấy hiệu hai lần chụp là ra tên món THẬT SỰ vào túi.
+		string candidateKey = Finder.ToInventoryKey(candidate.ItemNameRaw);
+		bool inventoryCountReadable = finder.TrySnapshotInventory(context.ProcessId, out Dictionary<string, int> inventoryBefore);
+		int inventoryCountBefore = inventoryCountReadable && inventoryBefore.TryGetValue(candidateKey, out int beforeCount) ? beforeCount : 0;
+		// Lý do ô đất ngừng khớp, giữ lại để dòng log cuối chỉ được ra nguồn: GROUND_ID_ZERO là món biến mất,
+		// còn các lý do khác nghĩa là ô đã bị món khác chiếm — đúng kịch bản đua tranh nghi ngờ ở SelectNearbyGroundItems.
+		string lastSlotReason = "KHÔNG_CÓ";
+		string lastSlotCurrentName = "";
 
 		try {
 			while (! token.IsCancellationRequested && settings.Enabled && ! IsManualInputActive()) {
 				GroundSlotReading slot = ReadGroundSlot(reader, moduleBase, groundTable, itemIndex, candidate);
 				LogLootDiagnostic(context.DropLog, $"LOOT_SLOT_RECHECK | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | AttemptNext={pendingPickupAttempts + 1} | ExpectedGroundId={candidate.GroundId} | CurrentGroundId={slot.GroundId} | ExpectedRaw={candidate.RawX}/{candidate.RawY} | CurrentRaw={slot.RawX}/{slot.RawY} | Matches={slot.Matches} | Reason={slot.Reason}");
 				if (! slot.Matches) {
-					LogLootDiagnostic(context.DropLog, $"LOOT_SLOT_LEFT | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Attempts={pendingPickupAttempts} | Reason={slot.Reason}");
+					lastSlotReason = slot.Reason;
+					lastSlotCurrentName = slot.CurrentName;
+					LogLootDiagnostic(context.DropLog, $"LOOT_SLOT_LEFT | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | TênỞÔĐất={slot.CurrentName} | Attempts={pendingPickupAttempts} | Reason={slot.Reason}");
 					outcome = $"SLOT_LEFT_{slot.Reason}";
 					break;
 				}
@@ -332,7 +347,8 @@ public sealed class Engine {
 			// TAKEN_BY_OTHER cố ý im lặng — đó chính là 645 dòng SLOT_LEFT_GROUND_ID_ZERO gây hiểu nhầm "nhân vật
 			// B, C nhặt món của A" trong log ngày 14/09.
 			if (outcome.StartsWith("SLOT_LEFT", StringComparison.Ordinal)) {
-				bool afterReadable = finder.TryCountInInventory(context.ProcessId, candidate.ItemNameRaw, out int inventoryCountAfter);
+				bool afterReadable = finder.TrySnapshotInventory(context.ProcessId, out Dictionary<string, int> inventoryAfter);
+				int inventoryCountAfter = afterReadable && inventoryAfter.TryGetValue(candidateKey, out int afterCount) ? afterCount : 0;
 				string inventoryEvidence = inventoryCountReadable && afterReadable
 					? $"TúiTrước={inventoryCountBefore} | TúiSau={inventoryCountAfter}"
 					: $"TúiTrước={(inventoryCountReadable ? inventoryCountBefore.ToString() : "không đọc được")} | TúiSau={(afterReadable ? inventoryCountAfter.ToString() : "không đọc được")}";
@@ -345,11 +361,43 @@ public sealed class Engine {
 					// Đo trên chính loot-drops.log 2 tiếng ngày 14/09: 81/94 dòng là dược phẩm, 12/94 là Tứ Tượng.
 					// KHÔNG xoá hẳn — vẫn cần để truy khi nghi nhặt sai hoặc kiểm giới hạn số lượng dược phẩm.
 					AutoFsSpecialItemCategory category = AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw);
-					string marker = IsRoutinePickup(classification, category) ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
+					bool routinePickup = IsRoutinePickup(classification, category);
+					string marker = routinePickup ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
+					// Đẩy lên ô theo dõi trên giao diện ĐÚNG những lượt vào loot-drops.log, tức bỏ nhóm nhặt thường xuyên.
+					if (! routinePickup) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
 					context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={pendingPickupAttempts} | Raw={coordinate.X}/{coordinate.Y}");
 				} else if (! inventoryCountReadable || ! afterReadable) {
 					// Không đọc được túi thì KHÔNG được im lặng: im lặng ở đây sẽ giấu luôn cả lượt nhặt thật.
 					LogLootDiagnostic(context.DropLog, $"LOOT_PICKUP_UNVERIFIED | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | {inventoryEvidence} | Reason=INVENTORY_READ_FAILED");
+				}
+
+				// SO CẢ BẢNG TÚI Ở NGOÀI BA NHÁNH TRÊN, KHÔNG NẰM TRONG NHÁNH "MÓN CHỜ KHÔNG TĂNG" NỮA.
+				//
+				// Bản trước đặt phép so này trong nhánh else, tức chỉ chạy khi món đang chờ KHÔNG vào túi. Nên ca
+				// "client nhặt đúng món chờ VÀ kèm thêm một món khác" lọt hoàn toàn: nhánh đầu ghi LOOT_ROUTINE_PICKUP
+				// rồi thoát, không xét gì thêm.
+				// Bằng chứng (chủ dự án báo 2026-09-17, tôi đọc bộ nhớ PID 36320 xác nhận): "Tham Lang Hộ Giáp" nằm ở
+				// ô túi chính [3] id=9, trong khi cả 36 dòng "Hộ Giáp" ở loot-scan.log đều là
+				// Accepted=False | Reason=COLOR_AND_EXACT_ITEM_DISABLED — Auto chưa bao giờ nhắm tới nó — và
+				// LOOT_PICKED_WRONG_ITEM không nổ lấy một lần trong toàn bộ log.
+				//
+				// Vì sao ca này có thật: bảng đất 127 ô bị tái sử dụng rất nhanh, mà lệnh 78 nhận CHỈ SỐ Ô chứ không
+				// nhận mã món. Riêng ô 14 của PID 36320 trong loot-scan.log: 16:30:22 "Tham Lang Yêu Đái" ->
+				// 16:31:33 "Tham Lang Hộ Giáp" -> 16:32:46 "Đấu Trận Giáp" -> 16:37:35 "Tiểu Hoàn đơnx1" (được nhặt).
+				//
+				// Bỏ đúng tên đang chờ ra khỏi phép so, nên nhặt trúng món mình muốn KHÔNG sinh dòng này.
+				if (inventoryCountReadable && afterReadable) {
+					string unexpected = DescribeInventoryGain(inventoryBefore, inventoryAfter, candidateKey);
+					if (unexpected.Length > 0) {
+						// Ghi vào loot-drops.log chứ không phải loot-scan.log: nhặt sai món là lỗi cần thấy ngay.
+						// Các trường ở đây chọn để chỉ thẳng ra NGUỒN, không phải chỉ để biết là có lỗi:
+						//   MónChờCũngVào — True là nhặt kèm, False là nhặt trượt sang món khác. Hai kịch bản khác nhau.
+						//   LýDoRờiÔ  — GROUND_ID_ZERO là món tự biến mất; lý do khác nghĩa là ô đất đã bị món khác
+						//               chiếm giữa lúc lọc và lúc gửi lệnh, tức đúng kịch bản đua tranh nghi ngờ.
+						//   ChỉSốÔĐất — để dò ngược LOOT_SLOT_RECHECK và LOOT_COMMAND_POSTED cùng chỉ số.
+						//   SốLầnGửi78 — 0 nghĩa là chưa từng gửi lệnh nhặt trong lượt này, tức món vào túi bằng đường KHÁC.
+						context.DropLog?.Invoke($"LOOT_PICKED_WRONG_ITEM | PID={context.ProcessId} | Index={itemIndex} | TênChờ={candidate.ItemNameRaw} | TênVàoTúi={unexpected} | MónChờCũngVào={inventoryCountAfter > inventoryCountBefore} | Group={classification.Group} | Color={classification.Color} | {inventoryEvidence} | LýDoRờiÔ={lastSlotReason} | TênỞÔĐấtLúcRời={lastSlotCurrentName} | ChỉSốÔĐất={itemIndex} | SốLầnGửi78={pendingPickupAttempts} | ĐãGửi32={approachPrepared} | Outcome={outcome} | Raw={coordinate.X}/{coordinate.Y}");
+					}
 				}
 			} else {
 				LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_END | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | Attempts={pendingPickupAttempts} | NearAttempts={pendingNearPickupAttempts} | Prepared={approachPrepared} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Raw={coordinate.X}/{coordinate.Y}");
@@ -397,6 +445,22 @@ public sealed class Engine {
 		}
 	}
 
+	// Liệt kê những tên CÓ THÊM giữa hai lần chụp túi, dạng "TÊN+n". Chuỗi rỗng nghĩa là túi không nhận thêm gì.
+	//
+	// Tên ở đây là khoá đã chuẩn hoá của InventoryPotionCounter (bỏ dấu, viết hoa) chứ không phải tên hiển thị —
+	// đủ để nhận ra món và tra ngược vào log, mà không phải giữ thêm một bảng tên thứ hai.
+	// excludeKey: tên đang được nhặt có chủ đích, bỏ ra để lượt nhặt đúng không bị báo là nhặt nhầm.
+	private static string DescribeInventoryGain(Dictionary<string, int> before, Dictionary<string, int> after, string? excludeKey = null) {
+		List<string> gains = [];
+		foreach ((string name, int afterCount) in after) {
+			if (excludeKey != null && string.Equals(name, excludeKey, StringComparison.Ordinal)) continue;
+			before.TryGetValue(name, out int beforeCount);
+			if (afterCount > beforeCount) gains.Add($"{name}+{afterCount - beforeCount}");
+		}
+		gains.Sort(StringComparer.Ordinal);
+		return string.Join(",", gains);
+	}
+
 	private static int GetRecordIndex(LootSnapshot item, long groundTable) {
 		long delta = item.Address.ToInt64() - groundTable;
 		if (delta < 0 || delta % GameAddresses.Item.GroundRecordStride != 0 || delta / GameAddresses.Item.GroundRecordStride > int.MaxValue) return -1;
@@ -425,7 +489,7 @@ public sealed class Engine {
 			int itemIndex = GetRecordIndex(candidate, groundTable);
 			GroundSlotReading slot = ReadGroundSlot(reader, moduleBase, groundTable, itemIndex, candidate);
 			if (! slot.Matches) {
-				LogLootDiagnostic(currentDropLog, $"LOOT_SELECT_SKIPPED_SLOT_CHANGED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Index={itemIndex} | ScanIndex={candidate.Index} | Name={candidate.ItemNameRaw} | ExpectedGroundId={candidate.GroundId} | CurrentGroundId={slot.GroundId} | ExpectedRaw={candidate.RawX}/{candidate.RawY} | CurrentRaw={slot.RawX}/{slot.RawY} | Reason={slot.Reason}");
+				LogLootDiagnostic(currentDropLog, $"LOOT_SELECT_SKIPPED_SLOT_CHANGED | PID={snapshot.ProcessId} | Command={AutoFsSelectGroundItemCommand} | Index={itemIndex} | ScanIndex={candidate.Index} | Name={candidate.ItemNameRaw} | TênỞÔĐất={slot.CurrentName} | ExpectedGroundId={candidate.GroundId} | CurrentGroundId={slot.GroundId} | ExpectedRaw={candidate.RawX}/{candidate.RawY} | CurrentRaw={slot.RawX}/{slot.RawY} | Reason={slot.Reason}");
 				continue;
 			}
 			// Gửi ĐÚNG số ô vừa được kiểm, không phải candidate.Index. Trước 2026-09-14 chỗ này kiểm ô itemIndex
@@ -452,17 +516,23 @@ public sealed class Engine {
 		if (recordBytes.Length != GameAddresses.Item.GroundRecordStride) return new(false, 0, 0, 0, "RECORD_READ_FAILED");
 		int groundId    = BitConverter.ToInt32(recordBytes, GameAddresses.Item.GroundRecordId);
 		int groundState = BitConverter.ToInt32(recordBytes, GameAddresses.Item.GroundRecordKind);
-		if (groundId <= 0) return new(false, groundId, 0, 0, "GROUND_ID_ZERO");
-		if (groundState != 3) return new(false, groundId, 0, 0, $"GROUND_STATE_{groundState}");
-		if (groundId != expected.GroundId) return new(false, groundId, 0, 0, "GROUND_ID_CHANGED");
+		// Đọc tên NGAY, trước mọi nhánh thoát, để dòng log nào cũng nói được ô đất đang chứa món gì.
+		// Nhưng CHỈ giải mã ở các nhánh hỏng — tức lúc sắp ghi log. Nhánh khớp là đường nóng, chạy mỗi vòng lặp trên
+		// mọi account, giải mã ở đó là thêm một chuỗi rác mỗi lượt mà không ai đọc tới.
 		byte[] currentNameBytes = ReadGroundName(recordBytes);
-		if (! currentNameBytes.AsSpan().SequenceEqual(expected.ItemNameBytes)) return new(false, groundId, 0, 0, "GROUND_NAME_CHANGED");
+		string DecodeCurrentName() => currentNameBytes.Length == 0 ? "" : LegacyVietnameseText.Decode(currentNameBytes).Trim();
+		if (groundId <= 0) return new(false, groundId, 0, 0, "GROUND_ID_ZERO", DecodeCurrentName());
+		if (groundState != 3) return new(false, groundId, 0, 0, $"GROUND_STATE_{groundState}", DecodeCurrentName());
+		if (groundId != expected.GroundId) return new(false, groundId, 0, 0, "GROUND_ID_CHANGED", DecodeCurrentName());
+		if (! currentNameBytes.AsSpan().SequenceEqual(expected.ItemNameBytes)) return new(false, groundId, 0, 0, "GROUND_NAME_CHANGED", DecodeCurrentName());
 		IntPtr mapCoordinateRoot = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Globals.MapCoordinateRoot));
 		Dictionary<(int MapObjectIndex, int SegmentIndex), (int BaseX, int BaseY)> segmentCoordinates = new();
-		if (mapCoordinateRoot == IntPtr.Zero) return new(false, groundId, 0, 0, "MAP_COORDINATE_ROOT_ZERO");
-		if (! AutoFsGroundItemScanner.TryReadRawCoordinate(reader, recordBytes, 0, mapCoordinateRoot, segmentCoordinates, out int rawX, out int rawY, out string failure)) return new(false, groundId, 0, 0, "RAW_COORDINATE_READ_FAILED_" + failure);
+		if (mapCoordinateRoot == IntPtr.Zero) return new(false, groundId, 0, 0, "MAP_COORDINATE_ROOT_ZERO", DecodeCurrentName());
+		if (! AutoFsGroundItemScanner.TryReadRawCoordinate(reader, recordBytes, 0, mapCoordinateRoot, segmentCoordinates, out int rawX, out int rawY, out string failure)) return new(false, groundId, 0, 0, "RAW_COORDINATE_READ_FAILED_" + failure, DecodeCurrentName());
 		bool matches = rawX == expected.RawX && rawY == expected.RawY;
-		return new(matches, groundId, rawX, rawY, matches ? "MATCH" : "RAW_COORDINATE_CHANGED");
+		return matches
+			? new(true, groundId, rawX, rawY, "MATCH")
+			: new(false, groundId, rawX, rawY, "RAW_COORDINATE_CHANGED", DecodeCurrentName());
 	}
 
 	// Đọc tên item trực tiếp từ ground record hiện hành
@@ -499,12 +569,24 @@ public sealed class Engine {
 	private void LogFilterDecisions(LootFindResult result, Action<string>? currentDropLog) {
 		if (! settings.LogCandidates || currentDropLog == null) return;
 		foreach (LootSnapshot item in result.ObservedItems) {
-			lock (syncRoot) {
-				if (! loggedFilterDecisions.Add(item.MemoryFingerprint)) continue;
-			}
 			LootFilterDecision decision = finder.EvaluateFilter(item);
+			// Phân loại lại từ tên ĐÃ CHUẨN HOÁ, đúng thứ Finder.ShouldPick dùng. Trước 2026-09-17 chỗ này truyền
+			// item.ItemNameRaw nên cột AutoFsCategory in ra KHÔNG phải nhóm mà bộ lọc thật sự nhìn thấy.
+			string category = AutoFsSpecialItemClassifier.Classify(ItemGroupClassifier.NormalizeName(item.ItemNameRaw)).ToString();
+			// GHI LẠI KHI PHÁN QUYẾT ĐỔI, không khoá một dòng vĩnh viễn cho mỗi món.
+			//
+			// Bản cũ dùng HashSet: món nào đã ghi một lần thì thôi. Nên nếu một món bị từ chối lúc mới thấy rồi sau đó
+			// được chấp nhận (người dùng đổi ô tick, ngưỡng dược phẩm tụt xuống, màu đọc lại ra khác) thì nó được nhặt
+			// mà log vẫn đứng nguyên ở dòng Accepted=False cũ. Ngày 2026-09-17 chính chỗ này làm việc truy vụ
+			// "Tham Lang Hộ Giáp" trong túi PID 36320 bế tắc: mọi dòng log đều Accepted=False mà món vẫn nằm trong túi.
+			// Khoá theo (món, phán quyết) nên trạng thái ổn định vẫn chỉ ghi một dòng, đổi mới ghi thêm.
+			string state = $"{decision.Accepted}|{decision.Reason}|{decision.Classification.Color}|{category}";
+			lock (syncRoot) {
+				if (loggedFilterDecisions.TryGetValue(item.MemoryFingerprint, out string? previous) && string.Equals(previous, state, StringComparison.Ordinal)) continue;
+				loggedFilterDecisions[item.MemoryFingerprint] = state;
+			}
 			foreach (string diagnostic in finder.ConsumePotionCountDiagnostics()) currentDropLog(diagnostic);
-			currentDropLog($"LOOT_FILTER | PID={item.ProcessId} | Index={item.Index} | Name={item.ItemNameRaw} | Record=0x{item.Address.ToInt64():X8} | GroundType={item.GroundType} | GroundKind={item.GroundKind} | Group={decision.Classification.Group} | AutoFsCategory={AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw)} | Color={decision.Classification.Color} | AttributeClass={decision.Classification.AttributeClass} | QualityA={item.QualityCodeA} | QualityB={item.QualityCodeB} | Accepted={decision.Accepted} | Reason={decision.Reason} | Raw={item.RawX}/{item.RawY} | Internal={item.InternalX}/{item.InternalY} | EuclideanDistance={item.DistanceToPlayer:F0}");
+			currentDropLog($"LOOT_FILTER | PID={item.ProcessId} | Index={item.Index} | Name={item.ItemNameRaw} | Record=0x{item.Address.ToInt64():X8} | GroundType={item.GroundType} | GroundKind={item.GroundKind} | Group={decision.Classification.Group} | AutoFsCategory={category} | Color={decision.Classification.Color} | AttributeClass={decision.Classification.AttributeClass} | QualityA={item.QualityCodeA} | QualityB={item.QualityCodeB} | Accepted={decision.Accepted} | Reason={decision.Reason} | Raw={item.RawX}/{item.RawY} | Internal={item.InternalX}/{item.InternalY} | EuclideanDistance={item.DistanceToPlayer:F0}");
 		}
 	}
 
@@ -593,5 +675,10 @@ public sealed class Engine {
 	}
 
 	private readonly record struct WorkerContext(int ProcessId, IntPtr GameWindow, GameWindow? Game, bool ManualInputActive, Action<string>? Log, Action<string>? DropLog);
-	private readonly record struct GroundSlotReading(bool Matches, int GroundId, int RawX, int RawY, string Reason);
+	// CurrentName = tên món ĐANG nằm ở ô đất lúc kiểm, không phải tên món đang chờ.
+	//
+	// Trước đây ReadGroundSlot có đọc tên hiện tại nhưng chỉ dùng để so rồi vứt đi, nên log chỉ nói được "ô đã đổi"
+	// mà không nói "đổi thành món gì". Đúng thứ đó mới chỉ ra được ô đất có bị món khác chiếm hay không — tức phân
+	// biệt "món tự biến mất" với kịch bản đua tranh tái sử dụng ô.
+	private readonly record struct GroundSlotReading(bool Matches, int GroundId, int RawX, int RawY, string Reason, string CurrentName = "");
 }

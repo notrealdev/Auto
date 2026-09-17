@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using Auto.Attack;
 using Auto.DebugTools;
 using Auto.Movement;
+using Auto.Repair;
 using Auto.Utils;
 
 // Port từ D:\G\DEV\UI\Accounts.cs (TickAutoEngineCore + helper) — giữ nguyên thứ tự/điều kiện dừng engine.
@@ -13,6 +14,17 @@ public static class AccountEngineCoordinator {
 	// ConcurrentDictionary bắt buộc: TickOne chạy song song nhiều account qua Parallel.ForEach (AccountListViewModel.EngineTick),
 	// Dictionary thường không an toàn đa luồng dù các thread ghi khác key nhau, gây InvalidOperationException hỏng state.
 	private static readonly ConcurrentDictionary<IntPtr, AttackPositionState> attackPositionByWindow = new();
+	private static readonly ConcurrentDictionary<IntPtr, OutOfWorldState> outOfWorldByWindow = new();
+	// Rơi khỏi game bao lâu thì bắt đầu kêu, và kêu lại mỗi bao lâu.
+	// 3 phút: đo được đêm 2026-09-15 -> 16, 5/6 account tự vào lại trong khoảng 5 nhịp heartbeat (~5 phút), nên
+	// ngưỡng dưới mốc đó để bắt được ca KHÔNG tự vào lại mà vẫn không kêu oan mỗi lần đổi map.
+	private const double OutOfWorldWarnAfterMinutes = 3;
+	private const double OutOfWorldRepeatMinutes = 10;
+
+	private sealed class OutOfWorldState {
+		public DateTime SinceUtc;
+		public DateTime NextReportUtc;
+	}
 	private static readonly ConcurrentDictionary<IntPtr, DateTime> deathDetectedUtcByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> lastRuntimeGateByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> lastAutoGateByWindow = new();
@@ -135,6 +147,7 @@ public static class AccountEngineCoordinator {
 			ClientFreezeWatch.Observe(game, snapshot);
 			if (!snapshot.Success) {
 				LogHeartbeat(game, snapshot, masterEnabled, attackEnabled, lootEnabled, repairConfigured, repairEnabled, saleEnabled, questEnabled, accountLog);
+				ReportAccountOutOfWorld(game, snapshot);
 				game.AutoFsActionGate.SetRuntimeSuspended(true);
 				// Cùng lý do như ở cổng Auto tổng: worker đánh vừa bị Stop nên trạng thái nhớ phải về "chưa chạy",
 				// không thì lượt đọc được snapshot trở lại sẽ không tính là chuyển tắt->bật.
@@ -143,6 +156,7 @@ public static class AccountEngineCoordinator {
 				game.LootEngine.Stop();
 				return;
 			}
+			ReportAccountBackInWorld(game);
 			game.AutoFsActionGate.SetRuntimeSuspended(false);
 
 			// Đặt NGAY ĐÂY, trước mọi nhánh return của từng luồng. Mọi nhánh bên dưới đều có đường thoát sớm
@@ -485,7 +499,21 @@ public static class AccountEngineCoordinator {
 		// 3. DeferRepairRequest là bắt buộc: chỉ Cancel thì IsBusy về false nhưng HasPendingRepairRequest vẫn true,
 		//    repairPriority vẫn bật và nhân vật lại đi sửa ngay. Đây đúng là vòng lặp đã xảy ra lúc 09:43:54.
 		// 4. Dừng hai worker; chúng được dựng lại ở nhịp sau.
-		BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+		// ESC CHỈ khi thật sự có giao diện đang mở.
+		//
+		// Không có popup thì ESC KHÔNG vô hại: client mở menu hệ thống (trong đó có mục thoát game), tức lớp cứu hộ
+		// tự tay làm hỏng account nó định cứu. Đêm 2026-09-15 -> 16 lớp này nổ 29 lần và toàn bộ đều nổ oan.
+		//
+		// Mọi chỗ gửi ESC khác trong Auto đã có chốt sẵn (WeaponRepairAutomation dòng 368/371/374/377 gác bằng
+		// shopOpened, dòng 683 gác bằng interactionLocked); riêng chỗ này trước đây gửi vô điều kiện.
+		// modalState != 0 là đang có popup, shopState != 0 là đang mở cửa hàng — đối chiếu cùng cách đọc mà luồng
+		// Sửa đồ dùng để nhận biết shop (modalState == 0 && shopState == 2).
+		WeaponRepairAutomation.ReadShopState(game.ProcessId, out uint modalState, out uint shopState);
+		bool anyUiOpen = modalState != 0 || shopState != 0;
+		if (anyUiOpen) {
+			BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+		}
+		accountLog($"ANTI_AFK_STUCK_SUPERVISOR_ESC | ModalState=0x{modalState:X8} | ShopState={shopState} | {(anyUiOpen ? "có giao diện đang mở, đã gửi ESC" : "không có giao diện nào mở, BỎ QUA ESC để khỏi bật menu hệ thống")}");
 		game.WeaponRepairAutomation.Cancel(game, accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
 		game.WeaponRepairMonitor.DeferRepairRequest(StuckSupervisorRepairCooldownSeconds, "sau khi lớp giám sát đứng im thu hồi quyền điều khiển");
 		game.ReturnToTrainingAutomation.Cancel(accountLog, "Lớp giám sát đứng im thu hồi quyền điều khiển");
@@ -560,6 +588,36 @@ public static class AccountEngineCoordinator {
 			accountLog($"ELITE_RETREAT_BUFF_BLOCK_EXPIRED | PID={game.ProcessId} | Seconds={EliteRetreatBuffBlockSeconds} | Action=Trả quyền lại cho Buff vì trốn boss quá lâu chưa xong");
 		}
 		return true;
+	}
+
+	// CẢNH BÁO ACCOUNT RƠI KHỎI GAME.
+	//
+	// Snapshot thất bại nghĩa là bản ghi nhân vật không đọc được — thường là NameReadFailed, tức trường tên rỗng,
+	// tức nhân vật không còn trong thế giới (màn hình đăng nhập / chọn nhân vật). Auto đã treo cổng hành động và
+	// dừng worker ở nhánh gọi hàm này, nên nó KHÔNG bơm lệnh vào client nữa — phần đó vốn đã đúng.
+	//
+	// Cái thiếu là: Auto chờ VÔ HẠN mà không nói gì. Đêm 2026-09-15 -> 16 server reset lúc 09:05:46 làm cả 6 account
+	// rơi cùng lúc; 5 account vào lại sau ~5 phút, riêng PID=32364 (XinLỗiEm) nằm ngoài game từ 09:05:46 tới
+	// 10:33:51 — 88 phút — mà không một dòng log nào ở mức cảnh báo. Muốn biết phải tự mở heartbeat ra đếm.
+	//
+	// Đây CHỈ là cảnh báo, không tự đăng nhập lại. Việc đăng nhập lại thuộc tab Login (Login/LoginAutomation.cs,
+	// đang dang dở).
+	private static void ReportAccountOutOfWorld(GameWindow game, GameSnapshot snapshot) {
+		DateTime now = DateTime.UtcNow;
+		OutOfWorldState state = outOfWorldByWindow.GetOrAdd(game.Handle, _ => new OutOfWorldState { SinceUtc = now });
+		double minutes = (now - state.SinceUtc).TotalMinutes;
+		if (minutes < OutOfWorldWarnAfterMinutes) return;
+		if (now < state.NextReportUtc) return;
+		state.NextReportUtc = now.AddMinutes(OutOfWorldRepeatMinutes);
+		DebugLog.AddClientEvent($"ACCOUNT_OUT_OF_WORLD | PID={game.ProcessId} | {game.CharacterName} | RơiKhỏiGame={minutes:F1} phút | Lý do={snapshot.Status} | {snapshot.FailReason} | Auto đã treo cổng hành động và dừng worker; KHÔNG tự đăng nhập lại được (tab Login chưa xong).");
+	}
+
+	private static void ReportAccountBackInWorld(GameWindow game) {
+		if (! outOfWorldByWindow.TryRemove(game.Handle, out OutOfWorldState? state)) return;
+		double minutes = (DateTime.UtcNow - state.SinceUtc).TotalMinutes;
+		// Chỉ báo khi đã từng cảnh báo, để những nhịp trượt một hai giây không đẻ rác log.
+		if (state.NextReportUtc == DateTime.MinValue) return;
+		DebugLog.AddClientEvent($"ACCOUNT_BACK_IN_WORLD | PID={game.ProcessId} | {game.CharacterName} | Đã ở ngoài game {minutes:F1} phút rồi vào lại");
 	}
 
 	private static bool ShouldRestartStationaryAttack(IntPtr gameWindow, GameSnapshot snapshot, out int stationaryMilliseconds) {

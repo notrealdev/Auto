@@ -2,6 +2,7 @@ namespace Auto.UI.ViewModels;
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Windows;
 using System.Windows.Threading;
 using Auto.Runtime;
 
@@ -17,6 +18,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 	private readonly DispatcherTimer statusBarTimer;
 	private ViewModelBase selectedTabContent;
 	private string statusBarText = "Loading...";
+	private string lootFeedText = "";
 
 	public MainWindowViewModel() {
 		AttackViewModel  attackTab  = new();
@@ -62,6 +64,9 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		statusBarTimer.Tick += (_, _) => RefreshStatusBar();
 		statusBarTimer.Start();
 		ProcessLoadMonitor.Sample();
+
+		LootFeed.Changed += OnLootFeedChanged;
+		LootFeedText = LootFeed.Text;
 	}
 
 	// Tải của chính tiến trình Auto.
@@ -74,9 +79,23 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		private set => SetField(ref statusBarText, value);
 	}
 
+	// Dòng vật phẩm nhặt được của mọi account. LootFeed bắn sự kiện từ luồng worker của Loot nên phải đưa về luồng UI
+	// mới được đụng vào property có ràng buộc.
+	public string LootFeedText {
+		get => lootFeedText;
+		private set => SetField(ref lootFeedText, value);
+	}
+
+	private void OnLootFeedChanged() {
+		Application.Current?.Dispatcher.BeginInvoke(() => LootFeedText = LootFeed.Text);
+	}
+
 	private void RefreshStatusBar() {
 		ProcessLoadMonitor.Sample();
 		double percent = ProcessLoadMonitor.CpuPercent;
+		// Heap/G2 đã gỡ khỏi thanh trạng thái sau khi ArrayPool ở AutoFsGroundItemScanner chặn được nguồn rác LOH:
+		// bản đo cũ là 19MB/G2=9964, bản sau khi sửa là 20MB/G2=184. Hai số đó dựng lên chỉ để truy vụ phình heap
+		// đó, không phải chỉ số thường trực. Cần đo lại thì thêm tạm GC.GetTotalMemory(false)/GC.CollectionCount(2).
 		StatusBarText = $"CPU: {percent:F1}% | RAM: {ProcessLoadMonitor.WorkingSetMegabytes:F0}MB | Power: {ProcessLoadMonitor.DescribeLoad(percent)} | Account: {AccountList.Accounts.Count}";
 	}
 

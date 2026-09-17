@@ -49,6 +49,9 @@ public sealed class Settings {
 		ItemSelections["Lục Đạo"] = true;
 		ItemSelections["Tứ Tượng"] = true;
 		ItemSelections["Nhãn Vạn Tiên Trận"] = true;
+		// Bá Lạc Nhãn (cường hoá thú cưỡi) mặc định BẬT — chủ dự án chốt 2026-09-17: "đồ có giá trị cao".
+		// Trước lượt này chúng vẫn được nhặt, nhưng là do lọt nhầm vào nhóm Nhãn Vạn Tiên Trận qua Contains("NHAN").
+		ItemSelections[Finder.MountUpgradeSelectionName] = true;
 		ExcludedItemSelections["Đồ Trắng"] = false;
 		ExcludedItemSelections["Đồ Xanh"] = false;
 		ExcludedItemSelections["Dược Phẩm"] = false;

@@ -27,6 +27,8 @@ internal sealed class AutoFsAttackTransport {
 	private const int AuditAddressCommand = 320;
 	private const int MaximumPassiveBuffSkillId = 0x7CF;
 	private const uint SendMessageTimeoutMilliseconds = 500;
+	// Các bước đăng nhập dựng lại cả màn hình nên lâu hơn hẳn một lần gửi gói; xem TrySendLoginCommand.
+	private const uint LoginSendTimeoutMilliseconds = 10000;
 	// Buff bị động bắn lại mỗi 350 ms (BuffEngine.SkillIntervalMilliseconds) nên KHÔNG được chờ tới 500 ms:
 	// mọi lệnh gửi đồng bộ đều nằm trong khoá syncRoot của AutoFsActionGate, dùng chung với TryRunAttack/RunLoot/
 	// RunMovement, nên một lần chờ quá hạn khoá luôn cả vòng đánh của account đó.
@@ -236,6 +238,30 @@ internal sealed class AutoFsAttackTransport {
 			return false;
 		}
 		result = value.ToUInt64();
+		return true;
+	}
+
+	// Gửi một lệnh của luồng đăng nhập và trả về NGUYÊN mã native, vì có lệnh dùng chính giá trị trả về làm dữ liệu
+	// (lệnh 314 trả 0/1 là trạng thái ô "Đồng ý Điều khoản") chứ không chỉ 0/1 là hỏng/được.
+	//
+	// Khác hai điểm so với các lệnh còn lại, cả hai đều có lý do đo được:
+	//   1. KHÔNG đặt SMTO_ABORTIFHUNG. Lệnh 282 dựng hẳn một màn hình mới nên cửa sổ ngừng bơm message trong lúc chạy;
+	//      có cờ đó thì SendMessageTimeoutA trả 0 dù lệnh đã chạy xong.
+	//      NHƯNG bỏ cờ đi VẪN CHƯA ĐỦ, đã đo được: trên PID 1284 (2026-09-16) lệnh 282 hết giờ sau 8s và trả 0, mà
+	//      ảnh chụp cho thấy nó đã chạy xong và client còn kịp hiện popup "Máy chủ đã đầy hoặc đang bảo trì !".
+	//      Nguyên nhân là client đi kết nối mạng nên bận lâu hơn mọi timeout hợp lý. Vì vậy KHÔNG được coi kết quả
+	//      của lệnh 282 là căn cứ; LoginAutomation phải xác nhận bằng trạng thái màn hình (xem ở đó).
+	//   2. Chờ lâu hơn nhiều so với 500 ms mặc định, vì các bước này dựng lại giao diện chứ không phải gửi gói.
+	// Không đi qua AutoFsActionGate: đăng nhập luôn chạy lúc chưa có account nào được bật.
+	public bool TrySendLoginCommand(IntPtr gameWindow, int command, int payload, out long result, out string error) {
+		result = 0;
+		if (! TryEnsureReceiver(gameWindow, out error)) return false;
+		IntPtr sent = SendMessageTimeoutA(gameWindow, hookMessage, (IntPtr)command, (IntPtr)payload, 0, LoginSendTimeoutMilliseconds, out UIntPtr value);
+		if (sent == IntPtr.Zero) {
+			error = $"SendMessageTimeoutA failed. Command={command}, Payload={payload}, Win32Error={Marshal.GetLastWin32Error()}";
+			return false;
+		}
+		result = unchecked((int)value.ToUInt64());
 		return true;
 	}
 

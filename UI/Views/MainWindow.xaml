@@ -77,7 +77,14 @@
 					</ContextMenu>
 				</StackPanel.ContextMenu>
 				<Border x:Name="Separator" Height="1" Margin="0,0,0,4" Background="{StaticResource Brush.Border}" Opacity="0.4" />
-				<Grid Margin="0,0,0,4">
+				<!--
+					Background="Transparent" là BẮT BUỘC để bấm được vào khoảng trống giữa hai cột: Grid không có
+					Background thì WPF không hit-test vùng rỗng, click chỉ ăn khi trúng đúng chữ.
+				-->
+				<Grid
+					Margin="0,0,0,4"
+					Background="Transparent"
+					MouseLeftButtonDown="AccountRow_Clicked">
 					<Grid.ColumnDefinitions>
 						<ColumnDefinition Width="Auto" />
 						<ColumnDefinition Width="3*" />
@@ -121,6 +128,7 @@
 		<Grid.RowDefinitions>
 			<RowDefinition Height="32" />
 			<RowDefinition Height="*" />
+			<RowDefinition Height="Auto" />
 			<RowDefinition Height="Auto" />
 		</Grid.RowDefinitions>
 
@@ -217,12 +225,65 @@
 			</Grid>
 		</Grid>
 
-		<!--  Thanh trạng thái: tải của chính Auto. "Mức tải" là ước lượng của Auto theo %CPU, KHÔNG phải cột
-		      Power usage của Windows (giá trị đó không có API công khai để đọc).  -->
-		<!--  Nền dùng đúng Brush.AccentMuted của dòng account đang được chọn (AccountListBoxItem, trigger IsSelected),
-		      bo góc 4 cho khớp luôn với RowBorder của dòng đó.  -->
+		<!--  Ô theo dõi vật phẩm nhặt được của MỌI account, gộp chung theo thứ tự thời gian.
+		      Nguồn: LootFeed, nhận đúng những lượt nhặt vào loot-drops.log (nhãn LOOT_PICKED_UP), bỏ nhóm nhặt
+		      thường xuyên đã tách sang loot-scan.log.
+		      Dùng TextBox chỉ-đọc thay vì TextBlock để chủ dự án bôi đen copy được tên vật phẩm.  -->
 		<Border
 			Grid.Row="2"
+			Margin="14,0,14,8"
+			Padding="2"
+			Background="{StaticResource Brush.Surface}"
+			BorderBrush="{StaticResource Brush.Border}"
+			BorderThickness="1"
+			CornerRadius="4">
+			<Grid>
+				<!--
+					VerticalContentAlignment="Top" là BẮT BUỘC ở đây: style TextBox chung (Styles.xaml) đặt "Center"
+					và template của nó bind thẳng giá trị đó vào VerticalAlignment của PART_ContentHost, nên khi log
+					còn ít dòng thì cả khối chữ bị dồn ra giữa ô.
+
+					Padding phải bên phải để 28: chừa chỗ cho nút xoá nằm đè ở góc, khỏi bị chữ chạy xuống dưới nút.
+
+					Text KHÔNG bind nữa mà do code-behind đẩy vào — xem LootFeed_Changed ở MainWindow.xaml.cs.
+				-->
+				<TextBox
+					x:Name="LootFeedBox"
+					Height="110"
+					Padding="6,4,28,4"
+					Background="Transparent"
+					BorderThickness="0"
+					FontFamily="Consolas"
+					FontSize="11"
+					Foreground="{StaticResource Brush.TextPrimary}"
+					IsReadOnly="True"
+					LostKeyboardFocus="LootFeed_LostKeyboardFocus"
+					SelectionChanged="LootFeed_SelectionChanged"
+					TextWrapping="NoWrap"
+					VerticalContentAlignment="Top"
+					VerticalScrollBarVisibility="Auto"
+					HorizontalScrollBarVisibility="Auto" />
+				<Button
+					Margin="0,6,8,0"
+					HorizontalAlignment="Right"
+					VerticalAlignment="Top"
+					Click="ClearLootFeed_Click"
+					Style="{StaticResource OverlayIconButton}"
+					ToolTip="Xoá ô theo dõi (không đụng tới loot-drops.log)">
+					<Path
+						Data="{StaticResource Icon.Trash}"
+						Stroke="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}"
+						StrokeEndLineCap="Round"
+						StrokeStartLineCap="Round"
+						StrokeThickness="1.2" />
+				</Button>
+			</Grid>
+		</Border>
+
+		<!--  Thanh trạng thái: tải của chính Auto. "Mức tải" là ước lượng của Auto theo %CPU, KHÔNG phải cột
+		      Power usage của Windows (giá trị đó không có API công khai để đọc).  -->
+		<Border
+			Grid.Row="3"
 			Margin="{StaticResource Size.StatusBarMargin}"
 			Padding="10,6"
 			Background="{StaticResource Brush.CheckboxChecked}"

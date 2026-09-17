@@ -62,6 +62,26 @@ internal sealed class InventoryPotionCounter {
 		}
 	}
 
+	// Chụp TOÀN BỘ bảng đếm của 3 container, không riêng một tên.
+	//
+	// Vì sao cần: so trước/sau bằng MỘT tên chỉ trả lời được "món mình chờ có vào túi không". Nó không phân biệt
+	// được "người khác nhặt mất" với "mình nhặt trúng món khác" — cả hai đều cho cùng một kết quả là không tăng,
+	// và Loot/Engine.cs im lặng ở đúng chỗ đó. Chụp cả bảng thì lấy hiệu hai lần chụp là ra tên món THẬT SỰ vào túi.
+	//
+	// Gần như không tốn thêm: Refresh vốn đã gom đủ 3 container trong 3 lời gọi đọc rồi mới lọc ra một tên.
+	public bool TrySnapshot(int processId, out Dictionary<string, int> snapshot) {
+		lock (syncRoot) {
+			if (! hasCounts || DateTime.UtcNow >= nextRefreshUtc) {
+				if (! Refresh(processId)) {
+					snapshot = [];
+					return false;
+				}
+			}
+			snapshot = new Dictionary<string, int>(counts, StringComparer.Ordinal);
+			return true;
+		}
+	}
+
 	private bool Refresh(int processId) {
 		try {
 			using MemoryReader reader = new(processId);

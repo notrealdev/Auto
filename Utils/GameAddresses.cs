@@ -75,6 +75,12 @@ public static class GameAddresses {
 		public const int RawY = 0x4350;
 		public const int RawXMirror = 0x71EC;
 		public const int RawYMirror = 0x71F0;
+		// Cặp toạ độ thứ ba, bản layout AutoFS đời cũ dịch +4 cho client hiện tại
+		// (D:\G\DEV\Resource\Tests\DEV-CLIENT-UPDATE-001.lua:14-15 ghi rawX=0x75F0, rawY=0x75F4 trong bảng "old").
+		// GameMemory.ReadSnapshot đọc cặp này cho tới 2026-09-16. Giữ lại CHỈ để ClientFreezeWatch đối chiếu ba
+		// nguồn — chưa xác định được cặp nào mới là vị trí thật khi ba nguồn bất đồng.
+		public const int RawXLegacy = 0x75F4;
+		public const int RawYLegacy = 0x75F8;
 		public const int PlayerDeathStatus = 0x01E8;
 		public const int PlayerDeathState = 0x01EC;
 		public const int MoveTargetXCandidate = 0x2CDC;

@@ -10,6 +10,8 @@ public sealed class Finder {
 	public const int PlayerScanRadius = 150;
 	// Một chỗ duy nhất giữ nhãn nhóm "Vũ khí xanh": Finder đọc, LootViewModel dựng ô tick, Settings đặt mặc định.
 	public const string GreenWeaponSelectionName = "Vũ khí xanh";
+	// Cùng khuôn với trên: nhãn nhóm "Bá Lạc Nhãn" (vật phẩm cường hoá thú cưỡi) chỉ khai báo ở đúng một chỗ.
+	public const string MountUpgradeSelectionName = "Bá Lạc Nhãn";
 
 	private readonly Settings settings;
 	private readonly AutoFsGroundItemScanner spriteItemScanner = new();
@@ -93,6 +95,15 @@ public sealed class Finder {
 		potionCounter.Invalidate();
 		return potionCounter.TryGetCount(processId, key, out count);
 	}
+
+	// Chụp tươi toàn bộ túi để nơi gọi so trước/sau một lệnh nhặt. Bỏ cache vì lý do y hệt TryCountInInventory.
+	public bool TrySnapshotInventory(int processId, out Dictionary<string, int> snapshot) {
+		potionCounter.Invalidate();
+		return potionCounter.TrySnapshot(processId, out snapshot);
+	}
+
+	// Khoá của một tên trong bảng chụp ở trên. Tên dưới đất có hậu tố "xN" nên phải chuẩn hoá mới so được.
+	public static string ToInventoryKey(string itemName) => InventoryPotionCounter.ToKey(itemName);
 
 	public string[] ConsumePotionCountDiagnostics() => potionCounter.ConsumeDiagnostics();
 
@@ -183,7 +194,7 @@ public sealed class Finder {
 		return false;
 	}
 	private static bool IsBuiltInSelection(string name) {
-		return name is "Đồ Trắng" or "Đồ Xanh" or "Đồ Lục" or "Đồ Vàng" or "Đồ Cam" or "Đồ Khác" or "Dược Phẩm" or "Thảo Dược" or GreenWeaponSelectionName or "Mảnh, Ngọc" or "Bí Kíp" or "Pháp Bảo" or "Quẻ" or "Lục Đạo" or "Tứ Tượng" or "Nhãn Vạn Tiên Trận";
+		return name is "Đồ Trắng" or "Đồ Xanh" or "Đồ Lục" or "Đồ Vàng" or "Đồ Cam" or "Đồ Khác" or "Dược Phẩm" or "Thảo Dược" or GreenWeaponSelectionName or "Mảnh, Ngọc" or "Bí Kíp" or "Pháp Bảo" or "Quẻ" or "Lục Đạo" or "Tứ Tượng" or "Nhãn Vạn Tiên Trận" or MountUpgradeSelectionName;
 	}
 	private static string GetSelectionName(AutoFsSpecialItemCategory category) {
 		return category switch {
@@ -195,6 +206,7 @@ public sealed class Finder {
 			AutoFsSpecialItemCategory.ImmortalFormationLabel => "Nhãn Vạn Tiên Trận",
 			AutoFsSpecialItemCategory.Herb => "Thảo Dược",
 			AutoFsSpecialItemCategory.GreenWeapon => GreenWeaponSelectionName,
+			AutoFsSpecialItemCategory.MountUpgrade => MountUpgradeSelectionName,
 			_ => ""
 		};
 	}
@@ -208,7 +220,10 @@ public sealed class Finder {
 		string exclusionReason = GetExclusionReason(itemName, item, settings);
 		if (exclusionReason.Length > 0) return exclusionReason;
 		if (accepted) return "ALLOWED";
-		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(snapshot.ItemNameRaw);
+		// Phân loại từ itemName ĐÃ CHUẨN HOÁ, đúng thứ ShouldPick dùng ở trên. Trước 2026-09-17 chỗ này truyền
+		// snapshot.ItemNameRaw còn ShouldPick truyền tên đã qua ItemGroupClassifier.NormalizeName — hai đầu vào khác
+		// nhau, nên lý do in ra log có thể không phải lý do bộ lọc thật sự dùng.
+		AutoFsSpecialItemCategory specialCategory = AutoFsSpecialItemClassifier.Classify(itemName);
 		// GreenWeapon KHÔNG báo AUTOFS_..._DISABLED: nhóm đó chỉ thêm chứ không loại, nên món bị bỏ là do luật màu
 		// bên dưới chứ không phải do ô tick "Vũ khí xanh". Báo nhầm ở đây là gửi chủ dự án đi sai hướng khi đọc log.
 		if (specialCategory != AutoFsSpecialItemCategory.None && specialCategory != AutoFsSpecialItemCategory.GreenWeapon) {

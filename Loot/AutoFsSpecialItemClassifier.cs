@@ -3,7 +3,7 @@ namespace Auto.Loot;
 using System.Globalization;
 using System.Text;
 
-public enum AutoFsSpecialItemCategory { None, SkillBook, Artifact, Trigram, SixPaths, FourSymbols, ImmortalFormationLabel, Herb, GreenWeapon }
+public enum AutoFsSpecialItemCategory { None, SkillBook, Artifact, Trigram, SixPaths, FourSymbols, ImmortalFormationLabel, Herb, GreenWeapon, MountUpgrade }
 
 public static class AutoFsSpecialItemClassifier {
 	private static readonly HashSet<string> SkillBookNames = new(StringComparer.OrdinalIgnoreCase) {
@@ -90,19 +90,108 @@ public static class AutoFsSpecialItemClassifier {
 		"Diệt Thần phủ"
 	};
 
+	// Ba nhóm dưới đây TRƯỚC 2026-09-17 nhận diện bằng Contains trên một mẩu chuỗi, nên bắt nhầm hàng loạt món
+	// không liên quan. Nguy hiểm vì Finder.ShouldPick trả thẳng trạng thái ô tick cho nhóm đặc biệt và KHÔNG xét
+	// màu nữa — bắt nhầm là nhặt bất kể đồ trắng hay xanh.
+	//
+	// Nguồn danh sách: D:\G\Tools\FSData\Data\settings.pak.txt (bảng vật phẩm trích từ client, cột "Mã,Tên,Mô tả").
+	// Ghi kèm mã món để lần sau đối chiếu lại được với file gốc.
+
+	// Quẻ: 8 món, mã liên tiếp 14..21 — trọn một khối.
+	// Contains("QUE") cũ còn nuốt: 27 "Kẹo Quế hoa", 151 "Hạt quế".
+	private static readonly HashSet<string> TrigramNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Quẻ Càn",   // 14
+		"Quẻ Khôn",  // 15
+		"Quẻ Khảm",  // 16
+		"Quẻ Ly",    // 17
+		"Quẻ Cấn",   // 18
+		"Quẻ Đoài",  // 19
+		"Quẻ Tốn",   // 20
+		"Quẻ Chấn"   // 21
+	};
+
+	// Tứ Tượng: 4 món, mã liên tiếp 22..25.
+	// Bốn chuỗi Contains cũ còn nuốt: 64 "Hỏa Linh phù" (vé vào Vạn Tiên Trận cấp 3), 174 "Thôi Phong Lệnh".
+	private static readonly HashSet<string> FourSymbolNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Địa Tâm",   // 22
+		"Phong Lệ",  // 23
+		"Thủy Hồn",  // 24
+		"Hỏa Linh"   // 25
+	};
+
+	// Nhãn Vạn Tiên Trận: đúng 5 món, lọc theo mô tả có chữ "Vạn Tiên Trận" VÀ tên có chữ "nhãn".
+	//
+	// Contains("NHAN") cũ nuốt thêm 19 món KHÔNG liên quan:
+	//   29-33, 42-52, 1180 — 17 món "Bá Lạc Nhãn" cấp 1..16, là vật phẩm cường hoá THÚ CƯỠI.
+	//                        Đây chính là món nằm trong túi MaiAnhNhe (PID 23696) ngày 2026-09-17: "Bá Lạc Nhãn cấp 13".
+	//   492 "Nội Đơn-Thiên Phong Địa Nhẫn", 1064 "Thiên Nhẫn Kiếm Kiếm Hồn" — bỏ dấu thì "Nhẫn" cũng thành "NHAN".
+	//
+	// Bá Lạc Nhãn KHÔNG nằm ở đây — nó không phải Nhãn Vạn Tiên Trận. Xem MountUpgradeNames bên dưới.
+	private static readonly HashSet<string> ImmortalFormationLabelNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Đại địa nhãn",   // 116, Vạn Tiên Trận (thổ)
+		"Hoàn Quan nhãn", // 117, Vạn Tiên Trận (thủy)
+		"Liệt Diệm nhãn", // 118, Vạn Tiên Trận (hỏa)
+		"Phong Bạo nhãn", // 119, Vạn Tiên Trận (phong)
+		"Huyễn Linh Nhãn" // 1173, Vạn Tiên Trận (Huyễn)
+	};
+
+	// Bá Lạc Nhãn: vật phẩm cường hoá THÚ CƯỠI, chủ dự án xác nhận 2026-09-17 là đồ giá trị cao nên vẫn nhặt.
+	//
+	// Tách thành nhóm RIÊNG với ô tick riêng chứ không nhét chung Nhãn Vạn Tiên Trận: hai loại món khác hẳn nhau,
+	// gộp chung thì tắt cái này là mất luôn cái kia. Trước 2026-09-17 chúng lọt vào Nhãn Vạn Tiên Trận qua
+	// Contains("NHAN") — đúng kết quả mong muốn nhưng vì lý do sai, và kéo theo cả 19 món khác không liên quan.
+	//
+	// 17 món, mã 29-33 / 42-52 / 1180 (settings.pak.txt). Mã không liên tục nên ghi đủ từng dòng để đối chiếu.
+	private static readonly HashSet<string> MountUpgradeNames = new(StringComparer.OrdinalIgnoreCase) {
+		"Bá Lạc Nhãn cấp 1",  // 29
+		"Bá Lạc Nhãn cấp 2",  // 30
+		"Bá Lạc Nhãn cấp 3",  // 31
+		"Bá Lạc Nhãn cấp 4",  // 32
+		"Bá Lạc Nhãn cấp 5",  // 33
+		"Bá Lạc Nhãn cấp 6",  // 42
+		"Bá Lạc Nhãn cấp 7",  // 43
+		"Bá Lạc Nhãn cấp 8",  // 44
+		"Bá Lạc Nhãn cấp 9",  // 45
+		"Bá Lạc Nhãn cấp 10", // 46
+		"Bá Lạc Nhãn cấp 11", // 47
+		"Bá Lạc Nhãn cấp 12", // 48
+		"Bá Lạc Nhãn cấp 13", // 49
+		"Bá Lạc Nhãn cấp 14", // 50
+		"Bá Lạc Nhãn cấp 15", // 51
+		"Bá Lạc Nhãn",        // 52, cấp 16
+		"Bá Lạc Nhãn cấp 16"  // 1180
+	};
+
 	public static AutoFsSpecialItemCategory Classify(string rawName) {
 		string name = ToAsciiUpper(NormalizeGroundName(rawName));
+		// Tên rỗng KHÔNG được rơi vào bất kỳ nhóm nào: mọi phép Contains bên dưới đều khớp với chuỗi rỗng
+		// ("bất kỳ".Contains("") trả về true trong .NET), tức một tên đọc hụt sẽ được xếp bừa vào nhóm đầu tiên.
+		if (name.Length == 0) return AutoFsSpecialItemCategory.None;
 		if (GreenWeaponNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.GreenWeapon;
 		if (HerbNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Herb;
 		// Kiểm tra Lục Đạo trước Bí Kíp/Bảo Vật và so khớp đúng tuyệt đối (không bao hàm):
 		// tên món Lục Đạo luôn là tên đầy đủ của chính món đó (vd. "Băng Cơ"), trong khi Bí Kíp lại có tên dài chứa
 		// đúng từ đó (vd. "Băng Cơ Tuyết Cốt"). Bao hàm 2 chiều đều có thể nuốt nhầm; so khớp đúng tuyệt đối mới tránh cả 2 chiều.
 		if (SixPathNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.SixPaths;
-		if (SkillBookNames.Any(knownName => ToAsciiUpper(knownName).Contains(name, StringComparison.Ordinal))) return AutoFsSpecialItemCategory.SkillBook;
-		if (ArtifactNames.Any(knownName => ToAsciiUpper(knownName).Contains(name, StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Artifact;
-		if (name.Contains("QUE", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.Trigram;
-		if (name.Contains("PHONG LE", StringComparison.Ordinal) || name.Contains("HOA LINH", StringComparison.Ordinal) || name.Contains("DIA TAM", StringComparison.Ordinal) || name.Contains("THUY HON", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.FourSymbols;
-		if (name.Contains("NHAN", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.ImmortalFormationLabel;
+		// Nội Đơn KHÔNG phải Bí Kíp, dù tên là "Nội Đơn-" ghép nguyên tên một Bí Kíp.
+		//
+		// 61 món mã 487..547 có dạng "Nội Đơn-<tên kỹ năng>" (settings.pak.txt), mô tả "Nội Đơn kỹ năng Linh Thú,
+		// sẽ giúp Linh thú lĩnh ngộ kỹ năng này" — là viên cho Linh Thú học kỹ năng, khác hẳn Bí Kíp.
+		// Chiều so "tên dưới đất chứa tên đã biết" ở ngay dưới sẽ nuốt trọn cả 61 món này vào Bí Kíp, mà ô "Bí Kíp"
+		// đang bật và nhóm đặc biệt thì Finder.ShouldPick KHÔNG xét màu — tức tự dưng nhặt thêm 61 loại món.
+		// Bản trước 2026-09-17 so ngược chiều nên chúng không rơi vào Bí Kíp; chặn ở đây để giữ nguyên hành vi cũ,
+		// không để việc sửa chiều so âm thầm mở rộng thứ được nhặt.
+		// Muốn nhặt Nội Đơn thì gõ tên vào ô "Vật phẩm" ở tab Nhặt.
+		if (name.StartsWith("NOI DON", StringComparison.Ordinal)) return AutoFsSpecialItemCategory.None;
+		// Bí Kíp và Pháp Bảo: bỏ chiều NGƯỢC (knownName.Contains(name)). Chiều đó khiến một tên dưới đất NGẮN mà tình
+		// cờ là chuỗi con của tên trong bảng cũng bị nhận nhầm — ví dụ món tên "Kính" lọt vào Pháp Bảo qua
+		// "Kính Chiếu Yêu". Giữ đúng chiều "tên dưới đất chứa tên đã biết" như comment ở GreenWeaponNames mô tả.
+		if (SkillBookNames.Any(knownName => name.Contains(ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.SkillBook;
+		if (ArtifactNames.Any(knownName => name.Contains(ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Artifact;
+		if (TrigramNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.Trigram;
+		if (FourSymbolNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.FourSymbols;
+		if (ImmortalFormationLabelNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.ImmortalFormationLabel;
+		if (MountUpgradeNames.Any(knownName => string.Equals(name, ToAsciiUpper(knownName), StringComparison.Ordinal))) return AutoFsSpecialItemCategory.MountUpgrade;
 		return AutoFsSpecialItemCategory.None;
 	}
 

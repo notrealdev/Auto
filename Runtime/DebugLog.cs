@@ -34,6 +34,7 @@ public static class DebugLog {
 	private static readonly string questLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "quest.log");
 	private static readonly string perfLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "perf.log");
 	private static readonly string clientEventLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "client-freeze.log");
+	private static readonly string loginLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "login.log");
 	private const int MaximumFlushCharacters = 64000;
 	private const long MaximumLogBytes = 5L * 1024L * 1024L;
 	private static readonly ConcurrentQueue<RuntimeLogEntry> pendingRuntimeLines = new();
@@ -67,6 +68,18 @@ public static class DebugLog {
 		if (Volatile.Read(ref autoLoggingEnabled) == 0) return;
 		if (string.IsNullOrWhiteSpace(text)) return;
 		QueueLog(clientEventLogPath, FormatLine(text));
+	}
+
+	// Log của tab Đăng nhập.
+	//
+	// Vì sao phải có file: trước đây log đăng nhập CHỈ nằm trong TextBox trên giao diện (UI/ViewModels/LoginViewModel.cs
+	// dòng 114-115), đóng cửa sổ là mất sạch. Mà đăng nhập là luồng chạy MỘT lần rồi thôi, hỏng ở bước nào thì không
+	// có cách nào dựng lại — không thể debug thứ không để lại dấu vết.
+	//
+	// Cũng KHÔNG đi qua CanLogProcess: lúc đăng nhập chưa có account nào được bật, thậm chí client còn chưa tồn tại.
+	public static void AddLoginEvent(string text) {
+		if (string.IsNullOrWhiteSpace(text)) return;
+		QueueLog(loginLogPath, FormatLine(text));
 	}
 
 	public static void AddForProcess(int processId, string text) {
@@ -157,6 +170,9 @@ public static class DebugLog {
 		lock (runtimeLogLock) path = pickedUp ? lootDropLogPath : lootScanLogPath;
 		QueueLog(path, FormatLine(text));
 	}
+
+	// Tên nhân vật đã đăng ký cho một tiến trình; chuỗi rỗng khi chưa đọc được tên.
+	public static string GetProcessName(int processId) => processNames.TryGetValue(processId, out string? name) ? name : "";
 
 	public static void AddLootDropForProcess(int processId, string text) {
 		if (!CanLogProcess(processId)) return;

@@ -6,7 +6,7 @@ using Auto.Loot;
 using Auto.UI.Views;
 
 public sealed class LootViewModel : ViewModelBase {
-	private static readonly string[] BuiltInMaterialItems = ["Đồ Trắng", "Đồ Xanh", Finder.GreenWeaponSelectionName, "Đồ Lục", "Đồ Vàng", "Đồ Cam", "Đồ Khác", "Thảo Dược", "Mảnh, Ngọc", "Bí Kíp", "Pháp Bảo", "Quẻ", "Lục Đạo", "Tứ Tượng", "Nhãn Vạn Tiên Trận"];
+	private static readonly string[] BuiltInMaterialItems = ["Đồ Trắng", "Đồ Xanh", Finder.GreenWeaponSelectionName, "Đồ Lục", "Đồ Vàng", "Đồ Cam", "Đồ Khác", "Thảo Dược", "Mảnh, Ngọc", "Bí Kíp", "Pháp Bảo", "Quẻ", "Lục Đạo", "Tứ Tượng", "Nhãn Vạn Tiên Trận", Finder.MountUpgradeSelectionName];
 	private static readonly string[] BuiltInExcludedOrSaleItems = ["Đồ Trắng", "Đồ Xanh", "Dược Phẩm"];
 	private static readonly string[] PotionNames = ["Tiểu Hồng đơn", "Trung Hồng đơn", "Đại Hồng đơn", "Tiểu Hoàn đơn", "Trung Hoàn đơn", "Đại Hoàn đơn"];
 

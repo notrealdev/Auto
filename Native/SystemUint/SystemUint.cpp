@@ -46,7 +46,43 @@ namespace {
 	// Chỉ dùng để DÒ: bấm nút xác nhận của hộp thoại mà con trỏ nằm ở RVA truyền trong lParam. Địa chỉ hộp thoại của
 	// AutoFS sai trên client 1.28 (audit 2026-09-12 PID=11704 trả FAIL_UNREADABLE), nên phải thử từng ứng viên.
 	constexpr WPARAM LoginProbeDialogCommand = 285;
-	constexpr int NativeBuildStamp = 20260913;
+	constexpr WPARAM LoginDiagnoseChainCommand = 286;
+	constexpr WPARAM LoginScanOffsetCommand = 287;
+	constexpr WPARAM LoginReadDialogFieldCommand = 288;
+	constexpr WPARAM LoginScanDispatcherCommand = 289;
+	constexpr WPARAM LoginScanEmbeddedControlCommand = 290;
+	constexpr WPARAM LoginSimpleModalConfirmCommand = 291;
+	constexpr WPARAM LoginSimpleModalConfirmVersionCommand = 292;
+	constexpr WPARAM ProbeGlobalPointerCommand = 293;
+	constexpr WPARAM DiagnoseSimpleModalCommand = 294;
+	constexpr WPARAM SimpleModalConfirmAnyCommand = 295;
+	constexpr WPARAM ReadAnyDialogFieldCommand = 296;
+	constexpr WPARAM SetProbeDialogRvaCommand = 297;
+	constexpr WPARAM ProbeDispatchOffsetCommand = 298;
+	constexpr WPARAM ProbeListSelectOffsetCommand = 299;
+	constexpr WPARAM GetDialogVtableRvaCommand = 301;
+	constexpr WPARAM GetDialogDispatcherRvaCommand = 302;
+	constexpr WPARAM ReadServerListCountCommand = 303;
+	constexpr WPARAM ProbeServerListSelectCommand = 304;
+	constexpr WPARAM ScanDialogByEventCommand = 306;
+	constexpr WPARAM CheckDialogEventPatternCommand = 307;
+	// Bấm nút "Bắt đầu trò chơi" trên màn đăng nhập cuối. Client tự đọc tài khoản/mật khẩu từ ô nhập của nó.
+	constexpr WPARAM LoginStartButtonCommand = 308;
+	// Bam vao o "Dong y Dieu khoan" (dao trang thai) va doc lai trang thai o do.
+	constexpr WPARAM LoginToggleAgreeTermsCommand = 309;
+	// 310..313 da co chu khac (UseInventoryItem/BeginScript/SendChat/PassiveBuff), khong dung lai.
+	constexpr WPARAM LoginReadAgreeTermsCommand = 314;
+	// Do chuoi khong gui qua wParam/lParam duoc, van dung lenh 283 de bom tung ky tu vao hai vung dem cua DLL,
+	// roi lenh 315 moi ghi ca hai vung do vao hai o nhap tren giao dien. Lenh 316 xoa sach vung dem truoc khi bom.
+	constexpr WPARAM LoginWriteCredentialFieldsCommand = 315;
+	constexpr WPARAM LoginClearPendingCredentialsCommand = 316;
+	// Doc tung byte cau thong bao dang hien o man dang nhap (lParam = chi so byte).
+	constexpr WPARAM LoginReadStatusMessageByteCommand = 317;
+	// CHƯA CÓ cách đọc "đang ở bước đăng nhập nào". Đã thử dựa vào ba ô con trỏ hộp thoại nhưng ĐO RA LÀ SAI:
+	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
+	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
+	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
+	constexpr int NativeBuildStamp = 99990003;
 	constexpr int AuditEntryCount = 31;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
@@ -62,6 +98,9 @@ namespace {
 	char pendingScript[MaximumScriptLength + 1]{};
 	size_t pendingScriptLength = 0;
 	// Tài khoản và mật khẩu gom dần qua lệnh 283, giống hai vùng đệm 0x1008B678 / 0x1008B1B0 của DLL AutoFS.
+	// Chi dung cho cac lenh chan doan 297-299: giu RVA dialog dang do de lParam con cho offset (32-bit khong du
+	// cho ca RVA lan offset trong mot lan gui).
+	uintptr_t probeDialogRva = 0;
 	char pendingLoginUser[GameClientAddresses::LoginCredentialBufferSize]{};
 	char pendingLoginPassword[GameClientAddresses::LoginCredentialBufferSize]{};
 
@@ -81,6 +120,7 @@ namespace {
 	using PassiveBuffFunction = void(__thiscall*)(void*, int);
 	using PickupFunction = void(__cdecl*)(int, int);
 	using ReturnToTownFunction = void(__thiscall*)(void*, int);
+	using ListSetSelectionFunction = int(__thiscall*)(void*, int);
 	using SaleFunction = int(__thiscall*)(void*, int, void*, int);
 	using CoordinateDispatcherFunction = int(__thiscall*)(void*, int, int, int);
 	using GenericDispatchFunction = int(__thiscall*)(void*, int, void*, int);
@@ -952,6 +992,10 @@ namespace {
 	}
 
 	// Bốn hàm của lệnh 284 nằm tĩnh trong ảnh, không qua con trỏ nào, nên chỉ cần kiểm chúng có phải vùng mã lệnh không.
+	// CẢNH BÁO: hàm này chỉ hỏi "địa chỉ có nằm trong trang thực thi không", KHÔNG so chữ ký byte như các
+	// AuditCodeSignature khác. Mọi địa chỉ nằm giữa .text đều đạt, kể cả khi trỏ vào giữa thân một hàm khác —
+	// đúng trường hợp LoginSubmitFunctionRva trên client 1.28 (xem ghi chú ở GameClientAddresses.h). Vì vậy kết quả
+	// 1 của hàm này KHÔNG được coi là bằng chứng địa chỉ đúng.
 	int AuditLoginSubmitFunctions(uint8_t* gameBase) {
 		const uintptr_t functionRvas[] = {
 			GameClientAddresses::LoginSubmitFunctionRva,
@@ -1021,6 +1065,212 @@ namespace {
 	//   receiver = *(control + 0x58)
 	//   receiver->vtable[0x10](receiver, eventId, control, parameter)
 	// Với sự kiện chọn dòng (0x691) thì AutoFS ghi thẳng chỉ số vào control+0x88 trước khi gọi.
+	// Chẩn đoán từng mắt xích của TryDispatchLoginControlEvent thay vì chỉ trả true/false gộp chung.
+	// Trả về bitmask; dừng ngay ở mắt xích đầu tiên không đọc được để phân biệt "RVA gốc sai" với
+	// "offset +0x54/+0x58/vtable bên dưới sai" - hai loại lỗi khác nhau nhưng cùng biểu hiện KetQua=0.
+	//   bit0 (0x01) dialog  != null            bit1 (0x02) dialog  đọc được
+	//   bit2 (0x04) control != null            bit3 (0x08) control đọc được
+	//   bit4 (0x10) receiver != null           bit5 (0x20) receiver đọc được
+	//   bit6 (0x40) receiverVtable đọc được    bit7 (0x80) dispatchEvent thực thi được
+	int DiagnoseLoginControlChain(uintptr_t dialogRva, size_t controlOffset, size_t dispatcherOffset = GameClientAddresses::LoginDialogDispatcherOffset) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		int flags = 0;
+		void* dialog = *reinterpret_cast<void**>(gameBase + dialogRva);
+		if (dialog != nullptr) flags |= 0x01;
+		if (dialog == nullptr || !IsReadableAddress(dialog)) return flags;
+		flags |= 0x02;
+		void* control = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(dialog) + controlOffset);
+		if (control != nullptr) flags |= 0x04;
+		if (control == nullptr || !IsReadableAddress(control)) return flags;
+		flags |= 0x08;
+		void* receiver = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(control) + dispatcherOffset);
+		if (receiver != nullptr) flags |= 0x10;
+		if (receiver == nullptr || !IsReadableAddress(receiver)) return flags;
+		flags |= 0x20;
+		auto receiverVtable = *reinterpret_cast<uint8_t**>(receiver);
+		if (!IsReadableAddress(receiverVtable)) return flags;
+		flags |= 0x40;
+		auto dispatchEvent = *reinterpret_cast<void**>(receiverVtable + GameClientAddresses::ModalEventMethodVtableOffset);
+		if (IsExecutableAddress(dispatchEvent)) flags |= 0x80;
+		return flags;
+	}
+
+	// Đọc thẳng dword tại (dialog + offset) không diễn giải gì - dùng để quan sát giá trị thật khi
+	// DiagnoseLoginControlChain báo một offset ứng viên có vẻ hợp lệ (khác NULL, đọc được).
+	// Trả về -1 (int64_t) nếu dialog/gameBase/địa chỉ đích không đọc được - PHÂN BIỆT RÕ với giá trị
+	// thật = 0, vì object "Chọn máy chủ" có nhiều vùng đọc ra đúng 0 thật (không phải lỗi đọc).
+	int64_t ReadLoginDialogField(uintptr_t dialogRva, size_t offset) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + dialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return -1;
+		}
+		void* fieldAddress = reinterpret_cast<uint8_t*>(dialog) + offset;
+		if (!IsReadableAddress(fieldAddress)) {
+			return -1;
+		}
+		return static_cast<int64_t>(*reinterpret_cast<uint32_t*>(fieldAddress));
+	}
+
+	// Giả thuyết thay thế: hộp thoại đăng nhập dùng ĐÚNG khuôn đã xác nhận với modal Npc/Repair
+	// (TrySelectDialogOption) - dispatchEvent lấy từ vtable CỦA CHÍNH dialog, gọi thẳng
+	// dispatchEvent(dialog, eventId, dialog+controlOffset, 0), không có "receiver" trung gian.
+	// Không phụ thuộc controlOffset để hợp lệ (offset chỉ là con trỏ đối số truyền cho hàm game,
+	// không bị ta dereference trước) - chỉ cần vtable[0x10] của dialog là địa chỉ thực thi được.
+	//   bit0 (0x01) dialogVtable đọc được    bit1 (0x02) dispatchEvent thực thi được
+	int DiagnoseSimpleModalDispatch(uintptr_t dialogRva) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + dialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return -2;
+		}
+		int flags = 0;
+		auto dialogVtable = *reinterpret_cast<uint8_t**>(dialog);
+		if (!IsReadableAddress(dialogVtable)) return flags;
+		flags |= 0x01;
+		auto dispatchEvent = *reinterpret_cast<void**>(dialogVtable + GameClientAddresses::ModalEventMethodVtableOffset);
+		if (IsExecutableAddress(dispatchEvent)) flags |= 0x02;
+		return flags;
+	}
+
+	// Gọi thật theo giả thuyết đã xác nhận bằng DiagnoseSimpleModalDispatch: dispatchEvent lấy từ
+	// vtable CỦA CHÍNH dialog (giống hệt TrySelectDialogOption cho modal Npc/Repair), không qua
+	// "control"/"receiver" trung gian như TryDispatchLoginControlEvent (mô hình đó đã chứng minh sai
+	// vì control tại +0x54 luôn đọc ra NULL - xem DiagnoseLoginControlChain KetQua=3 ở lệnh 286).
+	bool IsReadableRange(const void* address, size_t length);
+
+	// Ham xu ly cu bam cua CHINH control (RVA 0x24930, __thiscall, 2 tham so, ket thuc bang "ret 8").
+	// Truyen toa do = 0 de bo qua hit-test; xem ghi chu day du o GameClientAddresses.h.
+	using ControlClickFunction = int(__thiscall*)(void* self, int flag, int packedPoint);
+
+	// Bat/tat o "Dong y Dieu khoan" bang chinh duong xu ly cua client, KHONG gia lap chuot va KHONG ghi thang bo nho.
+	bool TryToggleLoginAgreeTerms() {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return false;
+		}
+		void* control = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginAgreeTermsControlOffset;
+		if (!IsReadableRange(control, 0x250)) {
+			return false;
+		}
+		auto click = reinterpret_cast<ControlClickFunction>(gameBase + GameClientAddresses::ControlClickFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(click))) {
+			return false;
+		}
+		click(control, 1, 0);
+		return true;
+	}
+
+	// SetText cua lop o nhap (RVA 0x2BEB0). length = -1 de ham tu goi strlen.
+	using FieldSetTextFunction = int(__thiscall*)(void* self, const char* text, int length, int flag);
+
+	// Ghi thang noi dung vao HAI O NHAP tren giao dien bang chinh ham cua client, roi de client tu doc lai
+	// khi bam "Bat dau tro choi". Khong gia lap ban phim, khong tu dung buffer rieng nhu AutoFS.
+	// flag duoc truyen nguyen si xuong ham 0x2C150 ma client goi sau khi ghi chuoi.
+	bool TryWriteLoginCredentialFields(const char* account, const char* password, int flag) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableRange(dialog, GameClientAddresses::LoginPasswordFieldOffset + 0x2A0)) {
+			return false;
+		}
+		auto setText = reinterpret_cast<FieldSetTextFunction>(gameBase + GameClientAddresses::FieldSetTextFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(setText))) {
+			return false;
+		}
+		void* accountField = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginAccountFieldOffset;
+		void* passwordField = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginPasswordFieldOffset;
+		setText(accountField, account, -1, flag);
+		setText(passwordField, password, -1, flag);
+		return true;
+	}
+
+	// Doc MOT byte cua cau thong bao client dang hien o man dang nhap. Tra ve 0..255, 0 la het chuoi,
+	// -1 khi chua doc duoc. Doc tung byte vi giao thuc chi tra ve duoc mot so nguyen moi lan goi.
+	int ReadLoginStatusMessageByte(int byteIndex) {
+		if (byteIndex < 0 || byteIndex >= GameClientAddresses::LoginStatusMessageMaxLength) {
+			return -1;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		void* holder = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginStatusMessageObjectRva);
+		if (holder == nullptr || !IsReadableAddress(holder)) {
+			return -1;
+		}
+		auto text = reinterpret_cast<uint8_t*>(holder) + GameClientAddresses::LoginStatusMessageOffset;
+		if (!IsReadableRange(text, GameClientAddresses::LoginStatusMessageMaxLength)) {
+			return -1;
+		}
+		return text[byteIndex];
+	}
+
+	// Tra ve 1 neu o "Dong y Dieu khoan" dang duoc tich, 0 neu khong, -1 neu chua doc duoc.
+	int ReadLoginAgreeTermsFlag() {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return -1;
+		}
+		void* flagSlot = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginAgreeTermsFlagOffset;
+		if (!IsReadableRange(flagSlot, sizeof(uint16_t))) {
+			return -1;
+		}
+		uint16_t flags = *reinterpret_cast<uint16_t*>(flagSlot);
+		return (flags & GameClientAddresses::LoginAgreeTermsFlagMask) != 0 ? 1 : 0;
+	}
+
+	bool TryDispatchSimpleModalEvent(uintptr_t dialogRva, int eventId, size_t controlOffset, int parameter,
+		bool writeSelection = false) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + dialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return false;
+		}
+		auto dialogVtable = *reinterpret_cast<uint8_t**>(dialog);
+		if (!IsReadableAddress(dialogVtable)) {
+			return false;
+		}
+		auto dispatchEvent = reinterpret_cast<ModalEventFunction>(
+			*reinterpret_cast<void**>(dialogVtable + GameClientAddresses::ModalEventMethodVtableOffset));
+		if (!IsExecutableAddress(reinterpret_cast<void*>(dispatchEvent))) {
+			return false;
+		}
+		void* confirmControl = reinterpret_cast<uint8_t*>(dialog) + controlOffset;
+		// AutoFS ghi thang chi so dong dang chon vao control+0x88 truoc khi ban su kien chon (0x691).
+		if (writeSelection) {
+			void* selectionSlot = reinterpret_cast<uint8_t*>(confirmControl) + GameClientAddresses::LoginListSelectionOffset;
+			if (!IsReadableAddress(selectionSlot)) {
+				return false;
+			}
+			*reinterpret_cast<int*>(selectionSlot) = parameter;
+		}
+		dispatchEvent(dialog, eventId, confirmControl, parameter);
+		return true;
+	}
+
 	bool TryDispatchLoginControlEvent(uintptr_t dialogRva, size_t controlOffset, int eventId, int parameter, bool writeSelection) {
 		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
 		if (!HasSupportedGameImage(gameBase)) {
@@ -1054,18 +1304,162 @@ namespace {
 		return true;
 	}
 
+	// Quét toàn ảnh tìm ô toàn cục trỏ tới một đối tượng giao diện mà bộ điều phối sự kiện của nó (vtable[0x10])
+	// có chứa phép so sánh với mã sự kiện eventCode. Dùng để tìm hộp thoại mới mà không phải đoán từng ứng viên:
+	// mọi hộp đã biết đều so mã sự kiện bằng "cmp dword [ebp+disp8], imm32" = 81 7D ?? <imm32>.
+	// Trả về RVA đầu tiên tìm được kể từ startRva, hoặc 0 nếu không còn.
+	// Kiểm tra cả một khoảng [address, address+length) có nằm trọn trong một vùng đã cấp phát và đọc được không.
+	// Cần thiết vì IsReadableAddress chỉ xét trang chứa byte đầu: đọc 4 byte ở cuối trang mà trang kế chưa cấp phát
+	// sẽ gây lỗi truy cập và giết luôn tiến trình game (đã xảy ra thật khi quét cả ảnh 33MB).
+	bool IsReadableRange(const void* address, size_t length) {
+		MEMORY_BASIC_INFORMATION information{};
+		if (address == nullptr || VirtualQuery(address, &information, sizeof(information)) != sizeof(information)) {
+			return false;
+		}
+		if (information.State != MEM_COMMIT || (information.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+			return false;
+		}
+		auto regionEnd = reinterpret_cast<const uint8_t*>(information.BaseAddress) + information.RegionSize;
+		return reinterpret_cast<const uint8_t*>(address) + length <= regionEnd;
+	}
+
+	uintptr_t ScanForDialogByEvent(uintptr_t startRva, int eventCode) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 0;
+		}
+		uint32_t imageSize = GetGameImageSize(gameBase);
+		constexpr uintptr_t DispatcherSearchLength = 0x300;
+		uint8_t* imageEnd = gameBase + imageSize;
+		// Duyệt theo VÙNG chứ không gọi VirtualQuery cho từng ô: cả ảnh có 8,2 triệu ô, hỏi từng ô thì một lượt
+		// quét vượt quá thời gian chờ của message và làm treo cửa sổ game (đã đo được).
+		uintptr_t rva = startRva;
+		while (rva + 4 <= imageSize) {
+			uint8_t* regionStart = gameBase + rva;
+			MEMORY_BASIC_INFORMATION information{};
+			if (VirtualQuery(regionStart, &information, sizeof(information)) != sizeof(information)) {
+				break;
+			}
+			uint8_t* regionEnd = reinterpret_cast<uint8_t*>(information.BaseAddress) + information.RegionSize;
+			if (regionEnd <= regionStart) {
+				break;
+			}
+			if (information.State != MEM_COMMIT || (information.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+				rva = static_cast<uintptr_t>(regionEnd - gameBase);
+				continue;
+			}
+			uint8_t* scanEnd = regionEnd < imageEnd ? regionEnd : imageEnd;
+			for (uint8_t* slot = regionStart; slot + 4 <= scanEnd; slot += 4, rva += 4) {
+			void* object = *reinterpret_cast<void**>(slot);
+			if (object == nullptr || !IsReadableRange(object, 4)) {
+				continue;
+			}
+			// Đối tượng giao diện luôn được cấp phát trên heap; loại các ô trỏ vào trong chính ảnh module,
+			// nếu không vùng header/import sẽ cho hàng loạt kết quả trùng giả.
+			auto objectBytes = reinterpret_cast<uint8_t*>(object);
+			if (objectBytes >= gameBase && objectBytes < gameBase + imageSize) {
+				continue;
+			}
+			auto vtable = *reinterpret_cast<uint8_t**>(object);
+			if (vtable < gameBase || vtable + GameClientAddresses::ModalEventMethodVtableOffset + 4 >= gameBase + imageSize) {
+				continue;
+			}
+			if (!IsReadableRange(vtable, GameClientAddresses::ModalEventMethodVtableOffset + 4)) {
+				continue;
+			}
+			auto dispatch = *reinterpret_cast<uint8_t**>(vtable + GameClientAddresses::ModalEventMethodVtableOffset);
+			if (dispatch < gameBase || dispatch + DispatcherSearchLength >= gameBase + imageSize) {
+				continue;
+			}
+			if (!IsExecutableAddress(dispatch) || !IsReadableRange(dispatch, DispatcherSearchLength + 8)) {
+				continue;
+			}
+			for (uintptr_t offset = 0; offset < DispatcherSearchLength; offset++) {
+				if (dispatch[offset] != 0x81 || dispatch[offset + 1] != 0x7D) {
+					continue;
+				}
+				if (*reinterpret_cast<int*>(dispatch + offset + 3) == eventCode) {
+					return rva;
+				}
+			}
+			}
+		}
+		return 0;
+	}
+
+	// Lấy con trỏ danh sách thứ listIndex của hộp "Chọn máy chủ", kèm chính con trỏ hộp thoại.
+	bool TryGetLoginServerList(int listIndex, void*& dialog, void*& control) {
+		if (listIndex < 0 || listIndex >= GameClientAddresses::LoginServerListCount) {
+			return false;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return false;
+		}
+		dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginServerDialogRva);
+		if (dialog == nullptr || !IsReadableAddress(dialog)) {
+			return false;
+		}
+		control = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginServerListArrayOffset +
+			GameClientAddresses::LoginServerListStride * static_cast<size_t>(listIndex);
+		return IsReadableAddress(control);
+	}
+
+	// Số dòng hiện có của một danh sách; -1 nếu không đọc được.
+	int ReadLoginServerListItemCount(int listIndex) {
+		void* dialog = nullptr;
+		void* control = nullptr;
+		if (!TryGetLoginServerList(listIndex, dialog, control)) {
+			return -1;
+		}
+		void* countSlot = reinterpret_cast<uint8_t*>(control) + GameClientAddresses::ListItemCountOffset;
+		if (!IsReadableAddress(countSlot)) {
+			return -1;
+		}
+		return *reinterpret_cast<int*>(countSlot);
+	}
+
+	// Chọn một dòng: gọi đúng hàm đặt lựa chọn của client rồi bắn sự kiện chọn dòng cho hộp thoại,
+	// giống hệt thứ tự client tự làm khi người chơi bấm chuột (đặt lựa chọn trước, báo cho cha sau).
+	bool TryDispatchLoginServerListSelect(int listIndex, int rowIndex) {
+		void* dialog = nullptr;
+		void* control = nullptr;
+		if (!TryGetLoginServerList(listIndex, dialog, control)) {
+			return false;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		auto setSelection = reinterpret_cast<ListSetSelectionFunction>(
+			gameBase + GameClientAddresses::ListSetSelectionFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(setSelection))) {
+			return false;
+		}
+		auto dialogVtable = *reinterpret_cast<uint8_t**>(dialog);
+		if (!IsReadableAddress(dialogVtable)) {
+			return false;
+		}
+		auto dispatchEvent = reinterpret_cast<ModalEventFunction>(
+			*reinterpret_cast<void**>(dialogVtable + GameClientAddresses::ModalEventMethodVtableOffset));
+		if (!IsExecutableAddress(reinterpret_cast<void*>(dispatchEvent))) {
+			return false;
+		}
+		setSelection(control, rowIndex);
+		dispatchEvent(dialog, GameClientAddresses::LoginListSelectEvent, control, rowIndex);
+		return true;
+	}
+
 	// Lệnh 282 làm ba việc liên tiếp: chọn phân vùng, chọn máy chủ, rồi bấm "Vào trò chơi".
+	// Danh sách cụm là số 0 và danh sách máy chủ là số 4 - cả hai đều đã kiểm chứng trên client thật:
+	// chọn dòng 2 của danh sách 0 ("Cụm hồi ức 2008") làm màn hình hiện đúng ba máy chủ của cụm đó, và ô đếm
+	// của danh sách 4 đổi từ 0 thành 3 đúng lúc ấy.
 	bool TryDispatchLoginSelectServer(int partitionIndex, int serverIndex) {
-		if (!TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginDialogFrameOffset,
-			GameClientAddresses::LoginListSelectEvent, partitionIndex, true)) {
+		if (!TryDispatchLoginServerListSelect(GameClientAddresses::LoginPartitionListIndex, partitionIndex)) {
 			return false;
 		}
-		if (!TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginServerListOffset,
-			GameClientAddresses::LoginListSelectEvent, serverIndex, true)) {
+		if (!TryDispatchLoginServerListSelect(GameClientAddresses::LoginServerListIndex, serverIndex)) {
 			return false;
 		}
-		return TryDispatchLoginControlEvent(GameClientAddresses::LoginServerDialogRva, GameClientAddresses::LoginEnterButtonOffset,
-			GameClientAddresses::ModalConfirmEvent, 0, false);
+		return TryDispatchSimpleModalEvent(GameClientAddresses::LoginServerDialogRva,
+			GameClientAddresses::ModalConfirmEvent, GameClientAddresses::LoginServerEnterButtonOffset, 0, false);
 	}
 
 	// Lệnh 283 KHÔNG gọi game: AutoFS chỉ nối ký tự vào vùng đệm của chính DLL rồi tới lệnh 284 mới gửi cả chuỗi.
@@ -1175,12 +1569,12 @@ namespace {
 				return TryDispatchCastSkill(static_cast<int>(lParam));
 			}
 			if (wParam == LoginNoticeCommand) {
-				return TryDispatchLoginControlEvent(GameClientAddresses::LoginNoticeDialogRva, GameClientAddresses::LoginDialogFrameOffset,
-					GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
+				return TryDispatchSimpleModalEvent(GameClientAddresses::LoginNoticeDialogRva,
+					GameClientAddresses::ModalConfirmEvent, GameClientAddresses::LoginConfirmControlOffset, 0) ? 1 : 0;
 			}
 			if (wParam == LoginVersionCommand) {
-				return TryDispatchLoginControlEvent(GameClientAddresses::LoginVersionDialogRva, GameClientAddresses::LoginDialogFrameOffset,
-					GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
+				return TryDispatchSimpleModalEvent(GameClientAddresses::LoginVersionDialogRva,
+					GameClientAddresses::ModalConfirmEvent, GameClientAddresses::LoginConfirmControlOffset, 0) ? 1 : 0;
 			}
 			if (wParam == LoginSelectServerCommand) {
 				uint32_t packedServer = static_cast<uint32_t>(lParam);
@@ -1200,6 +1594,168 @@ namespace {
 			if (wParam == LoginProbeDialogCommand) {
 				return TryDispatchLoginControlEvent(static_cast<uintptr_t>(static_cast<uint32_t>(lParam)),
 					GameClientAddresses::LoginDialogFrameOffset, GameClientAddresses::ModalConfirmEvent, 0, false) ? 1 : 0;
+			}
+			if (wParam == LoginDiagnoseChainCommand) {
+				return static_cast<LRESULT>(DiagnoseLoginControlChain(
+					static_cast<uintptr_t>(static_cast<uint32_t>(lParam)), GameClientAddresses::LoginDialogFrameOffset));
+			}
+			if (wParam == LoginScanOffsetCommand) {
+				return static_cast<LRESULT>(DiagnoseLoginControlChain(
+					GameClientAddresses::LoginNoticeDialogRva, static_cast<size_t>(static_cast<uint32_t>(lParam))));
+			}
+			if (wParam == LoginReadDialogFieldCommand) {
+				return static_cast<LRESULT>(ReadLoginDialogField(
+					GameClientAddresses::LoginNoticeDialogRva, static_cast<size_t>(static_cast<uint32_t>(lParam))));
+			}
+			if (wParam == LoginScanDispatcherCommand) {
+				// controlOffset = 0x278 la ung vien tim duoc bang LoginScanOffsetCommand (287) tren dialog Khuyen cao,
+				// thay cho 0x54 cua AutoFS da loi thoi. Quet dispatcherOffset thay cho 0x58 co dinh.
+				return static_cast<LRESULT>(DiagnoseLoginControlChain(
+					GameClientAddresses::LoginNoticeDialogRva, 0x278, static_cast<size_t>(static_cast<uint32_t>(lParam))));
+			}
+			if (wParam == LoginScanEmbeddedControlCommand) {
+				return static_cast<LRESULT>(DiagnoseSimpleModalDispatch(GameClientAddresses::LoginNoticeDialogRva));
+			}
+			if (wParam == LoginSimpleModalConfirmCommand) {
+				// lParam = controlOffset dung de thu (confirmControl = dialog + controlOffset). Dung de do
+				// tim offset dung bang thu nghiem that, khong phai gia dinh - quan sat man hinh sau moi lan goi.
+				return TryDispatchSimpleModalEvent(GameClientAddresses::LoginNoticeDialogRva,
+					GameClientAddresses::ModalConfirmEvent, static_cast<size_t>(static_cast<uint32_t>(lParam)), 0) ? 1 : 0;
+			}
+			if (wParam == LoginSimpleModalConfirmVersionCommand) {
+				// Thu nghiem cung mo hinh/offset 0x278 tren dialog 2 (Thong tin phien ban). lParam = controlOffset.
+				return TryDispatchSimpleModalEvent(GameClientAddresses::LoginVersionDialogRva,
+					GameClientAddresses::ModalConfirmEvent, static_cast<size_t>(static_cast<uint32_t>(lParam)), 0) ? 1 : 0;
+			}
+			if (wParam == DiagnoseSimpleModalCommand) {
+				return static_cast<LRESULT>(DiagnoseSimpleModalDispatch(static_cast<uintptr_t>(static_cast<uint32_t>(lParam))));
+			}
+			if (wParam == SimpleModalConfirmAnyCommand) {
+				// controlOffset co dinh = 0x278 (da xac nhan dung cho dialog 1/2), lParam = dialogRva can thu.
+				return TryDispatchSimpleModalEvent(static_cast<uintptr_t>(static_cast<uint32_t>(lParam)),
+					GameClientAddresses::ModalConfirmEvent, GameClientAddresses::LoginConfirmControlOffset, 0) ? 1 : 0;
+			}
+			if (wParam == LoginStartButtonCommand) {
+				return TryDispatchSimpleModalEvent(GameClientAddresses::LoginCredentialDialogRva,
+					GameClientAddresses::ModalConfirmEvent, GameClientAddresses::LoginStartButtonOffset, 0, false) ? 1 : 0;
+			}
+			if (wParam == LoginToggleAgreeTermsCommand) {
+				return TryToggleLoginAgreeTerms() ? 1 : 0;
+			}
+			if (wParam == LoginWriteCredentialFieldsCommand) {
+				return TryWriteLoginCredentialFields(pendingLoginUser, pendingLoginPassword,
+					static_cast<int>(lParam)) ? 1 : 0;
+			}
+			if (wParam == LoginClearPendingCredentialsCommand) {
+				for (size_t index = 0; index < GameClientAddresses::LoginCredentialBufferSize; index++) {
+					pendingLoginUser[index] = '\0';
+					pendingLoginPassword[index] = '\0';
+				}
+				return 1;
+			}
+			if (wParam == LoginReadStatusMessageByteCommand) {
+				return static_cast<LRESULT>(ReadLoginStatusMessageByte(static_cast<int>(lParam)));
+			}
+			if (wParam == LoginReadAgreeTermsCommand) {
+				return static_cast<LRESULT>(ReadLoginAgreeTermsFlag());
+			}
+			if (wParam == CheckDialogEventPatternCommand) {
+				// Chay dung cac buoc cua ScanForDialogByEvent nhung chi cho MOT rva, tra ve bitmask de biet
+				// mat xich nao hong: 1=slot doc duoc, 2=object khac null+doc duoc, 4=object nam ngoai anh (heap),
+				// 8=vtable trong anh, 0x10=dispatch trong anh va thuc thi duoc, 0x20=tim thay mau so ma su kien.
+				auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+				if (!HasSupportedGameImage(gameBase)) return -1;
+				uint32_t imageSize = GetGameImageSize(gameBase);
+				uintptr_t rva = static_cast<uintptr_t>(static_cast<uint32_t>(lParam));
+				int flags = 0;
+				void* slot = gameBase + rva;
+				if (!IsReadableAddress(slot)) return flags;
+				flags |= 1;
+				void* object = *reinterpret_cast<void**>(slot);
+				if (object == nullptr || !IsReadableAddress(object)) return flags;
+				flags |= 2;
+				auto objectBytes = reinterpret_cast<uint8_t*>(object);
+				if (objectBytes >= gameBase && objectBytes < gameBase + imageSize) return flags;
+				flags |= 4;
+				auto vtable = *reinterpret_cast<uint8_t**>(object);
+				if (vtable < gameBase || vtable + GameClientAddresses::ModalEventMethodVtableOffset + 4 >= gameBase + imageSize) return flags;
+				if (!IsReadableAddress(vtable)) return flags;
+				flags |= 8;
+				auto dispatch = *reinterpret_cast<uint8_t**>(vtable + GameClientAddresses::ModalEventMethodVtableOffset);
+				if (dispatch < gameBase || dispatch + 0x300 >= gameBase + imageSize || !IsExecutableAddress(dispatch)) return flags;
+				flags |= 0x10;
+				for (uintptr_t offset = 0; offset < 0x300; offset++) {
+					if (dispatch[offset] == 0x81 && dispatch[offset + 1] == 0x7D &&
+						*reinterpret_cast<int*>(dispatch + offset + 3) == GameClientAddresses::ModalConfirmEvent) {
+						flags |= 0x20;
+						break;
+					}
+				}
+				return flags;
+			}
+			if (wParam == ScanDialogByEventCommand) {
+				return static_cast<LRESULT>(ScanForDialogByEvent(
+					static_cast<uintptr_t>(static_cast<uint32_t>(lParam)), GameClientAddresses::ModalConfirmEvent));
+			}
+			if (wParam == ReadServerListCountCommand) {
+				return static_cast<LRESULT>(ReadLoginServerListItemCount(static_cast<int>(lParam)));
+			}
+			if (wParam == ProbeServerListSelectCommand) {
+				// lParam dong goi: (listIndex & 0xFFFF) | (rowIndex << 16).
+				uint32_t packed = static_cast<uint32_t>(lParam);
+				int listIndex = static_cast<int16_t>(packed & 0xFFFF);
+				int rowIndex = static_cast<int16_t>(packed >> 16);
+				return TryDispatchLoginServerListSelect(listIndex, rowIndex) ? 1 : 0;
+			}
+			if (wParam == GetDialogVtableRvaCommand || wParam == GetDialogDispatcherRvaCommand) {
+				// Tra ve RVA cua vtable (301) hoac cua vtable[0x10] (302) cho dialog tai lParam.
+				// Dung de nhan dien LOP: hai object cung lop se cung vtable/dispatcher -> dung chung kieu offset.
+				// Tra -1 neu khong doc duoc, -2 neu dia chi nam ngoai anh Game.exe.
+				auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+				if (!HasSupportedGameImage(gameBase)) return -1;
+				void* dialog = *reinterpret_cast<void**>(gameBase + static_cast<uintptr_t>(static_cast<uint32_t>(lParam)));
+				if (dialog == nullptr || !IsReadableAddress(dialog)) return -1;
+				auto dialogVtable = *reinterpret_cast<uint8_t**>(dialog);
+				if (!IsReadableAddress(dialogVtable)) return -1;
+				uint8_t* target = wParam == GetDialogVtableRvaCommand
+					? dialogVtable
+					: *reinterpret_cast<uint8_t**>(dialogVtable + GameClientAddresses::ModalEventMethodVtableOffset);
+				uint32_t imageSize = GetGameImageSize(gameBase);
+				if (target < gameBase || target >= gameBase + imageSize) return -2;
+				return static_cast<LRESULT>(target - gameBase);
+			}
+			if (wParam == SetProbeDialogRvaCommand) {
+				probeDialogRva = static_cast<uintptr_t>(static_cast<uint32_t>(lParam));
+				return 1;
+			}
+			if (wParam == ProbeDispatchOffsetCommand) {
+				// Ban su kien "bam nut" (0x565) voi control = probeDialog + lParam. Quan sat man hinh sau moi lan.
+				if (probeDialogRva == 0) return 0;
+				return TryDispatchSimpleModalEvent(probeDialogRva, GameClientAddresses::ModalConfirmEvent,
+					static_cast<size_t>(static_cast<uint32_t>(lParam)), 0, false) ? 1 : 0;
+			}
+			if (wParam == ProbeListSelectOffsetCommand) {
+				// Ban su kien "chon dong" (0x691): lParam dong goi (offset & 0xFFFF) | (rowIndex << 16).
+				if (probeDialogRva == 0) return 0;
+				uint32_t packed = static_cast<uint32_t>(lParam);
+				size_t controlOffset = static_cast<size_t>(packed & 0xFFFF);
+				int rowIndex = static_cast<int16_t>(packed >> 16);
+				return TryDispatchSimpleModalEvent(probeDialogRva, GameClientAddresses::LoginListSelectEvent,
+					controlOffset, rowIndex, true) ? 1 : 0;
+			}
+			if (wParam == ReadAnyDialogFieldCommand) {
+				// dialogRva co dinh = 0x4EEFAC (LoginServerDialogRva moi, da xac nhan bang trang thai
+				// mo/dong that ngay 2026-09-16). lParam = offset can doc de xem cau truc that cua object.
+				return static_cast<LRESULT>(ReadLoginDialogField(0x4EEFAC, static_cast<size_t>(static_cast<uint32_t>(lParam))));
+			}
+			if (wParam == ProbeGlobalPointerCommand) {
+				// lParam = RVA bat ky can kiem tra (chi doc, khong dispatch gi). Dung AuditGlobalPointer da co san:
+				// 2=hop le, 4=NULL (chua ket luan), 13=khong doc duoc, 20=anh khong ho tro.
+				auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+				if (!HasSupportedGameImage(gameBase)) {
+					return 20;
+				}
+				return AuditGlobalPointer(gameBase, static_cast<uintptr_t>(static_cast<uint32_t>(lParam)), true);
 			}
 			if (wParam == AttackCommand) {
 				uint32_t packedTarget = static_cast<uint32_t>(lParam);

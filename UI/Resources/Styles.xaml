@@ -99,6 +99,41 @@
 		</Setter>
 	</Style>
 
+	<!--
+		Nút biểu tượng nhỏ nằm đè lên góc một ô nội dung (đang dùng cho nút xoá ô theo dõi vật phẩm).
+		Nền mờ chứ không trong suốt hẳn: nút nằm ĐÈ lên chữ nên trong suốt sẽ lẫn vào dòng log bên dưới.
+	-->
+	<Style x:Key="OverlayIconButton" TargetType="Button">
+		<Setter Property="Width" Value="20" />
+		<Setter Property="Height" Value="20" />
+		<Setter Property="Background" Value="{StaticResource Brush.Surface}" />
+		<Setter Property="Foreground" Value="{StaticResource Brush.TextSecondary}" />
+		<Setter Property="BorderThickness" Value="0" />
+		<Setter Property="Cursor" Value="Hand" />
+		<Setter Property="FocusVisualStyle" Value="{x:Null}" />
+		<Setter Property="Template">
+			<Setter.Value>
+				<ControlTemplate TargetType="Button">
+					<Border
+						x:Name="ButtonBorder"
+						Background="{TemplateBinding Background}"
+						CornerRadius="3">
+						<ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+					</Border>
+					<ControlTemplate.Triggers>
+						<Trigger Property="IsMouseOver" Value="True">
+							<Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource Brush.SurfaceElevated}" />
+							<Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+						</Trigger>
+					</ControlTemplate.Triggers>
+				</ControlTemplate>
+			</Setter.Value>
+		</Setter>
+	</Style>
+
+	<!--  Thùng rác vẽ bằng vector để khỏi phụ thuộc font có emoji hay không. Toạ độ theo khung 16x16.  -->
+	<Geometry x:Key="Icon.Trash">M2.5,4 H13.5 M6,4 V2.5 H10 V4 M4,4.8 L4.8,13.5 H11.2 L12,4.8 M6.6,6.6 V11.7 M9.4,6.6 V11.7</Geometry>
+
 	<Style x:Key="TitleBarCloseButton" TargetType="Button" BasedOn="{StaticResource TitleBarButton}">
 		<Setter Property="Template">
 			<Setter.Value>

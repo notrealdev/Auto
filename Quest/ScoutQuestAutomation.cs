@@ -389,14 +389,10 @@ public sealed class ScoutQuestAutomation {
 			case ScoutState.Approaching:
 				int approachRawX = targetRawX;
 				int approachRawY = targetRawY;
-				// Ưu tiên toạ độ entity thật; toạ độ trong file map chỉ là điểm neo để tới đúng khu vực.
-				// Chỉ lấy toạ độ entity khi nó THỰC SỰ có toạ độ: TryFindNamedEntity còn trả về cả entity khớp tên mà
-				// không mang toạ độ (đường click theo index kiểu AutoFS), lấy bừa sẽ thành đi tới 0/0.
-				if (RuntimeEntityLocator.TryFindNamedEntity(game.ProcessId, targetNpcName, targetRawX, targetRawY, out RuntimeEntityLocation approachNpc, out _)
-					&& approachNpc.RawX > 0 && approachNpc.RawY > 0) {
-					approachRawX = approachNpc.RawX;
-					approachRawY = approachNpc.RawY;
-				}
+				// Đích áp sát LUÔN là toạ độ Data/Maps, không tinh chỉnh theo toạ độ entity: AutoFS đi tới toạ độ
+				// cứng rồi mới tìm NPC theo tên, không bao giờ đọc toạ độ entity để đi
+				// (MenuAttribute.cs:24227-24245: OrderQueue(21, 1716, 2955) -> NavigateSelection() ->
+				// OrderQueue("Hoàng Thiên Hóa", 30); MenuAttribute.cs:23912-23971 cùng khuôn đó với Đại Phu).
 				double approachDistance = GetDistance(snapshot.X, snapshot.Y, approachRawX, approachRawY);
 				if (approachDistance <= ApproachArrivalDistance) {
 					state = ScoutState.ClickingNpc;
@@ -434,7 +430,8 @@ public sealed class ScoutQuestAutomation {
 				}
 				npcClickAttempts++;
 				// Cùng luật với luồng Sửa đồ: NPC không có toạ độ thì click theo index như AutoFS, còn lại giữ
-				// nguyên đường toạ độ đang chạy.
+				// nguyên đường toạ độ. Bản "luôn dùng index" đã thử và hoàn nguyên cùng lượt với Sửa đồ — xem khối
+				// bằng chứng ở WeaponRepairAutomation.ClickDoctor (20/20 lệnh 8 không mở được cửa hàng).
 				bool npcByIndex = npc.RawX <= 0 || npc.RawY <= 0;
 				log?.Invoke($"Thám quân | click {targetNpcName} | Index={npc.Index} | Raw={npc.RawX}/{npc.RawY} | Cách={(npcByIndex ? "AUTOFS_INDEX" : "TOẠ_ĐỘ")} | Lần={npcClickAttempts}/{MaximumNpcClickAttempts}");
 				bool npcClicked = npcByIndex

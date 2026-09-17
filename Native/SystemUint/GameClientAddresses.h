@@ -150,20 +150,174 @@ namespace GameClientAddresses {
 	// AutoFS ghi địa chỉ game ở dạng VA tuyệt đối; Game.exe có ImageBase = 0x00400000 (đọc header 2026-09-12) nên
 	// RVA = VA - 0x400000.
 	//
-	// CHƯA VERIFY trên client 1.28 đang chạy: DLL nguồn build 11/2024, và stride record item dưới đất của nó là 920
-	// trong khi client này là 932 — tức đã khác bản. Ba mục audit 28/29/30 bên dưới sinh ra để đo đúng chuyện đó.
-	constexpr uintptr_t LoginNoticeDialogRva = 0x00354D5C;   // lệnh 280: hộp "Khuyến cáo chơi game"
-	constexpr uintptr_t LoginVersionDialogRva = 0x00354C50;  // lệnh 281: hộp "Thông tin phiên bản"
-	constexpr uintptr_t LoginServerDialogRva = 0x00354DD4;   // lệnh 282: hộp "Chọn máy chủ"
+	// XÁC NHẬN SAI trên client 1.28 đang chạy: ba RVA gốc của AutoFS (build 11/2024, stride record item dưới đất
+	// 920 so với 932 của client này) đều trỏ vào rác/vùng mã lệnh, không phải con trỏ đối tượng — xác nhận bằng
+	// LoginAutoFsAddressProbe ngày 2026-09-16 (cả ba ô đều FAIL_UNREADABLE, giá trị đọc được là opcode x86, ví dụ
+	// 0x354C50 giữ byte của "push esi; push edi; mov edi,ecx").
+	//
+	// Hai RVA dưới đây (280, 281) đã được thay bằng địa chỉ đo được TRÊN CHÍNH client 1.28, bằng cách chụp ảnh bộ
+	// nhớ Game.exe ngay trước/sau khi đóng từng hộp và tìm ô duy nhất về giá trị 0 lúc hộp bị huỷ — tái lập được
+	// 2 lần độc lập trên 2 tiến trình khác nhau, cùng cho kết quả giống hệt:
+	//   Khuyến cáo (280): RVA 0x354D5C -> 0x4FED14, một ô duy nhất về 0 trong toàn bộ 33MB ảnh khi đóng hộp.
+	//   Phiên bản (281): RVA 0x354C50 -> 0x4EECD0 (dùng ô này), đối chứng bằng ô song song 0x4F47DC cùng trỏ một
+	//     đối tượng và cùng về 0 lúc đóng — hai ô là bản sao của nhau, dùng ô nào cũng ra cùng đối tượng.
+	constexpr uintptr_t LoginNoticeDialogRva = 0x004FED14;   // lệnh 280: hộp "Khuyến cáo chơi game"
+	constexpr uintptr_t LoginVersionDialogRva = 0x004EECD0;  // lệnh 281: hộp "Thông tin phiên bản"
+	// Hộp "Chọn máy chủ". Hai ứng viên tìm bằng kỹ thuật "quét về 0" trước đó (0x4EEFAC, 0x4EE7FC) đều ĐÃ LOẠI:
+	// đọc lại trên nhiều tiến trình độc lập chỉ hợp lệ ~50% và 0%, trong khi một global slot thật phải hợp lệ 100%.
+	// Giá trị dưới đây tìm bằng cách khác, chặt hơn: chụp ảnh bộ nhớ lúc đang ở hộp 1 (chưa có hộp "Chọn máy chủ")
+	// và lúc đã sang hộp 3, lấy GIAO các ô thay đổi qua 4 tiến trình độc lập — lọc từ hàng nghìn ô xuống 8 ứng viên,
+	// rồi đọc lại trên 3 tiến trình mới: 0x50477C hợp lệ 3/3 và là ô DUY NHẤT có vtable nằm trong ảnh Game.exe.
+	constexpr uintptr_t LoginServerDialogRva = 0x0050477C;   // lệnh 282: hộp "Chọn máy chủ"
+	// Bố cục bên trong hộp "Chọn máy chủ", đọc trực tiếp từ mã máy của client (không suy đoán từ AutoFS):
+	//   Bộ điều phối sự kiện = vtable[0x10] tại RVA 0x1FE9D0, chỉ nhận đúng hai mã sự kiện AutoFS dùng:
+	//     0x1FE9D0+0x3E: cmp [ebp-0xC], 0x565 (bấm nút)   0x1FE9D0+0x4C: cmp [ebp-0xC], 0x691 (chọn dòng)
+	//   Nhánh 0x691 so con trỏ control lần lượt với this+0x280 + 0x2B0*i, i = 0..3 → mảng 4 danh sách:
+	//     0x1FE9D0+0xA5: mov edx,0x2B0 / imul eax,edx,0 / lea edx,[ecx+eax+0x280] / cmp [ebp+0xC],edx
+	//   Nhánh 0x565 gọi hàm con 0x1FDED0, hàm này so control với đúng hai nút:
+	//     0x1FDED0+0x0A: add eax,0x2280 / cmp [ebp+8],eax   → "Vào trò chơi"
+	//     0x1FDED0+0x21: add ecx,0x27EC / cmp [ebp+8],ecx   → "Thoát game" (hàm con của nó là push 1; call → thoát)
+	constexpr size_t LoginServerListArrayOffset = 0x280;   // danh sách thứ i = dialog + 0x280 + 0x2B0*i
+	constexpr size_t LoginServerListStride = 0x2B0;
+	// Mã điều phối chỉ so con trỏ với 4 phần tử đầu, nhưng thực tế có phần tử thứ 5 ngay sau đó:
+	// chọn cụm "Cụm hồi ức 2008" rồi so ảnh bộ nhớ của chính đối tượng hộp thoại thì ô +0xED4 đổi 0 -> 3,
+	// đúng bằng số máy chủ vừa hiện trên màn hình; 0xED4 - 0x194 = 0xD40 = 0x280 + 0x2B0*4.
+	constexpr int LoginServerListCount = 5;
+	constexpr int LoginPartitionListIndex = 0;   // danh sách cụm máy chủ (3 dòng, đã kiểm chứng)
+	constexpr int LoginServerListIndex = 4;      // danh sách máy chủ của cụm đang chọn
+	// Dòng đang chọn của một danh sách: cùng lần so ảnh trên, ô +0x428 đổi 0 -> 2 đúng bằng dòng vừa chọn,
+	// mà 0x428 - 0x280 = 0x1A8 là offset trong chính danh sách thứ 0.
+	constexpr size_t ListSelectedIndexOffset = 0x1A8;
+	constexpr size_t LoginServerEnterButtonOffset = 0x2280;  // nút "Vào trò chơi"
+	// Chỉ ghi lại để KHÔNG bao giờ gửi nhầm — nút này thoát game.
+	constexpr size_t LoginServerQuitButtonOffset = 0x27EC;
+	// Hàm đặt dòng đang chọn của một danh sách, thiscall(control, index). Tìm được vì hàm xử lý chọn dòng
+	// (0x1FE7C0) gọi chính nó với tham số -1 để xoá chọn ba danh sách còn lại:
+	//   0x1FE7C0+0x3F: push -1 / mov ecx,[ebp-8] / call 0x355B0
+	// Bên trong 0x355B0 có "cmp ecx,[eax+0x194]" → số phần tử của danh sách nằm ở control+0x194.
+	constexpr uintptr_t ListSetSelectionFunctionRva = 0x000355B0;
+	constexpr size_t ListItemCountOffset = 0x194;
 	// obj -> +0x54 lấy khung giao diện, khung -> +0x58 lấy đối tượng nhận sự kiện, gọi vtable[0x10] của nó.
+	// XÁC NHẬN SAI trên client 1.28: đo trực tiếp bằng lệnh chẩn đoán 286 (DiagnoseLoginControlChain) ngày
+	// 2026-09-16, dialog đọc đúng nhưng *(dialog+0x54) luôn ra NULL. Vẫn giữ hai hằng số này vì
+	// TryDispatchLoginControlEvent/TryDispatchLoginSelectServer (lệnh 282, "Chọn máy chủ") vẫn đang dùng —
+	// KHÔNG dùng cho lệnh 280/281 nữa, xem LoginConfirmControlOffset bên dưới.
 	constexpr size_t LoginDialogFrameOffset = 0x54;
 	constexpr size_t LoginDialogDispatcherOffset = 0x58;
+	// Khuôn đúng cho lệnh 280/281, xác nhận bằng quan sát pixel thật (không phải chỉ đọc bộ nhớ): dispatchEvent lấy
+	// thẳng từ vtable CỦA CHÍNH dialog (giống TrySelectDialogOption của modal Npc/Repair), không qua "control"/
+	// "receiver" trung gian như mô hình +0x54/+0x58 ở trên. confirmControl = dialog + 0x278 - dò bằng quét tuần tự
+	// offset trên vùng nhớ dialog rồi thử gọi thật, không suy luận từ cấu trúc lớp. Đo 2026-09-16: dispatch lệnh 280
+	// (offset 0x278) đưa "Khuyến cáo" -> "Thông tin phiên bản"; dispatch lệnh 281 (cùng offset 0x278) đưa
+	// "Thông tin phiên bản" -> "Chọn máy chủ" - cả hai đều chụp màn hình xác nhận, không suy đoán.
+	constexpr size_t LoginConfirmControlOffset = 0x278;
 	// Ô lưu dòng đang chọn của một danh sách, ghi thẳng trước khi bắn sự kiện chọn.
 	constexpr size_t LoginListSelectionOffset = 0x88;
-	constexpr size_t LoginServerListOffset = 0x970;   // obj -> +0x970: danh sách máy chủ
-	constexpr size_t LoginEnterButtonOffset = 0x106C; // obj -> +0x106C: nút "Vào trò chơi"
+	// AutoFS gốc còn hai hằng số cho hộp "Chọn máy chủ": +0x970 (danh sách máy chủ) và +0x106C (nút "Vào trò chơi").
+	// Đã bỏ vì client 1.28 dùng bố cục khác hẳn, đọc thẳng từ mã máy: xem LoginServerListArrayOffset và
+	// LoginServerEnterButtonOffset ở trên.
 	constexpr int LoginListSelectEvent = 0x691;       // chọn một dòng trong danh sách (ModalConfirmEvent 0x565 là bấm nút)
+	// --- Màn hình đăng nhập cuối (ô Tài khoản/Mật khẩu + bàn phím ảo) ---
+	//
+	// Tìm bằng bộ quét ScanForDialogByEvent: đối chiếu danh sách object có nút (sự kiện 0x565) lúc đang ở màn
+	// "Chọn máy chủ" với lúc đã sang màn đăng nhập, lấy phần chênh lệch. Bộ điều phối của nó (RVA 0x1BB760) bắt
+	// nhiều sự kiện (0x565, 0x100, 0x104, 0x502, 0x62E, 0x6F5) và có khung stack 0xE0 kèm stack cookie — dấu hiệu
+	// hàm có xử lý chuỗi, khớp với việc phải đọc tài khoản/mật khẩu.
+	//
+	// Nhánh 0x565 của nó so control với hai offset; ĐO THẬT trên client (không suy từ mã):
+	//   dialog + 0x0AC4 -> "Bắt đầu trò chơi": bấm khi mật khẩu trống làm hiện popup "HỆ THỐNG THÔNG BÁO" (có ảnh).
+	//   dialog + 0x159C -> nút xổ danh sách tài khoản đã lưu (có ảnh: danh sách tl_ajaja/ti_alala/ahihea bung ra).
+	// Lưu ý: đọc mã lệnh thì tưởng 0x159C mới là nút đăng nhập, nhưng thử thật cho kết quả NGƯỢC LẠI — giữ đúng
+	// kết quả đo được, không theo suy luận.
+	//
+	// Nhánh đăng nhập lấy hai chuỗi từ hai Ô NHẬP trên giao diện rồi mới gửi đi — nội dung cũ còn trong ô tài khoản
+	// CÓ ảnh hưởng, nên phải ghi đè chứ không nối thêm.
+	constexpr uintptr_t LoginCredentialDialogRva = 0x00503A90;
+	constexpr size_t LoginStartButtonOffset = 0x0AC4;      // "Bắt đầu trò chơi"
+	constexpr size_t LoginAccountDropdownOffset = 0x159C;  // xổ danh sách tài khoản đã lưu
+	//
+	// Hai ô nhập. Đọc byte thật của hàm lấy thông tin đăng nhập (RVA 0x1BA600, __thiscall(out tàiKhoản, out mậtKhẩu)):
+	//   0x1BA63E "add edx, 0x27C" rồi gọi GetText(out, 0x20, 0)  -> ô TÀI KHOẢN
+	//   0x1BA65E "add ecx, 0x790" rồi gọi cùng hàm đó            -> ô MẬT KHẨU
+	//   nếu ô nào rỗng thì hàm trả 0 và client hiện "Xin nhập tài khoản và mật mã" (khớp popup đã chụp được).
+	// Hai offset này trùng đúng hai control mà bản đồ đối tượng tìm ra (vtable 0x4577B0 và 0x457764).
+	constexpr size_t LoginAccountFieldOffset = 0x27C;
+	constexpr size_t LoginPasswordFieldOffset = 0x790;
+	//
+	// Lớp ô nhập: chuỗi nằm ở field+0x27C, độ dài ở field+0x288, sức chứa ở field+0x284.
+	//   GetText  = RVA 0x28820, __thiscall(char* out, int maxLen, int flag), "ret 0xC".
+	//   SetText  = RVA 0x2BEB0, __thiscall(const char* text, int length, int flag), "ret 0xC".
+	// Thân SetText đọc được: nếu text == null thì thoát; truyền length = -1 thì tự gọi strlen; sau đó memcpy vào
+	// [this+0x27C], ghi độ dài vào [this+0x288], đặt NUL, xoá vùng chọn (+0x290/+0x294) và đưa con trỏ nhập
+	// (+0x29C) về cuối chuỗi. Vì nó GHI ĐÈ nên không cần xoá ô tài khoản trước.
+	constexpr uintptr_t FieldGetTextFunctionRva = 0x00028820;
+	constexpr uintptr_t FieldSetTextFunctionRva = 0x0002BEB0;
+	//
+	// ĐÃ KIỂM CHỨNG ĐẦU-CUỐI trên client mới PID 17128 (2026-09-16), chỉ dùng đường dispatch nội bộ:
+	//   280 -> 281 -> 282 -> ghi hai ô nhập bằng SetText -> bật ô Điều khoản -> bấm nút 0xAC4.
+	//   Ảnh 1: ô tài khoản hiện "tl_sai_tk", ô mật khẩu hiện 10 dấu sao -> SetText ghi đúng cả hai ô.
+	//   Ảnh 2: client hiện popup "HỆ THỐNG THÔNG BÁO — Tài khoản hoặc mật mã không đúng !".
+	//   Popup đó do MÁY CHỦ trả về (tài khoản cố tình sai), nên nó chứng minh yêu cầu đăng nhập đã thật sự gửi đi.
+	// Nhờ vậy KHÔNG cần tới hàm submit của AutoFS (LoginSubmitFunctionRva đã chết) và cũng không cần bàn phím ảo.
+	//
+	// Câu thông báo mà client đang hiển thị ở màn đăng nhập. Tìm ra bằng cách quét các ô toàn cục trỏ tới hộp thoại
+	// rồi dò chuỗi trong thân đối tượng; xác nhận bằng TƯƠNG PHẢN BA TRẠNG THÁI trên cùng một offset, mỗi lần đối
+	// chiếu với ảnh chụp màn hình (2026-09-16):
+	//   chưa bấm gì      -> "Đang kết nối với máy chủ."
+	//   sai mật khẩu     -> "Tài khoản hoặc mật mã không đúng!"        (PID 9796)
+	//   hai ô để rỗng    -> "Xin nhập tài khoản và mật mã."            (PID 22204)
+	// Chuỗi mã hoá TCVN3 chứ không phải UTF-8: đọc được ả=0xB6, đ=0xAE, ọ=0xE4, ò=0xDF, cả bốn khớp bảng TCVN3.
+	constexpr uintptr_t LoginStatusMessageObjectRva = 0x004FDA48;
+	constexpr size_t LoginStatusMessageOffset = 0x22E4;
+	constexpr int LoginStatusMessageMaxLength = 128;
+	//
+	// Ô "Đồng ý Điều khoản". Đường đi: nhánh 0x565 tại RVA 0x1BB0F0 làm "add ecx,0x1B28 / call / test eax,eax /
+	// jnz bỏ_qua" — nếu hàm trả 0 thì hiện popup rồi thoát, KHÔNG gửi đăng nhập. Hàm được gọi nằm ở RVA 0x24900,
+	// thân hàm chỉ có "movzx eax, word [this+0x248]; and eax, 0x200" -> cờ = bit 0x200 của word tại 0x1B28+0x248.
+	// ĐO THẬT (client PID 9212, cùng một đối tượng dialog 0x0EE3B3D8, chỉ khác thao tác tick chuột của người dùng):
+	//   chưa tick -> word = 0x0002 (bit 0x200 = 0)
+	//   đã  tick -> word = 0x0202 (bit 0x200 = 512)
+	// Đây là tương phản trước/sau trên cùng tiến trình nên xác nhận được offset, không phải suy luận từ mã.
+	constexpr size_t LoginAgreeTermsControlOffset = 0x1B28;
+	constexpr size_t LoginAgreeTermsFlagOffset = 0x1D70;   // = 0x1B28 + 0x248
+	constexpr uint16_t LoginAgreeTermsFlagMask = 0x0200;
+	//
+	// Hàm xử lý CÚ BẤM của chính control (không phải của hộp thoại). Đọc byte thật từ tiến trình đang chạy:
+	//   0x24930 "55 8B EC 83 EC 34 89 4D FC" -> prologue sạch; kết thúc 0x24B26 "8B E5 5D C2 08 00" -> __thiscall, 2 tham số.
+	//   0x2493D "cmp dword [ebp+0xC],0 / je 0x249F0" -> truyền toạ độ = 0 thì BỎ QUA hit-test, vào thẳng thân xử lý.
+	//   0x24A3A "and eax,2 / jnz 0x24AB9" -> với word cờ 0x0002 thì rẽ sang nhánh đảo trạng thái.
+	//   0x24AB9..0x24AD9 đọc bit 0x200 rồi đặt biến cục bộ = NGHỊCH ĐẢO, gọi 0x23770(bool) -> đúng nghĩa toggle.
+	//   0x24B19 push 0x565 rồi gọi vtable[0x10] của dialog cha -> control tự báo lại cho hộp thoại.
+	// Tham số 1 ([ebp+8]) chỉ dùng ở nhánh kia (chọn mã sự kiện 0x56A/0x566), nhánh này bỏ qua.
+	constexpr uintptr_t ControlClickFunctionRva = 0x00024930;
+	// Ngõ cụt đã loại trừ, ghi lại để khỏi thử lại: bắn 0x565 thẳng vào dialog+0x1B28 trả về 1 nhưng ô KHÔNG đổi
+	// trạng thái (có ảnh trước/sau). Bộ điều phối của hộp thoại chỉ NHẬN thông báo, chính control mới tự đảo cờ.
+	//
+	// ĐÃ KIỂM CHỨNG trên client mới PID 33808 (lệnh 309 gọi ControlClickFunctionRva với this = dialog+0x1B28):
+	//   đọc cờ trước = 0 -> gọi hàm -> đọc cờ sau = 1, và ảnh chụp cửa sổ cho thấy ô đã có dấu tích ĐỎ,
+	//   cùng kiểu với ô "Nhớ tài khoản" đang bật. Đây là bằng chứng cả ở bộ nhớ lẫn ở pixel.
+	// Kèm theo: dấu tích NHẠT nhìn thấy ở các ảnh trước đó là trạng thái CHƯA tích — chỉ dấu tích đỏ mới là đã tích.
+	//
+	// QUAN TRỌNG: hàm này ĐẢO trạng thái, không phải "bật". Client NHỚ lựa chọn giữa các phiên: client mới PID 17128
+	// mở lên đã đọc ra cờ = 1 sẵn, gọi hàm một phát thành 0 (ảnh cho thấy dấu tích chuyển từ đỏ sang nhạt).
+	// Vì vậy luôn phải ĐỌC cờ trước rồi mới đảo khi cần, đừng gọi thẳng.
+	// Hai ô toàn cục do nút "Vào trò chơi" ghi ra, đọc từ mã của chính nó (RVA 0x1FE0A0 + 0x39 và + 0x42):
+	constexpr uintptr_t SelectedClusterIndexRva = 0x00504790;
+	constexpr uintptr_t SelectedServerIndexRva = 0x00504794;
+
 	// Lệnh 284: gọi thiscall 0x00576450 với this = 0x00774140 và hai chuỗi tài khoản/mật khẩu, rồi ba hàm cdecl dọn dẹp.
+	//
+	// XÁC NHẬN SAI trên client 1.28 (đo 2026-09-16, đọc byte thật từ tiến trình đang chạy):
+	//   - Byte tại RVA 0x176450 là "83 C2 01" (add edx,1) rồi "89 55 FC" (mov [ebp-4],edx) — DÙNG ebp mà không hề
+	//     thiết lập, tức nằm GIỮA THÂN HÀM chứ không phải điểm vào.
+	//   - Quét ngược thấy prologue sạch "55 8B EC 83 EC 18" tại RVA 0x176420, ngay sau đệm CC CC. Vậy hàm bắt đầu ở
+	//     0x176420 và 0x176450 nằm sâu 0x30 byte bên trong nó.
+	//   - Hàm 0x176420 kết thúc bằng "C2 08 00" (ret 8 = 2 tham số) trong khi LoginSubmitFunction đang khai báo 4
+	//     tham số; thân nó là vòng lặp giới hạn 0x0A, không phải thủ tục đăng nhập bằng tài khoản/mật khẩu.
+	// Đây cùng khuôn lỗi với ba RVA hộp thoại đăng nhập đã phải sửa. AuditLoginSubmitFunctions KHÔNG phát hiện được
+	// vì nó chỉ hỏi IsExecutableAddress (địa chỉ có nằm trong trang mã hay không) — mọi địa chỉ giữa .text đều đạt,
+	// nên kết quả "PASS" của nó KHÔNG phải bằng chứng địa chỉ đúng. Lệnh 284 coi như CHƯA DÙNG ĐƯỢC cho tới khi tìm
+	// được điểm vào thật; ba hằng số dọn dẹp bên dưới cũng chưa được kiểm chứng theo cách nào mạnh hơn.
 	constexpr uintptr_t LoginSubmitContextRva = 0x00374140;
 	constexpr uintptr_t LoginSubmitFunctionRva = 0x00176450;
 	constexpr uintptr_t LoginAfterSubmitFunctionARva = 0x000247C0; // gọi với (1, 5, 0, 0)

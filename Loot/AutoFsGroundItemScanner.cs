@@ -32,88 +32,105 @@ internal sealed class AutoFsGroundItemScanner {
 		}
 		Dictionary<(int MapObjectIndex, int SegmentIndex), (int BaseX, int BaseY)> segmentCoordinates = new();
 		int tableSize = (LastIndex + 1) * GameAddresses.Item.GroundRecordStride;
-		byte[] records = reader.ReadBytes(table, tableSize);
-		if (records.Length != tableSize) {
-			result.Diagnostics.CoordinateReadFailureCount++;
-			result.Diagnostics.CaptureRejected($"GroundTableRead Size={records.Length}/{tableSize} Address=0x{table.ToInt64():X8}");
-			return result;
-		}
-		result.Diagnostics.ReadableRegionCount = 1;
-		for (int index = FirstIndex; index <= LastIndex; index++) {
-			int recordOffset = index * GameAddresses.Item.GroundRecordStride;
-			int groundId = ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordId);
-			int groundState = ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordKind);
-			if (groundId <= 0 || groundState != 3) continue;
-			result.Diagnostics.GroundPointerCount++;
-			int internalX = ReadInt32(records, recordOffset + GameAddresses.Item.GroundInternalX);
-			int internalY = ReadInt32(records, recordOffset + GameAddresses.Item.GroundInternalY);
-			if (internalX <= 0 || internalY <= 0) {
-				result.Diagnostics.InvalidCoordinateCount++;
-				result.Diagnostics.CaptureRejected($"GroundInternalCoordinateInvalid Index={index} Record=0x{IntPtr.Add(table, recordOffset).ToInt64():X8} Internal={internalX}/{internalY}");
-				continue;
-			}
-			IntPtr recordAddress = IntPtr.Add(table, recordOffset);
-			if (! TryReadRawCoordinate(reader, records, recordOffset, mapCoordinateRoot, segmentCoordinates, out int rawX, out int rawY, out string coordinateFailure)) {
+		// MƯỢN mảng thay vì cấp phát mới mỗi lượt quét — đây là thứ đẩy số lần thu gom thế hệ 2 lên gần 1 lần/giây.
+		//
+		// tableSize = 128 * 0x3A4 = 119.296 byte, vượt ngưỡng Large Object Heap của .NET (85.000 byte). Mọi thứ cấp
+		// phát trên LOH chỉ được dọn trong lần thu gom thế hệ 2, tức lần quét TOÀN BỘ heap.
+		// Đo trên bản Release phiên 11:48:03-14:57:19 ngày 2026-09-17 (3h09m, 11.356 giây): thanh trạng thái hiện
+		// G2=9964, tức 0,88 lần thu gom thế hệ 2 mỗi giây. perf.log cùng phiên ghi QuétNhặt=29 lần/s, nhân với
+		// 119.296 byte ra 3,46 MB/s đổ vào LOH — chia cho 0,88 ra ~3,9 MB mỗi lần gen-2, đúng tầm ngân sách LOH.
+		// Đây là chỗ cấp phát DUY NHẤT trên đường chạy nóng vượt 85.000 byte (EntityReadSize=0x70B8=28.856 và
+		// GroundRecordStride=932 đều ở dưới ngưỡng).
+		//
+		// ArrayPool an toàn đa luồng nên không cần biết Finder có bị gọi từ mấy luồng; mảng mượn KHÔNG rời khỏi hàm
+		// này (ReadName luôn .ToArray() ra mảng riêng trước khi đưa vào LootSnapshot), nên trả lại là chắc chắn an toàn.
+		// Mảng mượn có thể DÀI HƠN tableSize — mọi offset đọc đều nằm trong tableSize nên không ảnh hưởng.
+		byte[] records = System.Buffers.ArrayPool<byte>.Shared.Rent(tableSize);
+		try {
+			if (! reader.ReadInto(table, records, tableSize)) {
 				result.Diagnostics.CoordinateReadFailureCount++;
-				result.Diagnostics.CaptureRejected($"GroundRawCoordinateReadFailed Index={index} Record=0x{recordAddress.ToInt64():X8} | {coordinateFailure}");
-				continue;
+				result.Diagnostics.CaptureRejected($"GroundTableRead Size=0/{tableSize} Address=0x{table.ToInt64():X8}");
+				return result;
 			}
+			result.Diagnostics.ReadableRegionCount = 1;
+			for (int index = FirstIndex; index <= LastIndex; index++) {
+				int recordOffset = index * GameAddresses.Item.GroundRecordStride;
+				int groundId = ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordId);
+				int groundState = ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordKind);
+				if (groundId <= 0 || groundState != 3) continue;
+				result.Diagnostics.GroundPointerCount++;
+				int internalX = ReadInt32(records, recordOffset + GameAddresses.Item.GroundInternalX);
+				int internalY = ReadInt32(records, recordOffset + GameAddresses.Item.GroundInternalY);
+				if (internalX <= 0 || internalY <= 0) {
+					result.Diagnostics.InvalidCoordinateCount++;
+					result.Diagnostics.CaptureRejected($"GroundInternalCoordinateInvalid Index={index} Record=0x{IntPtr.Add(table, recordOffset).ToInt64():X8} Internal={internalX}/{internalY}");
+					continue;
+				}
+				IntPtr recordAddress = IntPtr.Add(table, recordOffset);
+				if (! TryReadRawCoordinate(reader, records, recordOffset, mapCoordinateRoot, segmentCoordinates, out int rawX, out int rawY, out string coordinateFailure)) {
+					result.Diagnostics.CoordinateReadFailureCount++;
+					result.Diagnostics.CaptureRejected($"GroundRawCoordinateReadFailed Index={index} Record=0x{recordAddress.ToInt64():X8} | {coordinateFailure}");
+					continue;
+				}
 
-			int nameOffset = recordOffset + GameAddresses.Item.GroundName;
-			byte[] nameBytes = ReadName(records, nameOffset, MaximumNameLength);
-			if (nameBytes.Length == 0) {
-				result.Diagnostics.LayoutRejectedCount++;
-				result.Diagnostics.CaptureRejected($"GroundNameEmpty Index={index} Record=0x{IntPtr.Add(table, recordOffset).ToInt64():X8}");
-				continue;
+				int nameOffset = recordOffset + GameAddresses.Item.GroundName;
+				byte[] nameBytes = ReadName(records, nameOffset, MaximumNameLength);
+				if (nameBytes.Length == 0) {
+					result.Diagnostics.LayoutRejectedCount++;
+					result.Diagnostics.CaptureRejected($"GroundNameEmpty Index={index} Record=0x{IntPtr.Add(table, recordOffset).ToInt64():X8}");
+					continue;
+				}
+				string itemName = LegacyVietnameseText.Decode(nameBytes).Trim();
+				if (string.IsNullOrWhiteSpace(itemName)) continue;
+
+				// Lọc theo bán kính. Trước đây tham số rangeMap được khai báo nhưng KHÔNG dùng ở bất kỳ dòng nào, nên
+				// mọi item trên toàn bảng 127 slot đều lọt vào danh sách ứng viên bất kể xa tới đâu, và Loot/Engine
+				// spam lệnh 78 cho tới khi nhân vật lết tới tận nơi. rangeMap <= 0 vẫn giữ nghĩa là không giới hạn.
+				double distance = GetRawDistance(rawX, rawY, centerRawX, centerRawY);
+				if (rangeMap > 0 && distance > rangeMap) {
+					result.Diagnostics.OutOfRangeCount++;
+					continue;
+				}
+
+				result.Diagnostics.PatternCount++;
+				result.Items.Add(new LootSnapshot {
+					ProcessId = processId,
+					Index = index,
+					Address = IntPtr.Add(table, recordOffset),
+					GroundObjectAddress = IntPtr.Zero,
+					Handle = index,
+					ActiveFlag = 1,
+					RawX = rawX,
+					RawY = rawY,
+					RawXMirror = rawX,
+					RawYMirror = rawY,
+					InternalX = internalX,
+					InternalY = internalY,
+					NameAscii = itemName,
+					NameBytes = nameBytes,
+					ItemNameBytes = nameBytes,
+					ItemNameRaw = itemName,
+					QualityCodeA = ReadInt32(records, recordOffset + GameAddresses.Item.GroundQualityCodeA),
+					QualityCodeB = ReadInt32(records, recordOffset + GameAddresses.Item.GroundQualityCodeB),
+					GroundType = unchecked((uint)ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordType)),
+					GroundKind = unchecked((uint)ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordKind)),
+					GroundId = groundId,
+					MemoryFingerprint = HashCode.Combine(index, groundId, internalX, internalY, rawX, rawY, itemName),
+					DistanceToCenter = distance,
+					DistanceToPlayer = distance,
+					Source = "AutoFS-Table"
+				});
 			}
-			string itemName = LegacyVietnameseText.Decode(nameBytes).Trim();
-			if (string.IsNullOrWhiteSpace(itemName)) continue;
-
-			// Lọc theo bán kính. Trước đây tham số rangeMap được khai báo nhưng KHÔNG dùng ở bất kỳ dòng nào, nên
-			// mọi item trên toàn bảng 127 slot đều lọt vào danh sách ứng viên bất kể xa tới đâu, và Loot/Engine
-			// spam lệnh 78 cho tới khi nhân vật lết tới tận nơi. rangeMap <= 0 vẫn giữ nghĩa là không giới hạn.
-			double distance = GetRawDistance(rawX, rawY, centerRawX, centerRawY);
-			if (rangeMap > 0 && distance > rangeMap) {
-				result.Diagnostics.OutOfRangeCount++;
-				continue;
-			}
-
-			result.Diagnostics.PatternCount++;
-			result.Items.Add(new LootSnapshot {
-				ProcessId = processId,
-				Index = index,
-				Address = IntPtr.Add(table, recordOffset),
-				GroundObjectAddress = IntPtr.Zero,
-				Handle = index,
-				ActiveFlag = 1,
-				RawX = rawX,
-				RawY = rawY,
-				RawXMirror = rawX,
-				RawYMirror = rawY,
-				InternalX = internalX,
-				InternalY = internalY,
-				NameAscii = itemName,
-				NameBytes = nameBytes,
-				ItemNameBytes = nameBytes,
-				ItemNameRaw = itemName,
-				QualityCodeA = ReadInt32(records, recordOffset + GameAddresses.Item.GroundQualityCodeA),
-				QualityCodeB = ReadInt32(records, recordOffset + GameAddresses.Item.GroundQualityCodeB),
-				GroundType = unchecked((uint)ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordType)),
-				GroundKind = unchecked((uint)ReadInt32(records, recordOffset + GameAddresses.Item.GroundRecordKind)),
-				GroundId = groundId,
-				MemoryFingerprint = HashCode.Combine(index, groundId, internalX, internalY, rawX, rawY, itemName),
-				DistanceToCenter = distance,
-				DistanceToPlayer = distance,
-				Source = "AutoFS-Table"
+			result.Items.Sort((left, right) => {
+				int distanceCompare = left.DistanceToPlayer.CompareTo(right.DistanceToPlayer);
+				return distanceCompare != 0 ? distanceCompare : left.Index.CompareTo(right.Index);
 			});
+			// Cắt SAU khi sắp xếp để giữ đúng maxCount item GẦN NHẤT. Tham số này trước đây cũng bị bỏ qua hoàn toàn.
+			if (maxCount > 0 && result.Items.Count > maxCount) result.Items.RemoveRange(maxCount, result.Items.Count - maxCount);
+			return result;
+		} finally {
+			System.Buffers.ArrayPool<byte>.Shared.Return(records);
 		}
-		result.Items.Sort((left, right) => {
-			int distanceCompare = left.DistanceToPlayer.CompareTo(right.DistanceToPlayer);
-			return distanceCompare != 0 ? distanceCompare : left.Index.CompareTo(right.Index);
-		});
-		// Cắt SAU khi sắp xếp để giữ đúng maxCount item GẦN NHẤT. Tham số này trước đây cũng bị bỏ qua hoàn toàn.
-		if (maxCount > 0 && result.Items.Count > maxCount) result.Items.RemoveRange(maxCount, result.Items.Count - maxCount);
-		return result;
 	}
 
 	private static byte[] ReadName(byte[] bytes, int offset, int maximumLength) {

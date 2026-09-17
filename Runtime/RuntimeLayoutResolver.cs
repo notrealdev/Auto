@@ -196,8 +196,32 @@ public static class RuntimeLayoutResolver {
 		return false;
 	}
 
+	// TẠM GIỮ CẶP LEGACY (0x75F4/0x75F8) ĐỂ LẤY SỐ ĐO — KHÔNG PHẢI VÌ NÓ ĐÚNG.
+	//
+	// Ngày 2026-09-16 tôi đã đổi sang cặp Raw (0x434C/0x4350) rồi trả lại đây, vì phát hiện phép đo sẽ tự vô hiệu:
+	// ClientFreezeWatch chỉ kích hoạt khi toạ độ snapshot ĐỨNG IM 30 giây, mà nếu cặp Raw là cặp nhảy loạn thì nó
+	// không bao giờ đứng im -> probe ba nguồn không bao giờ chạy -> đêm đo thu về 0 dòng. Giữ Legacy thì điều kiện
+	// kích hoạt y hệt đêm 2026-09-15 -> 16 (đã sinh 190 dòng), nên chắc chắn có dữ liệu để phân định.
+	//
+	// Đổi sang cặp nào là việc của lượt SAU, sau khi đọc kết quả biểu quyết ba nguồn trong client-freeze.log.
+	// Chưa có bằng chứng nào nói cặp Raw đúng hơn cặp Legacy.
+	//
+	// Bối cảnh của cặp Legacy:
+	//
+	// Trước đây chỗ này ghi cứng 0x75F4/0x75F8 — cặp toạ độ của bảng layout AutoFS đời cũ
+	// (D:\G\DEV\Resource\Tests\DEV-CLIENT-UPDATE-001.lua:14-15 ghi rawX=0x75F0, rawY=0x75F4 trong bảng tên "old",
+	// lệch đúng 4 byte so với client hiện tại). Đó là trường PHỤ: nó ngừng được ghi trong khi HP cùng khối vẫn
+	// cập nhật, nên ReadSnapshot báo nhân vật đứng im dù đang đánh bình thường.
+	//
+	// Đo được trên Release/Diagnostics đêm 2026-09-15 -> 16: PID=15592 toạ độ đứng nguyên 62374/90607 suốt 8674
+	// giây (2h25) trong khi HP đổi 265 lần, lệch với cặp 0x434C/0x4350 của worker Đánh tới 3403 raw (~13 ô).
+	// Hậu quả đã ghi log: 29 lần ANTI_AFK_STUCK_SUPERVISOR bắn ESC oan, và 550 lần luồng Sửa đồ gửi lại nguyên
+	// tuyến tới Đại Phu vì HiệnTại không bao giờ đổi.
+	//
+	// Mọi nơi đọc toạ độ khác (EntityFinder, EntitySnapshot, MonsterFinder, AutoFsEntityScanner) đã dùng
+	// GameAddresses.Entity.RawX/RawY từ trước; dòng này là chỗ duy nhất đi lệch.
 	private static RuntimeLayout CreatePlayerCandidate(string fingerprint, IReadOnlyDictionary<RuntimeSubsystem, RuntimeSubsystemState> states, int entityTableRva) {
-		return new RuntimeLayout(fingerprint, states, entityTableRva, 0xD87C, 0xD87C, 0x24, 0x27D0, 0x27D4, 0x27DC, 0x27E0, 0x2D70, 0x75F4, 0x75F8);
+		return new RuntimeLayout(fingerprint, states, entityTableRva, 0xD87C, 0xD87C, 0x24, 0x27D0, 0x27D4, 0x27DC, 0x27E0, 0x2D70, GameAddresses.Entity.RawXLegacy, GameAddresses.Entity.RawYLegacy);
 	}
 
 	private static RuntimeLayout CreateUnavailable(string fingerprint, Dictionary<RuntimeSubsystem, RuntimeSubsystemState> states, string reason) {
