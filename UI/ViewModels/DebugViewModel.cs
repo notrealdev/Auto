@@ -18,6 +18,8 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
 	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
+	// Dò bước còn thiếu để bỏ chuột giả lập khi click NPC. Không đụng luồng Sửa đồ đang chạy.
+	private const string ToolSelectEntity = "Chọn Đại Phu bằng lệnh (không dùng chuột)";
 	// Mở client thật và gõ tài khoản thật của dòng đầu tiên trong Login\Login.json.
 	private const string ToolLoginTest = "Đăng nhập: thử account đầu tiên (MỞ CLIENT THẬT)";
 	// Chụp ảnh bộ nhớ rồi so hai trạng thái, đúng GAME-ADDRESSES-GUIDE.md §5.1. Chỉ đọc.
@@ -61,6 +63,7 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolModalVtable,
 		ToolNpcMenuCapture,
 		ToolImmediateRepair,
+		ToolSelectEntity,
 		ToolLoginTest,
 		ToolLoginAutoFsAddress,
 		ToolLoginDialogDiff,
@@ -116,6 +119,9 @@ public sealed class DebugViewModel : ViewModelBase {
 			case ToolImmediateRepair:
 				StartWeaponRepairFlowTest();
 				return;
+			case ToolSelectEntity:
+				StartSelectEntityProbe();
+				return;
 			case ToolLoginTest:
 				StartLoginTest();
 				return;
@@ -148,6 +154,18 @@ public sealed class DebugViewModel : ViewModelBase {
 		GameWindow target = game;
 		AccountInfoText = $"PID={target.ProcessId} | Đang đọc các địa chỉ đăng nhập của AutoFS...";
 		AccountInfoText = await Task.Run(() => LoginAutoFsAddressProbe.Run(target));
+	}
+
+	private async void StartSelectEntityProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh chọn Đại Phu...";
+		string result = await Task.Run(() => SelectEntityProbe.Run(target));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = result;
 	}
 
 	private async void StartLoginDialogDiff() {

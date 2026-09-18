@@ -174,7 +174,9 @@
 
 			<!-- Padding riêng cho block account, không dùng Size.CardPadding chung: đè trực tiếp ở đây, muốn chỉnh chỉ sửa số "12". -->
 			<Border Grid.Row="0" Padding="12" Style="{StaticResource CardBorder}">
+				<!-- MinHeight giữ khung không co lại thành một vạch khi chưa có account nào (chủ dự án chốt 2026-09-18). -->
 				<ListBox
+					MinHeight="150"
 					MaxHeight="200"
 					AlternationCount="1000"
 					Background="Transparent"

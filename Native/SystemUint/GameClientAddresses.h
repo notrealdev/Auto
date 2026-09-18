@@ -32,6 +32,17 @@ namespace GameClientAddresses {
 	constexpr size_t AttackMethodVtableOffset = 0x40;
 	constexpr int AttackPrepareOpcode = 9;
 	constexpr size_t SelectGroundItemMethodVtableOffset = 0x48;
+	// Chọn entity theo chỉ số, tương đương việc click chuột vào NPC/quái. Tìm được 2026-09-17 bằng cách quét bản
+	// dump toàn module của tiến trình đang chạy (chỉ đọc):
+	//   - Biến "mục tiêu đang chọn" = VA 0x8CE688 (RVA 0x4CE688): = -1 trên 5 client không chọn ai, = 43 trên
+	//     client vừa click Đại Phu, và entity 43 đọc ra đúng tên TCVN3 "Đại phu" tại 59162/93139.
+	//   - Hàm ghi vào biến đó nằm ở VA 0x6CB070, và VA đó xuất hiện đúng MỘT lần trong cả 33 MB dưới dạng dữ liệu:
+	//     tại 0x877820 = ExpectedManagerVtableRva (0x477804) + 0x1C. Nên gọi qua vtable, không hardcode RVA.
+	//   - Thân hàm: push ebp / mov ebp,esp / mov eax,[ebp+8] / cmp eax,0x1FF / mov [0x8CE688],eax / mov eax,1 /
+	//     ret 4. Nhánh index > 0x1FF ghi -1 (bỏ chọn). Chữ ký khớp SelectGroundItemFunction: __thiscall(void*, int).
+	// CHƯA VERIFY runtime: mới chứng minh hàm này GHI biến mục tiêu, chưa chứng minh gọi nó là hội thoại NPC mở ra.
+	constexpr size_t SelectEntityMethodVtableOffset = 0x1C;
+	constexpr uintptr_t CurrentTargetIndexRva = 0x004CE688;
 	constexpr size_t SaleMethodVtableOffset = 0x10;
 	constexpr int SaleOpcode = 0x19;
 	// Cập nhật sau bản game 2026-08-28: xác nhận qua symbol Ghidra DAT_00e7fe24 trong decompile hàm ATTACK mới, khớp delta +0x2020. Chưa build/test runtime.

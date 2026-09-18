@@ -577,7 +577,16 @@ public sealed class Engine {
 		//   2. Đích đang giữ đã bẩn — boss đã đi tới gần chỗ đó, tới nơi cũng vẫn nằm trong vùng cấm.
 		//   3. Đã tới nơi mà vẫn còn trong vùng cấm (boss bám theo) -> cần chặng kế tiếp.
 		//   4. Nhân vật đứng im quá EliteWalkStallMilliseconds -> lệnh trước không ăn, phải bắn lại.
+		// Lý do bắn lại + còn cách đích bao nhiêu. Thiếu đúng hai số này nên đêm 2026-09-18 không kết luận được vì sao
+		// 5615 lệnh trốn chỉ 73 lần (1,3%) vào được trong 128 raw của đích, ở MỌI quãng đường: 0-199 raw đạt 8,3%,
+		// 200-399 raw đạt 1,4%, 1800-1999 raw đạt 3,4% — không hề có tương quan với quãng đường, nên không phải
+		// giới hạn tầm của lệnh 321. Log hiện tại không ghi gì giữa hai lệnh trốn nên không thấy được cái gì kéo
+		// nhân vật đi: lúc 10:15:00 gửi đích 62187/89939 (X giảm), 4,6 giây sau nhân vật ở 62746/89763 tức đã đi
+		// NGƯỢC 410 raw. Hai trường này cho biết lần bắn lại là do đích bẩn, do tới nơi, hay do đứng im.
+		string retreatReason = "ĐÍCH_MỚI";
+		double retreatRemaining = -1;
 		if (eliteWalkDestinationX > 0 && eliteWalkDestinationY > 0) {
+			retreatRemaining = EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY);
 			if (playerX != eliteWalkObservedX || playerY != eliteWalkObservedY) {
 				eliteWalkObservedX = playerX;
 				eliteWalkObservedY = playerY;
@@ -587,6 +596,7 @@ public sealed class Engine {
 			bool arrived = EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY) <= EliteRetreatArrivalRaw;
 			bool stalled = now - eliteWalkProgressUtc >= TimeSpan.FromMilliseconds(EliteWalkStallMilliseconds);
 			if (!committedDestinationDirty && !arrived && !stalled) return true;
+			retreatReason = committedDestinationDirty ? "ĐÍCH_BẨN" : arrived ? "ĐÃ_TỚI" : "ĐỨNG_IM";
 			// Còn đi dở tới một đích vẫn sạch mà phải bắn lại vì đứng im: giữ nguyên đích cũ thay vì lấy đích mới đã
 			// trôi theo nhân vật, để lệnh thứ hai là đi tiếp đúng chỗ cũ chứ không phải đổi hướng giữa đường.
 			if (!committedDestinationDirty && !arrived) {
@@ -609,7 +619,7 @@ public sealed class Engine {
 		eliteWalkObservedY = playerY;
 		eliteWalkProgressUtc = now;
 		(int nearestX, int nearestY) = elites.OrderBy(elite => EliteAvoidance.Distance(playerX, playerY, elite.X, elite.Y)).First();
-		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.ElitePlayerRetreatRadius} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | {walkResult}");
+		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.ElitePlayerRetreatRadius} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | LýDoBắn={retreatReason} | CònCáchĐíchCũ={(retreatRemaining < 0 ? "chưa có đích" : retreatRemaining.ToString("F0"))} | {walkResult}");
 		return true;
 	}
 

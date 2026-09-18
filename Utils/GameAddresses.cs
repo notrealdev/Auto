@@ -7,7 +7,16 @@ public static class GameAddresses {
 	public static class Globals {
 		// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng BSim + decompile đối chiếu chéo với PICKUP/RESET_PICKUP mới, chưa build/test runtime.
 		public const int EntityTable = 0x95FF60;
-		public const int CurrentTargetIndex = 0x4CB668;
+		// Sửa 2026-09-17: giá trị cũ 0x4CB668 CHẾT trên client 1.28. Bằng chứng đo trực tiếp trên bản dump toàn
+		// module (0x400000 + 0x1F83000) của tiến trình đang chạy:
+		//   - 0x4CB668: KHÔNG có một lệnh nào đọc/ghi trong cả 33 MB (quét A3/890D/8915/891D/8935/893D/C705/A1/8B0D),
+		//     và đọc ra 0xB56E2063 GIỐNG HỆT NHAU trên cả 6 tiến trình, tức không phải giá trị theo phiên.
+		//     Đối chứng cùng cách quét: EntityTable có 1935 tham chiếu, AttackManager có 4398.
+		//   - 0x4CE688: = -1 trên 5 client không chọn mục tiêu, = 43 trên client vừa click Đại Phu, và entity số 43
+		//     đọc ra đúng tên TCVN3 A7B96920706875 ("Đại phu") tại 59162/93139 — khớp toạ độ trong repair.log.
+		//   - Hàm ghi vào nó nằm ở RVA 0x2CB070: cmp eax,0x1FF / mov [0x8CE688],eax / ret 4.
+		// CHƯA VERIFY runtime: mới chứng minh đọc ra đúng số, chưa chạy Auto để xem nhánh dùng nó đổi hành vi thế nào.
+		public const int CurrentTargetIndex = 0x4CE688;
 		// Cập nhật sau bản game 2026-08-28: xác nhận qua chính tên symbol Ghidra tự gán (DAT_00e7fe24) khi decompile hàm ATTACK mới đã đối chiếu xong (dòng *(int*)(DAT_00e7fe24+0x41d3c)), khớp delta +0x2020. Đọc byte thô tại đây có thể =0 do con trỏ chỉ được game gán khi cần, không phải bằng chứng RVA sai. Là nguyên nhân "Game root chưa sẵn sàng | SAFE_REJECT" trong repair.log. Chưa build/test runtime.
 		public const int InventoryRoot = 0xA7FE24;
 		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (bản cũ đọc được con trỏ hợp lệ 0x1798E020 tại RVA cũ; bản mới tại RVA cũ đọc ra 0, tại RVA lệch +0x2020 đọc được con trỏ hợp lệ khác 0x16DBC020). Chưa build/test runtime.

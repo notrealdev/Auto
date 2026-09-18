@@ -12,9 +12,14 @@ using System.Text.Json.Serialization;
 public sealed class LoginAccount {
 	[JsonPropertyName("User")] public string User { get; set; } = "";
 	[JsonPropertyName("Pass")] public string Pass { get; set; } = "";
-	// Số thứ tự phân vùng và máy chủ, khớp List_Server.json của AutoFS. Gửi kèm lệnh 282.
-	[JsonPropertyName("PhânVùng")] public int Partition { get; set; }
-	[JsonPropertyName("MáyChủ")] public int Server { get; set; }
+	// Số thứ tự cụm máy chủ và máy chủ trong cụm, đếm từ 0 theo đúng thứ tự dòng client dựng ra ở hộp "Chọn máy chủ".
+	// Gửi kèm lệnh 282. Đo bằng lệnh 303 trên client 1.30 PID 22936 ngày 2026-09-18:
+	//   Partition 0 "Máy chủ mới đề cử" = 0 máy chủ | 1 "Cụm cao cấp" = 1 | 2 "Cụm hồi ức 2008" = 3
+	//   Cụm 2 gồm: Server 0 Hoàng Long Cung | 1 Xích Tùng Tử | 2 Bạch Hổ Điện
+	// KHÔNG khớp List_Server.json của AutoFS (file đó ghi 1 nhóm "[Hot] Phong Thần 2008" với 1 máy chủ
+	// "S1 Mạnh Tân", không tên nào trùng) — lấy theo số đo trên client thật.
+	[JsonPropertyName("Partition")] public int Partition { get; set; }
+	[JsonPropertyName("Server")] public int Server { get; set; }
 }
 
 public sealed class Settings {

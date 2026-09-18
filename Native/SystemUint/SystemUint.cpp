@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include <climits>
 #include "GameClientAddresses.h"
 
 namespace {
@@ -37,6 +38,12 @@ namespace {
 	// native, không có cách nào biết tiến trình game đang chạy bản cũ hay bản mới — mà đo trên bản cũ thì mọi
 	// kết luận đều vô nghĩa. Bump số này MỖI LẦN sửa native.
 	constexpr WPARAM NativeBuildStampCommand = 322;
+	// Chon entity theo chi so, thay cho click chuot. Xem khoi bang chung o
+	// GameClientAddresses::SelectEntityMethodVtableOffset. Tra ve chi so muc tieu doc lai ngay sau khi goi,
+	// de phia C# doi chieu duoc that su da ghi hay chua thay vi chi tin vao PostMessage thanh cong.
+	constexpr WPARAM SelectEntityCommand = 323;
+	// Chi doc bien muc tieu dang chon, khong ghi gi. Dung lam moc do truoc/sau.
+	constexpr WPARAM ReadCurrentTargetCommand = 324;
 	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
 	constexpr WPARAM LoginNoticeCommand = 280;
 	constexpr WPARAM LoginVersionCommand = 281;
@@ -82,7 +89,7 @@ namespace {
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990003;
+	constexpr int NativeBuildStamp = 99990005;
 	constexpr int AuditEntryCount = 31;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
@@ -336,6 +343,37 @@ namespace {
 		}
 		selectGroundItem(manager, itemIndex);
 		return true;
+	}
+
+	int ReadCurrentTargetIndex() {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return INT_MIN;
+		}
+		return *reinterpret_cast<int*>(gameBase + GameClientAddresses::CurrentTargetIndexRva);
+	}
+
+	// Tra ve chi so muc tieu DOC LAI sau khi goi, hoac INT_MIN khi khong goi duoc.
+	int TrySelectEntity(int entityIndex) {
+		if (entityIndex < 2 || entityIndex > 511) {
+			return INT_MIN;
+		}
+		uint8_t* gameBase = nullptr;
+		void* manager = nullptr;
+		if (!TryGetGameContext(gameBase, manager)) {
+			return INT_MIN;
+		}
+		auto managerVtable = *reinterpret_cast<uint8_t***>(manager);
+		if (managerVtable == nullptr || *reinterpret_cast<void**>(manager) != gameBase + GameClientAddresses::ExpectedManagerVtableRva) {
+			return INT_MIN;
+		}
+		auto selectEntity = reinterpret_cast<SelectGroundItemFunction>(
+			*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(managerVtable) + GameClientAddresses::SelectEntityMethodVtableOffset));
+		if (!IsExecutableAddress(reinterpret_cast<void*>(selectEntity))) {
+			return INT_MIN;
+		}
+		selectEntity(manager, entityIndex);
+		return *reinterpret_cast<int*>(gameBase + GameClientAddresses::CurrentTargetIndexRva);
 	}
 
 	// Upper bound used to be 9 with no recorded reason, most likely copied from the 8-slot NPC menu layout.
@@ -1427,6 +1465,20 @@ namespace {
 		if (!TryGetLoginServerList(listIndex, dialog, control)) {
 			return false;
 		}
+		// Từ chối dòng không tồn tại thay vì gọi setSelection với chỉ số vô nghĩa rồi báo thành công.
+		// Đo trên client 1.30 PID 22936 ngày 2026-09-18: danh sách cụm có 3 dòng, chọn dòng 0
+		// ("Máy chủ mới đề cử") làm danh sách máy chủ có 0 dòng, nhưng hàm này vẫn trả true nên lệnh 282
+		// vẫn bấm "Vào trò chơi" trên lựa chọn rỗng — client đứng im ở hộp "Chọn máy chủ", đúng triệu chứng
+		// Login.json để PhânVùng=0 và hỏng 3/3 lần trong login.log. Cùng khuôn lỗi với lệnh 8 im lặng
+		// thất bại hôm 2026-09-17: gọi được KHÔNG có nghĩa là làm được.
+		void* countSlot = reinterpret_cast<uint8_t*>(control) + GameClientAddresses::ListItemCountOffset;
+		if (!IsReadableAddress(countSlot)) {
+			return false;
+		}
+		int itemCount = *reinterpret_cast<int*>(countSlot);
+		if (rowIndex < 0 || rowIndex >= itemCount) {
+			return false;
+		}
 		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
 		auto setSelection = reinterpret_cast<ListSetSelectionFunction>(
 			gameBase + GameClientAddresses::ListSetSelectionFunctionRva);
@@ -1544,6 +1596,12 @@ namespace {
 			}
 			if (wParam == DialogOptionCommand) {
 				return TrySelectDialogOption(static_cast<int>(lParam)) ? 1 : 0;
+			}
+			if (wParam == SelectEntityCommand) {
+				return static_cast<LRESULT>(TrySelectEntity(static_cast<int>(lParam)));
+			}
+			if (wParam == ReadCurrentTargetCommand) {
+				return static_cast<LRESULT>(ReadCurrentTargetIndex());
 			}
 			if (wParam == SelectGroundItemCommand) {
 				return TrySelectGroundItem(static_cast<int>(lParam)) ? 1 : 0;

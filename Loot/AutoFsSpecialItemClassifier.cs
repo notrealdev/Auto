@@ -27,7 +27,15 @@ public static class AutoFsSpecialItemClassifier {
 	};
 
 	private static readonly HashSet<string> SixPathNames = new(StringComparer.OrdinalIgnoreCase) {
-		"Đoản Kiếm", "Đoạn Kiếm", "Mảnh Giáp", "Toái Giáp", "Băng Cơ", "Ngọc Cốt", "Mặt Quỷ", "Quỷ Diện", "Hỏa Vũ"
+		"Đoản Kiếm", "Đoạn Kiếm", "Mảnh Giáp", "Toái Giáp", "Băng Cơ", "Ngọc Cốt", "Mặt Quỷ", "Quỷ Diện", "Hỏa Vũ",
+		// Bổ sung 2026-09-18 sau khi đối chiếu toàn bộ 1425 vật phẩm trong D:\G\Tools\FSData\Data\settings.pak.txt.
+		// Lọc theo mô tả thì nguyên liệu "Lục Đạo Tinh Hoa" có 7 món, "Tứ Tượng Tinh Hoa" có 5 món; sau khi bỏ dấu
+		// (ToAsciiUpper) hai bảng hiện tại phủ 6/7 và 4/5, thiếu đúng một món CHUNG của cả hai nhóm:
+		//   "Bát Hoàng Tinh Hoa" — mô tả: "Do Lục Đạo Tinh Hoa và Tứ Tượng Tinh Hoa ngưng tụ thành, dùng nâng cấp
+		//   Trấn Hồn Thạch cao cấp", tức bậc cao hơn hẳn các nguyên liệu Auto vốn đã nhặt.
+		// Đặt ở bảng Lục Đạo vì Classify xét Lục Đạo trước Tứ Tượng nên chỉ cần khai báo một nơi.
+		// CHƯA VERIFY: suốt 7486 dòng LOOT_FILTER đêm 2026-09-17→18 chưa món nào rơi, nên chưa quan sát được thật.
+		"Bát Hoàng Tinh Hoa"
 	};
 
 	// Thảo Dược. Nhận diện BẰNG TÊN chứ không bằng trường phân loại trong record.

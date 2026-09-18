@@ -7,12 +7,6 @@ internal sealed class AutoFsAttackTransport {
 	private const string SourceLibraryName = "SystemUint.Source.dll";
 	private const string HookMessageName = "WM_HOOK_WRITE";
 	private const int AttackCommand = 300;
-	// Lệnh AutoFS dùng để click entity đã tìm thấy theo TÊN, truyền thẳng index chứ không qua toạ độ màn hình.
-	// Bằng chứng: WindowQueue.cs:24241-24270, vòng "for (int k = 2; k < 256; k++)" chỉ đọc trường tên rồi
-	// "NetworkSet.DisposeNode(Handle, NetworkSet.fontInstance, 8, k); return true;". Bốn call site của lệnh 8 trong
-	// toàn bộ bản decompile đều nằm trong đúng hàm tìm NPC theo tên này.
-	// Cùng không gian lệnh với đường di chuyển Auto đang chạy (32/0, 0/x, 5/x), nên không phải cơ chế mới.
-	private const int SelectEntityCommand = 8;
 	private const int NativeBuildStampCommand = 322;
 	public const int QuickSlotContainer = 11;
 	public const int QuickSlotCount = 4;
@@ -25,6 +19,14 @@ internal sealed class AutoFsAttackTransport {
 	private const int SendChatCommand = 312;
 	private const int PassiveBuffCommand = 313;
 	private const int AuditAddressCommand = 320;
+	// Phải khớp SystemUint.cpp. Xem TryProbeSelectEntity.
+	//
+	// Giá trị cũ là 8, chép từ AutoFS (WindowQueue.cs:24293-24318 gửi "8, k" sau khi tìm NPC theo tên). Số 8 đó là
+	// số lệnh của DLL AutoFS, KHÔNG phải của DLL Auto: grep toàn bộ SystemUint.cpp không có nhánh "wParam == 8" nào,
+	// nên message bị bỏ im lặng trong khi PostMessageA vẫn trả thành công. Đó là lý do 20/20 lần gửi lệnh 8 không
+	// mở được cửa hàng (repair.log 2026-09-17 22:37-22:38) mà phía C# vẫn tưởng đã click xong.
+	private const int SelectEntityCommand = 323;
+	private const int ReadCurrentTargetCommand = 324;
 	private const int MaximumPassiveBuffSkillId = 0x7CF;
 	private const uint SendMessageTimeoutMilliseconds = 500;
 	// Các bước đăng nhập dựng lại cả màn hình nên lâu hơn hẳn một lần gửi gói; xem TrySendLoginCommand.
@@ -153,6 +155,33 @@ internal sealed class AutoFsAttackTransport {
 		return sent;
 	}
 
+	// Gửi phím Enter vào cửa sổ client. Dùng cho màn CHỌN NHÂN VẬT sau khi đăng nhập: mỗi tài khoản của chủ dự án
+	// chỉ có một nhân vật nên Enter là vào thẳng game (chủ dự án chốt 2026-09-18).
+	//
+	// Dùng lại đúng khuôn PostMessageA WM_KEYDOWN/WM_KEYUP của TryUseQuickSlotHotkeyCore — đường gửi phím DUY NHẤT
+	// đã chạy được trong dự án này. KHÔNG đi qua AutoFsActionGate vì lúc đăng nhập chưa có account nào được bật,
+	// cùng lý do đã ghi ở TryQueryAddressAudit.
+	//
+	// CHƯA VERIFY: chưa từng chạy thật trên màn chọn nhân vật. PostMessageA trả true chỉ chứng minh message đã vào
+	// hàng đợi, KHÔNG chứng minh client đã vào game — LoginAutomation phải tự xác nhận bằng trạng thái.
+	public bool TrySendEnterKey(IntPtr gameWindow, out string error) {
+		error = "";
+		if (gameWindow == IntPtr.Zero) {
+			error = "Invalid HWND.";
+			return false;
+		}
+		const int virtualKeyReturn = 0x0D;
+		const int scanCodeReturn = 0x1C;
+		IntPtr downLParam = new((scanCodeReturn << 16) | 1);
+		IntPtr upLParam = new(unchecked((int)(0xC0000000u | (uint)(scanCodeReturn << 16) | 1u)));
+		if (! PostMessageA(gameWindow, WmKeyDown, new IntPtr(virtualKeyReturn), downLParam)
+			|| ! PostMessageA(gameWindow, WmKeyUp, new IntPtr(virtualKeyReturn), upLParam)) {
+			error = $"PostMessageA failed. VirtualKey=0x0D, Win32Error={Marshal.GetLastWin32Error()}.";
+			return false;
+		}
+		return true;
+	}
+
 	private bool TryUseQuickSlotHotkeyCore(IntPtr gameWindow, int slotIndex, bool debugRun, out string error) {
 		if (gameWindow == IntPtr.Zero || slotIndex < 0 || slotIndex >= QuickSlotCount) {
 			error = $"Invalid quick-slot hotkey. Window=0x{gameWindow.ToInt64():X}, SlotIndex={slotIndex}.";
@@ -238,6 +267,40 @@ internal sealed class AutoFsAttackTransport {
 			return false;
 		}
 		result = value.ToUInt64();
+		return true;
+	}
+
+	// Dò chức năng "chọn entity theo chỉ số" của client 1.28 — bước đang thiếu để bỏ hẳn chuột giả lập khi click NPC.
+	//
+	// Trả NGUYÊN giá trị native: đó là chỉ số mục tiêu ĐỌC LẠI từ 0x4CE688 ngay sau khi gọi, không phải cờ 0/1.
+	// Cần vậy vì bài học lệnh 8: PostMessageA thành công nhưng DLL không có handler nào khớp, phía C# vẫn báo
+	// thành công và 20/20 chuyến Sửa đồ hỏng mà không ai biết (repair.log 2026-09-17 22:37-22:38).
+	// int.MinValue = native từ chối (sai chỉ số, manager/vtable không qua kiểm tra, hoặc con trỏ không thực thi được).
+	//
+	// Đặt ở đây cùng TryQueryAddressAudit vì cùng tính chất: không qua AutoFsActionGate, phải chạy được cả khi
+	// công tắc Auto tổng đang tắt — lúc dò thì không ai bật Auto lên cả.
+	public bool TryProbeSelectEntity(IntPtr gameWindow, int entityIndex, out int targetIndexAfter, out string error) {
+		targetIndexAfter = int.MinValue;
+		if (! TryEnsureReceiver(gameWindow, out error)) return false;
+		IntPtr sent = SendMessageTimeoutA(gameWindow, hookMessage, (IntPtr)SelectEntityCommand, (IntPtr)entityIndex, SmtoAbortIfHung, SendMessageTimeoutMilliseconds, out UIntPtr value);
+		if (sent == IntPtr.Zero) {
+			error = $"SendMessageTimeoutA failed. Command={SelectEntityCommand}, Index={entityIndex}, Win32Error={Marshal.GetLastWin32Error()}";
+			return false;
+		}
+		targetIndexAfter = unchecked((int)value.ToUInt32());
+		return true;
+	}
+
+	// Chỉ đọc chỉ số mục tiêu đang chọn, không ghi gì. Dùng để lấy mốc TRƯỚC khi gọi TryProbeSelectEntity.
+	public bool TryProbeCurrentTarget(IntPtr gameWindow, out int targetIndex, out string error) {
+		targetIndex = int.MinValue;
+		if (! TryEnsureReceiver(gameWindow, out error)) return false;
+		IntPtr sent = SendMessageTimeoutA(gameWindow, hookMessage, (IntPtr)ReadCurrentTargetCommand, IntPtr.Zero, SmtoAbortIfHung, SendMessageTimeoutMilliseconds, out UIntPtr value);
+		if (sent == IntPtr.Zero) {
+			error = $"SendMessageTimeoutA failed. Command={ReadCurrentTargetCommand}, Win32Error={Marshal.GetLastWin32Error()}";
+			return false;
+		}
+		targetIndex = unchecked((int)value.ToUInt32());
 		return true;
 	}
 

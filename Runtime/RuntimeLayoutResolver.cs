@@ -220,8 +220,21 @@ public static class RuntimeLayoutResolver {
 	//
 	// Mọi nơi đọc toạ độ khác (EntityFinder, EntitySnapshot, MonsterFinder, AutoFsEntityScanner) đã dùng
 	// GameAddresses.Entity.RawX/RawY từ trước; dòng này là chỗ duy nhất đi lệch.
+	//
+	// 2026-09-18: chẩn đoán trên ĐÚNG, nhưng dòng code vẫn truyền cặp Legacy nên bệnh chưa hết — đêm nay tái diễn
+	// y hệt. PID=3380 báo ĐứngYên suốt 1231 giây liên tục ở 61822/90548 trong khi HP đổi 77 lần và movement.log
+	// vẫn ghi ELITE_RETREAT với Player đổi vị trí từng phút (client-freeze.log + movement.log 2026-09-18 10:00-10:21).
+	//
+	// Đã đo trực tiếp bằng ReadProcessMemory trên hai client đang chạy, mỗi client 4 mẫu cách nhau 2 giây:
+	//   PID=43596 (bình thường): Raw và Legacy BẰNG NHAU và cùng đổi — 63317/87667 -> 63263/88224 -> 63206/88798.
+	//   PID=3380  (đang kẹt):    Raw đổi — 62887/90871 -> 62798/91277 -> 62780/91233 -> 62590/90695,
+	//                            còn Legacy VÀ Mirror đứng nguyên 61822/90548 cả 4 mẫu.
+	// Tức khi hai nguồn bất đồng thì Raw là nguồn còn sống, đúng nguồn mà luồng Đánh/Di chuyển vẫn dùng và chạy được.
+	// Đây là câu trả lời cho ghi chú "chưa xác định được cặp nào mới là vị trí thật" ở GameAddresses.Entity.RawXLegacy.
+	//
+	// CHƯA VERIFY runtime: mới chứng minh nguồn nào còn cập nhật, chưa chạy lại Auto để xem báo ĐứngYên/ANTI_AFK có hết.
 	private static RuntimeLayout CreatePlayerCandidate(string fingerprint, IReadOnlyDictionary<RuntimeSubsystem, RuntimeSubsystemState> states, int entityTableRva) {
-		return new RuntimeLayout(fingerprint, states, entityTableRva, 0xD87C, 0xD87C, 0x24, 0x27D0, 0x27D4, 0x27DC, 0x27E0, 0x2D70, GameAddresses.Entity.RawXLegacy, GameAddresses.Entity.RawYLegacy);
+		return new RuntimeLayout(fingerprint, states, entityTableRva, 0xD87C, 0xD87C, 0x24, 0x27D0, 0x27D4, 0x27DC, 0x27E0, 0x2D70, GameAddresses.Entity.RawX, GameAddresses.Entity.RawY);
 	}
 
 	private static RuntimeLayout CreateUnavailable(string fingerprint, Dictionary<RuntimeSubsystem, RuntimeSubsystemState> states, string reason) {

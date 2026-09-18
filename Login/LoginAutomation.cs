@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using Auto.Attack;
+using Auto.Utils;
 
 // Mở client rồi đăng nhập, port theo DiskConverter.DisposeNode của AutoFS
 // (D:\G\DEV\Resource\AutoSource\AutoProV2\DiskConverter.cs dòng 66-260).
@@ -11,7 +12,7 @@ using Auto.Attack;
 // Chuỗi lệnh lấy nguyên của AutoFS, gửi qua ĐÚNG dispatcher mà Auto đang dùng cho lệnh 7/8/38/78/9/321:
 //   280 / 0                      -> bước 1
 //   281 / 0                      -> bước 2
-//   282 / Pack(PhânVùng, MáyChủ) -> chọn phân vùng + máy chủ
+//   282 / Pack(Partition, Server)  -> chọn cụm máy chủ + máy chủ
 //   283 / Pack(0, ký tự)         -> gõ từng ký tự TÀI KHOẢN
 //   283 / Pack(1, ký tự)         -> gõ từng ký tự MẬT KHẨU
 // Pack lấy nguyên DiskConverter.cs:848-849.
@@ -44,9 +45,23 @@ public sealed class LoginAutomation {
 	private const int WriteCredentialFieldsCommand = 315;
 	private const int ClearPendingCredentialsCommand = 316;
 	private const int ReadStatusMessageByteCommand = 317;
+	// Lệnh chẩn đoán 294 (DiagnoseSimpleModalDispatch): lParam = RVA ô con trỏ hộp thoại, trả 3 khi đối tượng còn
+	// sống và đọc được vtable, trả -2 khi ô con trỏ NULL/không đọc được (hộp chưa dựng hoặc đã đóng).
+	// Hai RVA lấy từ Native/SystemUint/GameClientAddresses.h (LoginNoticeDialogRva / LoginVersionDialogRva) — nguồn
+	// chuẩn nằm ở đó, sửa bên đó thì phải sửa cả hai chỗ.
+	private const int DiagnoseDialogCommand = 294;
+	private const int NoticeDialogRva = 0x004FED14;
+	private const int VersionDialogRva = 0x004EECD0;
+	private const int DialogAliveResult = 3;
+	private const int DialogGoneResult = -2;
 	private const int StatusMessageMaxLength = 128;
 	// Chờ client đổi câu thông báo sau khi bấm đăng nhập rồi mới đọc.
 	private const int StatusMessageWaitMilliseconds = 2000;
+	// Màn CHỌN NHÂN VẬT sau khi đăng nhập. Mỗi tài khoản của chủ dự án chỉ có một nhân vật nên Enter là vào thẳng
+	// game (chủ dự án chốt 2026-09-18). Gửi lại theo nhịp thay vì gửi một phát rồi đoán, vì không biết trước client
+	// mất bao lâu mới dựng xong màn chọn — cùng lý do ba hộp thoại đầu phải chờ bằng kết quả lệnh.
+	private const int EnterWorldTimeoutMilliseconds = 60000;
+	private const int EnterWorldRetryMilliseconds = 2000;
 	private const int UserFieldIndex = 0;
 	private const int PasswordFieldIndex = 1;
 	// AutoFS bỏ cuộc nếu process chết trong 5 giây đầu (DiskConverter.cs, mốc stopwatch 5000).
@@ -54,8 +69,19 @@ public sealed class LoginAutomation {
 	private const int WaitForWindowTimeoutMilliseconds = 30000;
 	private const int WaitForWindowPollMilliseconds = 200;
 	private const int StepRetryMilliseconds = 500;
-	// Lệnh 282 có thể mất tới hàng chục giây vì client đi kết nối máy chủ; chờ hết khoảng này rồi mới gửi lại.
-	private const int LoginScreenWaitMilliseconds = 20000;
+	// Số lần thử tối đa khi chờ màn đăng nhập hiện ra. Nhân với settings.StepTimeoutMilliseconds (thời gian chờ
+	// MỖI lần thử, cấu hình trong Login.json) ra tổng hạn của cả bước — xem TryReachLoginScreen.
+	//
+	// SỬA 2026-09-18: trước đây thời gian chờ mỗi lần thử là hằng số CỨNG 20000ms, độc lập với tổng hạn đọc từ
+	// settings.StepTimeoutMilliseconds (Login.json đặt 10000ms). 20000 > 10000 nên vòng thử lại chỉ chạy được ĐÚNG
+	// 1 LẦN rồi thoát ngay khi đang giữa lượt chờ đầu tiên, và log lại in nhầm "trong 10000ms" trong khi thực tế đã
+	// chờ 20000ms (đo được: login.log 12:45:52.366 -> 12:46:12.653, lệch 20,287 giây). Sửa StepTimeoutMilliseconds
+	// trong Login.json vì vậy KHÔNG hề đổi được thời gian chờ thật của bước này — chủ dự án đổi cấu hình mà kết quả
+	// không nhúc nhích là do đây.
+	//
+	// Giờ mỗi lần thử chờ ĐÚNG settings.StepTimeoutMilliseconds (10000ms mặc định), lặp tối đa
+	// LoginScreenMaxAttempts lần — tổng hạn 3 x 10000 = 30000ms, thật sự thử lại được nhiều lần thay vì chỉ 1.
+	private const int LoginScreenMaxAttempts = 3;
 
 	[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 	private static extern int SetWindowText(IntPtr windowHandle, string text);
@@ -119,10 +145,10 @@ public sealed class LoginAutomation {
 			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Chờ {settings.WaitBeforeLogin}ms cho client dựng xong màn hình rồi mới gửi lệnh.");
 			token.WaitHandle.WaitOne(settings.WaitBeforeLogin);
 		}
-		// Ba hộp thoại chỉ xuất hiện lần lượt, mỗi cái sau khi cái trước đóng. Native trả 0 khi hộp thoại tương ứng
-		// chưa dựng xong, nên chờ bằng chính kết quả của lệnh thay vì đoán thời gian.
-		if (! TrySendUntilAccepted(windowHandle, BeginLoginCommand, 0, "hộp Khuyến cáo", settings, token, log, index, account)) return false;
-		if (! TrySendUntilAccepted(windowHandle, PrepareLoginCommand, 0, "hộp Thông tin phiên bản", settings, token, log, index, account)) return false;
+		// Ba hộp thoại chỉ xuất hiện lần lượt, mỗi cái sau khi cái trước đóng. Xác nhận bằng TRẠNG THÁI của chính đối
+		// tượng hộp thoại, không bằng giá trị trả về của lệnh.
+		if (! TrySendUntilDialogClosed(windowHandle, BeginLoginCommand, NoticeDialogRva, "hộp Khuyến cáo", settings, token, log, index, account)) return false;
+		if (! TrySendUntilDialogClosed(windowHandle, PrepareLoginCommand, VersionDialogRva, "hộp Thông tin phiên bản", settings, token, log, index, account)) return false;
 		// Lệnh 282 KHÔNG dùng TrySendUntilAccepted được: nó làm client đi kết nối mạng nên cửa sổ bận lâu hơn mọi
 		// timeout hợp lý, và SendMessageTimeoutA trả 0 dù lệnh đã chạy xong (đo trên PID 1284 ngày 2026-09-16: trả 0
 		// nhưng ảnh chụp cho thấy client đã sang bước sau và hiện popup "Máy chủ đã đầy hoặc đang bảo trì !").
@@ -164,27 +190,71 @@ public sealed class LoginAutomation {
 		if (statusMessage.Length > 0) {
 			log($"ĐĂNG NHẬP THÔNG BÁO | #{index + 1} | {account.User} | {statusMessage}");
 		}
-		log($"ĐĂNG NHẬP ĐÃ GỬI | #{index + 1} | {account.User} | PID={process.Id} | PhânVùng={account.Partition} | MáyChủ={account.Server} | KýTựUser={account.User.Length} | KýTựPass={account.Pass.Length} | CHƯA đọc được trạng thái client nên KHÔNG kết luận đăng nhập thành công.");
-		return true;
+		log($"ĐĂNG NHẬP ĐÃ GỬI | #{index + 1} | {account.User} | PID={process.Id} | Partition={account.Partition} | Server={account.Server} | KýTựUser={account.User.Length} | KýTựPass={account.Pass.Length}");
+		return TryEnterWorld(process.Id, windowHandle, settings, token, log, index, account);
 	}
 
-	// Gửi lại cho tới khi native xác nhận đã bấm được, hoặc hết hạn. Mỗi lần thất bại ghi lại lý do native trả về để
-	// còn phân biệt "màn hình chưa hiện" với "địa chỉ sai".
-	private bool TrySendUntilAccepted(IntPtr windowHandle, int command, int payload, string description, Settings settings,
+	// Bấm Enter ở màn chọn nhân vật cho tới khi ĐỌC ĐƯỢC tên nhân vật trong bộ nhớ.
+	//
+	// Xác nhận bằng trạng thái chứ không bằng giá trị trả về của PostMessageA: bài học lệnh 8 ngày 2026-09-17 là
+	// PostMessageA trả thành công trong khi phía nhận bỏ qua hoàn toàn, và 20/20 lần hỏng mà không ai biết.
+	// Mốc dùng ở đây là chính mốc AccountEngineCoordinator dùng để phát hiện rớt khỏi game: GameMemory.ReadSnapshot
+	// trả NameReadFailed "Character name is empty" khi nhân vật chưa vào thế giới (Utils/GameMemory.cs:148).
+	private bool TryEnterWorld(int processId, IntPtr windowHandle, Settings settings, CancellationToken token,
+		Action<string> log, int index, LoginAccount account) {
+		DateTime deadline = DateTime.UtcNow.AddMilliseconds(EnterWorldTimeoutMilliseconds);
+		int attempts = 0;
+		string lastFailure = "";
+		while (! token.IsCancellationRequested && DateTime.UtcNow < deadline) {
+			GameSnapshot snapshot = GameMemory.ReadSnapshot(processId);
+			if (snapshot.Success && snapshot.CharacterName.Length > 0) {
+				log($"ĐĂNG NHẬP VÀO GAME | #{index + 1} | {account.User} | PID={processId} | NhânVật={snapshot.CharacterName} | SốLầnEnter={attempts} | Cấp={snapshot.Level} | HP={snapshot.Hp}/{snapshot.MaxHp} | ViTri={snapshot.X}/{snapshot.Y}");
+				return true;
+			}
+			lastFailure = $"{snapshot.Status} | {snapshot.FailReason}";
+			attempts++;
+			if (! transport.TrySendEnterKey(windowHandle, out string enterError)) {
+				log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Không gửi được phím Enter ở màn chọn nhân vật | {enterError}");
+				return false;
+			}
+			token.WaitHandle.WaitOne(EnterWorldRetryMilliseconds);
+		}
+		log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | PID={processId} | Đã bấm Enter {attempts} lần trong {EnterWorldTimeoutMilliseconds}ms mà vẫn chưa đọc được tên nhân vật | Lý do cuối: {lastFailure}");
+		return false;
+	}
+
+	// Gửi lại cho tới khi ĐỐI TƯỢNG hộp thoại biến mất khỏi bộ nhớ, hoặc hết hạn.
+	//
+	// Bản cũ (TrySendUntilAccepted) coi native trả 1 là xong. Đó là bẫy: 1 chỉ nghĩa là hàm điều phối của client chạy
+	// xong, KHÔNG nghĩa là hộp thoại đã đóng. Đo lại trên client 1.30 PID 20736 ngày 2026-09-18, gửi 281 ngay 14ms sau
+	// 280 đúng như luồng thật:
+	//   lệnh 280 -> 1, lệnh 281 -> 1, nhưng 5 giây sau: hộp Khuyến cáo = -2 (đã đóng), hộp Phiên bản = 3 (VẪN CÒN),
+	//   hộp Chọn máy chủ = -2 (chưa bao giờ dựng) — ảnh chụp cho thấy client đứng ở "Thông tin phiên bản".
+	// Client chưa dỡ xong hộp trước thì nuốt luôn sự kiện của hộp sau. Cùng khuôn lỗi lệnh 8 ngày 2026-09-17.
+	//
+	// Phải THẤY hộp thoại tồn tại rồi mới chấp nhận nó biến mất: lúc client chưa dựng xong hộp, ô con trỏ cũng đọc ra
+	// -2 y hệt lúc đã đóng, nhận ngay là bỏ qua cả bước.
+	private bool TrySendUntilDialogClosed(IntPtr windowHandle, int command, int dialogRva, string description, Settings settings,
 		CancellationToken token, Action<string> log, int index, LoginAccount account) {
 		DateTime deadline = DateTime.UtcNow.AddMilliseconds(settings.StepTimeoutMilliseconds);
 		string lastError = "";
 		int attempts = 0;
+		bool seenAlive = false;
 		while (DateTime.UtcNow < deadline && ! token.IsCancellationRequested) {
-			attempts++;
-			if (transport.TrySendLoginCommand(windowHandle, command, payload, out long result, out lastError) && result == 1) {
-				log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Lệnh {command} ({description}) được nhận sau {attempts} lần thử.");
-				return true;
+			if (transport.TrySendLoginCommand(windowHandle, DiagnoseDialogCommand, dialogRva, out long state, out lastError)) {
+				if (state == DialogAliveResult) seenAlive = true;
+				if (seenAlive && state == DialogGoneResult) {
+					log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Lệnh {command} ({description}) đã đóng được hộp sau {attempts} lần gửi.");
+					return true;
+				}
+				if (seenAlive) {
+					attempts++;
+					transport.TrySendLoginCommand(windowHandle, command, 0, out long _, out lastError);
+				}
 			}
-			if (lastError.Length == 0) lastError = $"Native trả về {result} thay vì 1.";
 			token.WaitHandle.WaitOne(StepRetryMilliseconds);
 		}
-		log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Lệnh {command} ({description}) không được nhận sau {attempts} lần thử trong {settings.StepTimeoutMilliseconds}ms | Lỗi cuối: {lastError}");
+		log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Lệnh {command} ({description}) gửi {attempts} lần trong {settings.StepTimeoutMilliseconds}ms mà hộp vẫn chưa đóng | ThấyHộp={seenAlive} | Lỗi cuối: {lastError}");
 		return false;
 	}
 
@@ -192,12 +262,16 @@ public sealed class LoginAutomation {
 	// khi sau cả một lượt chờ mà màn hình vẫn chưa hiện — gửi lại quá sớm là bắn vào màn hình đã đổi.
 	private bool TryReachLoginScreen(IntPtr windowHandle, LoginAccount account, Settings settings, CancellationToken token,
 		Action<string> log, int index) {
-		DateTime deadline = DateTime.UtcNow.AddMilliseconds(settings.StepTimeoutMilliseconds);
 		int attempts = 0;
-		while (DateTime.UtcNow < deadline && ! token.IsCancellationRequested) {
+		for (int attemptIndex = 0; attemptIndex < LoginScreenMaxAttempts && ! token.IsCancellationRequested; attemptIndex++) {
 			attempts++;
-			transport.TrySendLoginCommand(windowHandle, SelectServerCommand, Pack(account.Partition, account.Server), out long _, out string _);
-			DateTime settle = DateTime.UtcNow.AddMilliseconds(LoginScreenWaitMilliseconds);
+			// Giá trị trả về của lệnh 282 trước đây bị vứt đi nên log không bao giờ cho biết native từ chối hay
+			// không. Từ bản dựng native 99990005, lệnh 282 trả 0 khi dòng cần chọn không tồn tại (danh sách rỗng
+			// hoặc chỉ số vượt số dòng) — đúng ca Partition=0 trỏ vào cụm "Máy chủ mới đề cử" có 0 máy chủ.
+			transport.TrySendLoginCommand(windowHandle, SelectServerCommand, Pack(account.Partition, account.Server),
+				out long selectResult, out string selectError);
+			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Lệnh {SelectServerCommand} lần {attempts} | Partition={account.Partition} | Server={account.Server} | Result={selectResult}{(selectError.Length > 0 ? " | " + selectError : "")}");
+			DateTime settle = DateTime.UtcNow.AddMilliseconds(settings.StepTimeoutMilliseconds);
 			while (DateTime.UtcNow < settle && ! token.IsCancellationRequested) {
 				if (transport.TrySendLoginCommand(windowHandle, ReadAgreeTermsCommand, 0, out long state, out string _) && state != -1) {
 					log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Đã tới màn đăng nhập sau {attempts} lần gửi lệnh {SelectServerCommand}.");
@@ -209,7 +283,8 @@ public sealed class LoginAutomation {
 		// Đọc luôn câu client đang hiển thị: ca hỏng hay gặp nhất là máy chủ từ chối kết nối, lúc đó client dựng popup
 		// thay vì dựng màn đăng nhập. CHƯA kiểm chứng câu cụ thể trong ca đó, nên chỉ ghi nguyên chuỗi đọc được.
 		string message = ReadStatusMessage(windowHandle);
-		log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Không tới được màn đăng nhập sau {attempts} lần gửi lệnh {SelectServerCommand} trong {settings.StepTimeoutMilliseconds}ms | Client đang hiển thị: {(message.Length > 0 ? message : "(không đọc được)")}");
+		int totalWaitedMilliseconds = attempts * settings.StepTimeoutMilliseconds;
+		log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Không tới được màn đăng nhập sau {attempts} lần gửi lệnh {SelectServerCommand} (mỗi lần chờ {settings.StepTimeoutMilliseconds}ms, tổng {totalWaitedMilliseconds}ms) | Client đang hiển thị: {(message.Length > 0 ? message : "(không đọc được)")}");
 		return false;
 	}
 
