@@ -6,6 +6,7 @@
 	xmlns:converters="clr-namespace:Auto.UI.Converters"
 	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
 	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:models="clr-namespace:Auto.UI.Models"
 	xmlns:runtime="clr-namespace:Auto.Runtime"
 	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
 	d:DataContext="{d:DesignInstance Type=vm:BasicViewModel}"
@@ -15,94 +16,187 @@
 		<converters:DeathActionDisplayConverter x:Key="DeathActionDisplayConverter" />
 	</UserControl.Resources>
 
-	<Border Style="{StaticResource CardBorder}">
-		<Grid>
-			<Grid.ColumnDefinitions>
-				<ColumnDefinition Width="Auto" />
-				<ColumnDefinition Width="Auto" />
-				<ColumnDefinition Width="*" />
-			</Grid.ColumnDefinitions>
-			<Grid.RowDefinitions>
-				<RowDefinition Height="Auto" />
-				<RowDefinition Height="Auto" />
-				<RowDefinition Height="Auto" />
-				<RowDefinition Height="Auto" />
-			</Grid.RowDefinitions>
+	<StackPanel>
+		<Border Style="{StaticResource CardBorder}">
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="*" />
+				</Grid.ColumnDefinitions>
+				<Grid.RowDefinitions>
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+				</Grid.RowDefinitions>
 
-			<TextBlock
-				Grid.Row="0"
-				Grid.Column="0"
-				Grid.ColumnSpan="3"
-				Style="{StaticResource SectionLabel}"
-				Text="Cài đặt khác" />
+				<TextBlock
+					Grid.Row="0"
+					Grid.Column="0"
+					Grid.ColumnSpan="4"
+					Style="{StaticResource SectionLabel}"
+					Text="Mua item hồi phục" />
 
-			<CheckBox
-				Grid.Row="1"
-				Grid.Column="0"
-				Margin="0,0,10,10"
-				Content="Hồi thành phù khi HP ≤"
-				IsChecked="{Binding EnableLowHpReturnTalisman}" />
-			<TextBox
-				Grid.Row="1"
-				Grid.Column="1"
-				Width="40"
-				Margin="0,0,6,10"
-				HorizontalAlignment="Left"
-				Style="{StaticResource NumericTextBox}"
-				Text="{Binding LowHpReturnTalismanThreshold, UpdateSourceTrigger=LostFocus}"
-				controls:NumericInputBehavior.IsEnabled="True" />
-			<TextBlock
-				Grid.Row="1"
-				Grid.Column="2"
-				Margin="0,0,0,10"
-				Style="{StaticResource FieldLabel}"
-				Text="%" />
-
-			<CheckBox
-				Grid.Row="2"
-				Grid.Column="0"
-				Margin="0,0,10,10"
-				Content="Sửa đồ khi độ bền ≤"
-				IsChecked="{Binding EnableWeaponRepair}" />
-			<TextBox
-				Grid.Row="2"
-				Grid.Column="1"
-				Width="40"
-				Margin="0,0,6,10"
-				HorizontalAlignment="Left"
-				Style="{StaticResource NumericTextBox}"
-				Text="{Binding WeaponDurabilityThreshold, UpdateSourceTrigger=LostFocus}"
-				controls:NumericInputBehavior.IsEnabled="True" />
-
-			<TextBlock
-				Grid.Row="3"
-				Grid.Column="0"
-				Style="{StaticResource FieldLabel}"
-				Text="Khi nhân vật chết" />
-			<StackPanel
-				Grid.Row="3"
-				Grid.Column="1"
-				Grid.ColumnSpan="2"
-				Orientation="Horizontal">
+				<CheckBox
+					Grid.Row="1"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Mua máu nhanh"
+					IsChecked="{Binding EnableQuickBuyHp}" />
 				<ComboBox
-					Width="120"
-					Margin="0,0,6,0"
-					ItemsSource="{Binding DeathActions}"
-					SelectedItem="{Binding DeathAction}">
+					Grid.Row="1"
+					Grid.Column="1"
+					Width="170"
+					Margin="0,0,6,10"
+					ItemsSource="{Binding QuickBuyHpPotions}"
+					SelectedValue="{Binding QuickBuyHpPotionCode}"
+					SelectedValuePath="Code">
 					<ComboBox.ItemTemplate>
-						<DataTemplate DataType="{x:Type runtime:DeathAction}">
-							<TextBlock Text="{Binding Converter={StaticResource DeathActionDisplayConverter}}" />
+						<DataTemplate DataType="{x:Type models:PotionOption}">
+							<TextBlock Text="{Binding Name}" />
 						</DataTemplate>
 					</ComboBox.ItemTemplate>
 				</ComboBox>
 				<TextBox
-					Width="50"
-					Margin="0,0,6,0"
+					Grid.Row="1"
+					Grid.Column="2"
+					Width="40"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
 					Style="{StaticResource NumericTextBox}"
-					Text="{Binding ReturnToTownDelayMilliseconds, UpdateSourceTrigger=LostFocus}"
+					Text="{Binding QuickBuyHpQuantity, UpdateSourceTrigger=LostFocus}"
 					controls:NumericInputBehavior.IsEnabled="True" />
-				<TextBlock Style="{StaticResource FieldLabel}" Text="ms" />
-			</StackPanel>
-		</Grid>
-	</Border>
+
+				<CheckBox
+					Grid.Row="2"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Mua mana nhanh"
+					IsChecked="{Binding EnableQuickBuyMp}" />
+				<ComboBox
+					Grid.Row="2"
+					Grid.Column="1"
+					Width="170"
+					Margin="0,0,6,10"
+					ItemsSource="{Binding QuickBuyMpPotions}"
+					SelectedValue="{Binding QuickBuyMpPotionCode}"
+					SelectedValuePath="Code">
+					<ComboBox.ItemTemplate>
+						<DataTemplate DataType="{x:Type models:PotionOption}">
+							<TextBlock Text="{Binding Name}" />
+						</DataTemplate>
+					</ComboBox.ItemTemplate>
+				</ComboBox>
+				<TextBox
+					Grid.Row="2"
+					Grid.Column="2"
+					Width="40"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding QuickBuyMpQuantity, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+
+				<CheckBox
+					Grid.Row="3"
+					Grid.Column="0"
+					Grid.ColumnSpan="4"
+					Content="Mua ở Đại phu khi hết 1000 bình mua nhanh"
+					IsChecked="{Binding EnableQuickBuyAtDoctor}" />
+			</Grid>
+		</Border>
+
+		<Border Style="{StaticResource CardBorder}">
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="*" />
+				</Grid.ColumnDefinitions>
+				<Grid.RowDefinitions>
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+				</Grid.RowDefinitions>
+
+				<TextBlock
+					Grid.Row="0"
+					Grid.Column="0"
+					Grid.ColumnSpan="3"
+					Style="{StaticResource SectionLabel}"
+					Text="Cài đặt khác" />
+
+				<CheckBox
+					Grid.Row="1"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Hồi thành phù khi HP ≤"
+					IsChecked="{Binding EnableLowHpReturnTalisman}" />
+				<TextBox
+					Grid.Row="1"
+					Grid.Column="1"
+					Width="40"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding LowHpReturnTalismanThreshold, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock
+					Grid.Row="1"
+					Grid.Column="2"
+					Margin="0,0,0,10"
+					Style="{StaticResource FieldLabel}"
+					Text="%" />
+
+				<CheckBox
+					Grid.Row="2"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Sửa đồ khi độ bền ≤"
+					IsChecked="{Binding EnableWeaponRepair}" />
+				<TextBox
+					Grid.Row="2"
+					Grid.Column="1"
+					Width="40"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding WeaponDurabilityThreshold, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+
+				<TextBlock
+					Grid.Row="3"
+					Grid.Column="0"
+					Style="{StaticResource FieldLabel}"
+					Text="Khi nhân vật chết" />
+				<StackPanel
+					Grid.Row="3"
+					Grid.Column="1"
+					Grid.ColumnSpan="2"
+					Orientation="Horizontal">
+					<ComboBox
+						Width="120"
+						Margin="0,0,6,0"
+						ItemsSource="{Binding DeathActions}"
+						SelectedItem="{Binding DeathAction}">
+						<ComboBox.ItemTemplate>
+							<DataTemplate DataType="{x:Type runtime:DeathAction}">
+								<TextBlock Text="{Binding Converter={StaticResource DeathActionDisplayConverter}}" />
+							</DataTemplate>
+						</ComboBox.ItemTemplate>
+					</ComboBox>
+					<TextBox
+						Width="50"
+						Margin="0,0,6,0"
+						Style="{StaticResource NumericTextBox}"
+						Text="{Binding ReturnToTownDelayMilliseconds, UpdateSourceTrigger=LostFocus}"
+						controls:NumericInputBehavior.IsEnabled="True" />
+					<TextBlock Style="{StaticResource FieldLabel}" Text="ms" />
+				</StackPanel>
+			</Grid>
+		</Border>
+	</StackPanel>
 </UserControl>

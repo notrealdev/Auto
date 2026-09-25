@@ -35,6 +35,7 @@ public static class DebugLog {
 	private static readonly string perfLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "perf.log");
 	private static readonly string clientEventLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "client-freeze.log");
 	private static readonly string loginLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "login.log");
+	private static readonly string profileLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "profile.log");
 	private const int MaximumFlushCharacters = 64000;
 	private const long MaximumLogBytes = 5L * 1024L * 1024L;
 	private static readonly ConcurrentQueue<RuntimeLogEntry> pendingRuntimeLines = new();
@@ -80,6 +81,19 @@ public static class DebugLog {
 	public static void AddLoginEvent(string text) {
 		if (string.IsNullOrWhiteSpace(text)) return;
 		QueueLog(loginLogPath, FormatLine(text));
+	}
+
+	// Log của hồ sơ cấu hình theo nhân vật (Runtime/AccountProfileStore.cs).
+	//
+	// KHÔNG đi qua cổng autoLoggingEnabled như AddClientEvent: việc khôi phục hồ sơ xảy ra đúng lúc Auto tổng còn
+	// TẮT ở mọi account, nên nếu dùng AddClientEvent thì mọi dòng khôi phục đều bị nuốt — tức không có cách nào
+	// biết hồ sơ đã nạp đúng hay chưa.
+	//
+	// Cũng KHÔNG trộn vào login.log: file đó đang dùng để truy luồng đăng nhập, thêm hàng chục dòng hồ sơ vào là
+	// mất tác dụng.
+	public static void AddProfileEvent(string text) {
+		if (string.IsNullOrWhiteSpace(text)) return;
+		QueueLog(profileLogPath, FormatLine(text));
 	}
 
 	public static void AddForProcess(int processId, string text) {

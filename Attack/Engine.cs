@@ -18,6 +18,17 @@ public sealed class Engine {
 	// Đứng im bao lâu thì mới coi là kẹt và gửi lại lệnh tránh thủ lĩnh. Cùng ngưỡng với nhánh qua cổng của hai
 	// hàng đợi di chuyển, vì cùng một lý do: đang đi thì để yên, đừng phát lại lệnh.
 	private const int EliteWalkStallMilliseconds = 2000;
+	// Đích trốn phải được giữ tối thiểu chừng này trước khi cho phép huỷ vì "bẩn" (một thủ lĩnh lọt vào bán kính
+	// cấm quanh đích). Không có ngưỡng này thì nhiều thủ lĩnh xoay quanh sát đích sẽ làm đích bị coi là bẩn ở HẦU
+	// HẾT mỗi lượt gửi lại (OutsideAreaWalkIntervalMilliseconds = 700ms), khiến TryWalkTo bị bắn lại liên tục và
+	// không lệnh nào kịp chạy hết trước khi bị lệnh sau ghi đè — nhân vật đứng nguyên một chỗ dù log báo
+	// "Delivery=CONFIRMED" mỗi lần. Cùng ngưỡng với EliteWalkStallMilliseconds vì cùng bản chất: "vừa chốt đích thì
+	// để yên, đừng huỷ ngay".
+	//
+	// Bằng chứng (movement.log 2026-09-22, PID=19860): 12:02:20.625-12:02:52.944, Player kẹt cứng đúng
+	// 61551/91208 suốt ~32 giây, 30+ dòng ELITE_RETREAT phần lớn LýDoBắn=ĐÍCH_BẨN cách nhau ~700ms, do 3 thủ lĩnh
+	// Băng Linh xoay quanh gần đích trốn.
+	private const int EliteRetreatMinimumHoldMilliseconds = 2000;
 	// Trốn xong phải dư ra bao nhiêu so với bán kính cấm, để boss nhích nhẹ là chưa phải chạy lại ngay. 1 ô = 256 raw.
 	private const int EliteRetreatMarginRaw = 256;
 	// Cách đích đang giữ trong chừng này thì coi như đã tới nơi. Nửa ô trục X (1 ô = 256 raw): client tự tìm đường
@@ -103,6 +114,12 @@ public sealed class Engine {
 	private int eliteWalkObservedX;
 	private int eliteWalkObservedY;
 	private DateTime eliteWalkProgressUtc = DateTime.MinValue;
+	// Thời điểm đích hiện tại được CHỐT (gán cùng lúc với eliteWalkDestinationX/Y). Dùng để chặn vòng lặp bắn lại
+	// liên tục khi nhiều thủ lĩnh xoay quanh sát đích trốn — xem EliteRetreatMinimumHoldMilliseconds bên dưới.
+	private DateTime eliteWalkCommittedUtc = DateTime.MinValue;
+	// Tên cổng làm TryRetreatFromElitesCore trả false. Chỉ dùng để ghi log chẩn đoán ở TryRetreatFromElites; đọc và
+	// ghi đều trong cùng một lượt quét của worker nên không cần đồng bộ.
+	private string retreatExitGate = "";
 	// Dùng lại một danh sách cho mọi lượt quét thay vì cấp phát mới mỗi 20ms.
 	private readonly List<AutoFsEntity> eliteBuffer = new();
 	// Mỗi tên quái thủ lĩnh chỉ ghi log một lần cho tới khi tắt Đánh, nếu không thì mỗi 20ms lại một dòng.
@@ -249,6 +266,7 @@ public sealed class Engine {
 			eliteWalkObservedX = 0;
 			eliteWalkObservedY = 0;
 			eliteWalkProgressUtc = DateTime.MinValue;
+			eliteWalkCommittedUtc = DateTime.MinValue;
 			eliteBuffer.Clear();
 			loggedEliteNames.Clear();
 		}
@@ -500,7 +518,19 @@ public sealed class Engine {
 	}
 
 	private bool TryRetreatFromElites(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int playerLifecycleStatus, Action<string>? currentTargetMovementLog) {
+		retreatExitGate = "";
 		bool retreating = TryRetreatFromElitesCore(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog);
+		// CHẨN ĐOÁN 2026-09-22: movement.log PID=24236 MaiAnhNhe 09:21-09:22 có MỌI dòng ELITE_RETREAT mang
+		// CònCáchĐíchCũ="chưa có đích", tức đích chốt ở dòng "eliteWalkDestinationX = destinationX" bên dưới bị xoá
+		// giữa hai lần trốn cách nhau chỉ 3-6 giây (nhịp quét 100ms nên có ~35 lượt ở giữa). Hệ quả: luật "chốt đích,
+		// đi cho hết chỗ đó" chưa bao giờ chạy, mỗi lượt lại bắn một đích mới tính từ chỗ đang đứng, và nhân vật
+		// đứng nguyên ở ~62265/91411 trong suốt đoạn log.
+		//
+		// Chỉ ghi khi ĐANG GIỮ một đích rồi mới bị xoá — đó mới là trường hợp làm mất luật chốt đích. Ghi một dòng
+		// cho mỗi lần như vậy để biết CỔNG NÀO của Core trả false, thay vì tiếp tục đoán.
+		if (! retreating && eliteWalkDestinationX > 0 && eliteWalkDestinationY > 0) {
+			currentTargetMovementLog?.Invoke($"ELITE_RETREAT_DESTINATION_DROPPED | PID={currentProcessId} | Player={playerX}/{playerY} | ĐíchĐangGiữ={eliteWalkDestinationX}/{eliteWalkDestinationY} | CònCách={EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY):F0} | CổngThoát={retreatExitGate}");
+		}
 		// HẾT ĐỢT TRỐN THÌ PHẢI BỎ ĐÍCH ĐANG GIỮ.
 		//
 		// Đích trốn chỉ được xoá ở khối khởi động lại worker, không bao giờ xoá khi đợt trốn kết thúc bình thường
@@ -520,20 +550,35 @@ public sealed class Engine {
 			eliteWalkObservedX = 0;
 			eliteWalkObservedY = 0;
 			eliteWalkProgressUtc = DateTime.MinValue;
+			eliteWalkCommittedUtc = DateTime.MinValue;
 		}
 		retreatingFromElite = retreating;
 		return retreating;
 	}
 
 	private bool TryRetreatFromElitesCore(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int playerLifecycleStatus, Action<string>? currentTargetMovementLog) {
-		if (!settings.DoNotAttackBoss || settings.ElitePlayerRetreatRadius <= 0 || eliteBuffer.Count == 0) return false;
-		if (playerX <= 0 || playerY <= 0) return false;
+		// retreatExitGate: tên cổng làm hàm này trả false, để TryRetreatFromElites ghi được lý do đích bị xoá.
+		if (!settings.DoNotAttackBoss || settings.ElitePlayerRetreatRadius <= 0 || eliteBuffer.Count == 0) {
+			retreatExitGate = $"CÀI_ĐẶT_HOẶC_BẢNG_RỖNG (KhôngĐánhBoss={settings.DoNotAttackBoss}, BánKính={settings.ElitePlayerRetreatRadius}, SốThủLĩnhQuétĐược={eliteBuffer.Count})";
+			return false;
+		}
+		if (playerX <= 0 || playerY <= 0) {
+			retreatExitGate = $"KHÔNG_ĐỌC_ĐƯỢC_VỊ_TRÍ ({playerX}/{playerY})";
+			return false;
+		}
 		bool aroundPoint = settings.TrainingEnabled || settings.TeachingEnabled || settings.ContinueEnabled || settings.UseCenterPosition;
-		if (!aroundPoint) return false;
-		if (currentGame.ReturnToTrainingAutomation.IsBusy || currentGame.ConfiguredTrainingMovementAutomation.IsBusy || currentGame.WeaponRepairAutomation.IsBusy) return false;
+		if (!aroundPoint) {
+			retreatExitGate = "KHÔNG_BẬT_CHẾ_ĐỘ_QUANH_ĐIỂM";
+			return false;
+		}
+		if (currentGame.ReturnToTrainingAutomation.IsBusy || currentGame.ConfiguredTrainingMovementAutomation.IsBusy || currentGame.WeaponRepairAutomation.IsBusy) {
+			retreatExitGate = $"LUỒNG_KHÁC_ĐANG_CHẠY (LênBãi={currentGame.ReturnToTrainingAutomation.IsBusy}, ĐiBãiCấuHình={currentGame.ConfiguredTrainingMovementAutomation.IsBusy}, SửaĐồ={currentGame.WeaponRepairAutomation.IsBusy})";
+			return false;
+		}
 
 		List<(int X, int Y)> elites = eliteBuffer.Select(elite => (elite.RawX, elite.RawY)).ToList();
 		if (!EliteAvoidance.IsNearAnyElite(playerX, playerY, elites, settings.ElitePlayerRetreatRadius)) {
+			retreatExitGate = $"ĐÃ_RA_KHỎI_VÙNG_CẤM (gầnNhất={EliteAvoidance.NearestEliteDistance(playerX, playerY, elites):F0} > bánKính={settings.ElitePlayerRetreatRadius})";
 			return false;
 		}
 
@@ -595,11 +640,16 @@ public sealed class Engine {
 			bool committedDestinationDirty = EliteAvoidance.IsNearAnyElite(eliteWalkDestinationX, eliteWalkDestinationY, elites, settings.ElitePlayerRetreatRadius);
 			bool arrived = EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY) <= EliteRetreatArrivalRaw;
 			bool stalled = now - eliteWalkProgressUtc >= TimeSpan.FromMilliseconds(EliteWalkStallMilliseconds);
-			if (!committedDestinationDirty && !arrived && !stalled) return true;
-			retreatReason = committedDestinationDirty ? "ĐÍCH_BẨN" : arrived ? "ĐÃ_TỚI" : "ĐỨNG_IM";
-			// Còn đi dở tới một đích vẫn sạch mà phải bắn lại vì đứng im: giữ nguyên đích cũ thay vì lấy đích mới đã
-			// trôi theo nhân vật, để lệnh thứ hai là đi tiếp đúng chỗ cũ chứ không phải đổi hướng giữa đường.
-			if (!committedDestinationDirty && !arrived) {
+			// Chỉ huỷ vì "bẩn" nếu đích đã được giữ đủ EliteRetreatMinimumHoldMilliseconds — chặn vòng lặp bắn lại
+			// liên tục khi nhiều thủ lĩnh xoay quanh sát đích (mỗi lượt gửi lại cách nhau 700ms đều thấy dirty=true).
+			bool destinationDirtyAndReady = committedDestinationDirty
+				&& now - eliteWalkCommittedUtc >= TimeSpan.FromMilliseconds(EliteRetreatMinimumHoldMilliseconds);
+			if (!destinationDirtyAndReady && !arrived && !stalled) return true;
+			retreatReason = destinationDirtyAndReady ? "ĐÍCH_BẨN" : arrived ? "ĐÃ_TỚI" : "ĐỨNG_IM";
+			// Còn đi dở tới một đích vẫn sạch (hoặc mới bẩn nhưng chưa đủ thời gian giữ) mà phải bắn lại vì đứng im:
+			// giữ nguyên đích cũ thay vì lấy đích mới đã trôi theo nhân vật, để lệnh thứ hai là đi tiếp đúng chỗ cũ
+			// chứ không phải đổi hướng giữa đường.
+			if (!destinationDirtyAndReady && !arrived) {
 				destinationX = eliteWalkDestinationX;
 				destinationY = eliteWalkDestinationY;
 			}
@@ -613,6 +663,9 @@ public sealed class Engine {
 		}
 		lastWalkFailure = "";
 		nextOutsideAreaWalkUtc = now.AddMilliseconds(OutsideAreaWalkIntervalMilliseconds);
+		// Chỉ khởi động lại đồng hồ giữ đích khi đích THẬT SỰ đổi toạ độ — resend cùng một đích (nhánh ĐỨNG_IM) thì
+		// đồng hồ giữ nguyên, không thì mỗi lần bắn lại vì đứng im lại tự gia hạn thời gian miễn nhiễm với "bẩn".
+		if (destinationX != eliteWalkDestinationX || destinationY != eliteWalkDestinationY) eliteWalkCommittedUtc = now;
 		eliteWalkDestinationX = destinationX;
 		eliteWalkDestinationY = destinationY;
 		eliteWalkObservedX = playerX;

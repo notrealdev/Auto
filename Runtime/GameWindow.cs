@@ -31,6 +31,15 @@ public class GameWindow {
 
 	public int MaxMp { get; set; }
 
+	// Sức lực mang đồ theo ô nhớ GỐC của game (InventoryStrengthReader.ReadRaw), để dòng account khớp số trong game.
+	// AccountListViewModel.ApplyScanResult ghi mỗi nhịp quét. StrengthCurrent < 0 = chưa đọc được (chưa vào game).
+	public int StrengthCurrent { get; set; } = -1;
+
+	public int StrengthMaximum { get; set; }
+
+	// Số tiền trong túi, đơn vị XU (InventoryMoneyReader). < 0 = chưa đọc được. Cùng vòng ghi với sức lực.
+	public int Money { get; set; } = -1;
+
 	public int X { get; set; }
 
 	public int Y { get; set; }
@@ -67,6 +76,7 @@ public class GameWindow {
 
 	public BasicSettings BasicSettings { get; } = new();
 	internal LowHpEngine LowHpEngine { get; }
+	internal QuickBuyEngine QuickBuyEngine { get; }
 
 	public Auto.Market.Settings MarketSettings { get; } = new();
 	internal Auto.Market.ChatEngine ChatEngine { get; }
@@ -86,6 +96,13 @@ public class GameWindow {
 	public Dictionary<int, (int RawX, int RawY)> TrainingPositionsByMap { get; } = new();
 	public int SavedTrainingMapId { get; set; }
 
+	// Đã khôi phục hồ sơ cấu hình cho cửa sổ này chưa (AccountProfileStore).
+	//
+	// Chỉ khôi phục ĐÚNG MỘT LẦN, ngay lần đầu đọc được tên nhân vật. Không có cờ này thì vòng quét 1 giây của
+	// AccountListViewModel.ApplyScanResult sẽ khôi phục lại mỗi nhịp và ghi đè đúng thứ người dùng vừa sửa tay
+	// trên tab. Vòng đời cờ trùng khít vòng đời đối tượng nên không thể rò rỉ như bảng static khoá theo HWND.
+	public bool ProfileRestored { get; set; }
+
 	public int LastObservedMapId { get; set; }
 
 	public DateTime NextMapIdentityCheckUtc { get; set; } = DateTime.MinValue;
@@ -101,6 +118,7 @@ public class GameWindow {
 		BuffEngine = new Auto.Support.BuffEngine(SupportSettings, AutoFsTransport);
 		InventorySaleEngine = new InventorySaleEngine(LootSettings, AutoFsTransport);
 		LowHpEngine = new LowHpEngine(BasicSettings, AutoFsTransport);
+		QuickBuyEngine = new QuickBuyEngine(BasicSettings, AutoFsTransport);
 		ChatEngine = new Auto.Market.ChatEngine(MarketSettings, AutoFsTransport);
 	}
 

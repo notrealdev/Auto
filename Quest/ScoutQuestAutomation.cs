@@ -148,6 +148,9 @@ public sealed class ScoutQuestAutomation {
 	private bool transitGateCommandSent;
 	private DateTime transitGateProgressUtc;
 	private double transitGateBestDistance;
+	// Cửa sổ của lượt Tick đang chạy — Fail()/AdvancePhase() không nhận GameWindow qua tham số, nên giữ lại đây để
+	// ghi trạng thái hoàn thành lên game.QuestSettings khi kết thúc. Chỉ đọc trong Tick, không dùng qua luồng khác.
+	private GameWindow? activeGame;
 
 	public bool IsBusy => state != ScoutState.Idle;
 
@@ -159,6 +162,7 @@ public sealed class ScoutQuestAutomation {
 	}
 
 	public bool Tick(GameWindow game, GameSnapshot snapshot, Action<string>? log) {
+		activeGame = game;
 		if (state == ScoutState.Idle) return Start(game, snapshot, log);
 		if (! snapshot.Success) return true;
 		LogState(log);
@@ -221,6 +225,18 @@ public sealed class ScoutQuestAutomation {
 						BeginWalking(log, $"bấm '{ReturnTalismanName}' {MaximumReturnTalismanAttempts} lần vẫn ở Map{game.LastObservedMapId}");
 						break;
 					}
+					// GIẢ THUYẾT CHƯA VERIFY (chủ dự án báo 2026-09-21 vẫn thấy '{ReturnTalismanName}' đôi lúc không dùng
+					// được dù đúng ô 4): một popup còn treo (ví dụ menu Di ngoại phù chưa đóng hết từ lượt trước, hoặc
+					// hộp thoại hệ thống) có thể chặn client nhận phím tắt — cùng hiện tượng "client bỏ qua lần bấm"
+					// đã ghi ở trên nhưng chưa từng đối chiếu với ModalState. Đóng trước khi bấm nếu có; CHƯA quan sát
+					// được việc này có loại bỏ hẳn hiện tượng bấm hụt hay không.
+					IntPtr leftoverReturnMenu = ReadMenu(game.ProcessId);
+					if (leftoverReturnMenu != IntPtr.Zero) {
+						string clearResult = BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+						log?.Invoke($"Thám quân | có popup còn treo trước khi bấm '{ReturnTalismanName}', đóng bằng ESC rồi thử lại | Menu=0x{leftoverReturnMenu.ToInt64():X8} | {clearResult.Replace("\r\n", " | ")}");
+						nextActionUtc = DateTime.UtcNow.AddMilliseconds(ReturnTalismanRetryMilliseconds);
+						break;
+					}
 					if (! TryFindQuickSlot(game.ProcessId, ReturnTalismanName, out int returnSlot, out string returnSlotEvidence)) {
 						BeginWalking(log, $"không có '{ReturnTalismanName}' ở ô trang bị nhanh | {returnSlotEvidence}");
 						break;
@@ -270,7 +286,10 @@ public sealed class ScoutQuestAutomation {
 				// Map20 chứ không tới Map22.
 				if (! TalismanDestinationCatalog.TryGetMenuIndex(targetMapId, out int destinationIndex)) {
 					BeginWalkingOrTransitGate(game, log, $"Map{targetMapId} không có trong menu Di ngoại phù");
-					BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+					// Menu đã mở (đọc được ở trên) nhưng không có điểm đến khớp — phải ESC đóng lại, không thì menu
+					// còn treo trên màn hình chặn thao tác kế tiếp (chủ dự án chốt 2026-09-21).
+					string closeResult = BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+					log?.Invoke($"Thám quân | đóng menu Di ngoại phù bằng ESC vì không có điểm đến khớp | {closeResult.Replace("\r\n", " | ")}");
 					break;
 				}
 				string destinationEvidence = $"ĐíchNằmTrongMenu | Map={targetMapId}";
@@ -632,6 +651,7 @@ public sealed class ScoutQuestAutomation {
 				completedRounds++;
 				if (completedRounds >= MaximumRounds) {
 					log?.Invoke($"Thám quân HOÀN TẤT | Đã làm đủ {completedRounds}/{MaximumRounds} lượt.");
+					CompleteRound($"HOÀN TẤT | Đã làm đủ {completedRounds}/{MaximumRounds} lượt");
 					roundFinished = true;
 					Reset();
 					return false;
@@ -654,11 +674,13 @@ public sealed class ScoutQuestAutomation {
 				// còn bảng tên ghi "Hiên Viên T1", tra không ra, và Auto báo "HOÀN TẤT | Đã làm 2/3 lượt" rồi dừng êm.
 				if (unmatchedSegments.Length > 0) {
 					log?.Invoke($"Thám quân DỪNG VÌ LỖI | Đã làm {completedRounds}/{MaximumRounds} lượt | Popup có giao nhiệm vụ nhưng không tra được tên bản đồ: [{unmatchedSegments}] | Thêm tên này vào GameMapCatalog rồi chạy lại.");
+					CompleteRound($"DỪNG VÌ LỖI | Đã làm {completedRounds}/{MaximumRounds} lượt | Không tra được tên bản đồ: [{unmatchedSegments}]");
 					roundFinished = true;
 					Reset();
 					return false;
 				}
 				log?.Invoke($"Thám quân HOÀN TẤT | Đã làm {completedRounds}/{MaximumRounds} lượt | Popup trả không kèm nhiệm vụ mới, coi là hết lượt.");
+				CompleteRound($"HOÀN TẤT | Đã làm {completedRounds}/{MaximumRounds} lượt (hết nhiệm vụ trong ngày)");
 				roundFinished = true;
 				Reset();
 				return false;
@@ -1007,9 +1029,19 @@ public sealed class ScoutQuestAutomation {
 	// chuỗi thao tác sai ở NPC chỉ làm log rối. Bỏ tick rồi tick lại ô "Làm nhiệm vụ" để chạy lần nữa.
 	private bool Fail(string reason, Action<string>? log) {
 		log?.Invoke($"Thám quân FAIL | Chặng={DescribePhase(phase)} | Lượt={completedRounds + 1}/{MaximumRounds} | {reason} | Bỏ tick rồi tick lại 'Làm nhiệm vụ' để thử lại.");
+		CompleteRound($"LỖI ở chặng {DescribePhase(phase)} sau {completedRounds}/{MaximumRounds} lượt | {reason}");
 		roundFinished = true;
 		Reset();
 		return false;
+	}
+
+	// Ghi trạng thái kết thúc lên game.QuestSettings rồi tự bỏ tick "Làm nhiệm vụ" — chủ dự án chốt 2026-09-21: cần
+	// thấy trên UI là đã xong, không phải tự đoán qua log. Bỏ tick cũng đúng thực tế: roundFinished=true rồi thì
+	// Start() không chạy nữa cho tới khi người dùng tick lại, checkbox còn giữ nguyên chỉ gây hiểu nhầm là đang chạy.
+	private void CompleteRound(string summary) {
+		if (activeGame == null) return;
+		activeGame.QuestSettings.ScoutStatus = summary;
+		activeGame.QuestSettings.ScoutEnabled = false;
 	}
 
 	private bool HasTimedOut() => DateTime.UtcNow >= deadlineUtc;

@@ -61,7 +61,18 @@ public sealed class RuntimeLayout {
 	public bool MovementReady => Get(RuntimeSubsystem.MovementTransport).Available;
 	public bool LootReady => Get(RuntimeSubsystem.Ground).Available && Get(RuntimeSubsystem.LootTransport).Available;
 	public bool InventoryReady => Get(RuntimeSubsystem.Inventory).Available && Get(RuntimeSubsystem.ItemTable).Available;
-	public bool SaleReady => MovementReady && InventoryReady && Get(RuntimeSubsystem.Map).Available && Get(RuntimeSubsystem.Shop).Available && Get(RuntimeSubsystem.RepairTransport).Available && Get(RuntimeSubsystem.ArrangeTransport).Available;
+	// KHÔNG đòi ArrangeTransport (sửa 2026-09-23). Trước đây có, và vì RuntimeLayoutResolver.cs:133 gán cứng
+	// ArrangeTransport = Unavailable không qua điều kiện nào, SaleReady LUÔN false trên mọi client — tức toàn bộ
+	// chức năng bán không bao giờ chạy được, đúng lý do Diagnostics không có nổi một dòng SALE_ nào.
+	//
+	// Đo trực tiếp trên client đang chạy PID=19860 (scratchpad SubsysProbe, 2026-09-23): 11/12 hệ con đều OK,
+	// riêng ArrangeTransport FAIL, cho ra InventoryReady=True LootReady=True RepairReady=True mà SaleReady=False.
+	//
+	// Vì sao bỏ được: ArrangeTransport chỉ nói về lệnh 24 — lệnh XẾP GỌN TÚI gửi SAU khi đã bán xong
+	// (InventorySaleEngine.cs:169), không liên quan tới việc bán. Bán dùng lệnh 47, đi qua
+	// AutoFsAttackTransport.TrySendCommand, mà hàm đó chỉ kiểm công tắc tổng chứ không tra cứu RuntimeLayout.
+	// Nói cách khác cờ này không chặn được lệnh nào, nó chỉ chặn đúng biến SaleReady này.
+	public bool SaleReady => MovementReady && InventoryReady && Get(RuntimeSubsystem.Map).Available && Get(RuntimeSubsystem.Shop).Available && Get(RuntimeSubsystem.RepairTransport).Available;
 	public bool RepairReady => MovementReady && Get(RuntimeSubsystem.Map).Available && Get(RuntimeSubsystem.Shop).Available && Get(RuntimeSubsystem.RepairTransport).Available;
 	public bool SaleRepairReady => SaleReady && RepairReady;
 

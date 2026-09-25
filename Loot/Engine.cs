@@ -220,6 +220,12 @@ public sealed class Engine {
 					exitReason = "MANUAL_INPUT_PRIORITY";
 					break;
 				}
+				// Kiểm lại GIỮA CHỪNG batch, không chỉ một lần lúc Find() dựng danh sách — một batch có thể gom nhiều
+				// món, nhặt hết cả loạt rồi mới quay lại Find() để kiểm tiếp là đã trễ (chủ dự án chỉ ra 2026-09-24).
+				if (finder.IsCarryingCapacityExhausted(context.ProcessId)) {
+					exitReason = "CARRYING_CAPACITY_EXHAUSTED";
+					break;
+				}
 				ProcessCandidate(context, candidate, token);
 			}
 		} finally {
@@ -364,7 +370,10 @@ public sealed class Engine {
 					bool routinePickup = IsRoutinePickup(classification, category);
 					string marker = routinePickup ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
 					// Đẩy lên ô theo dõi trên giao diện ĐÚNG những lượt vào loot-drops.log, tức bỏ nhóm nhặt thường xuyên.
-					if (! routinePickup) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
+					// Đồ Trắng/Đồ Xanh nhặt liên tục sau khi bật cả hai màu (chủ dự án chốt) nên bị bỏ khỏi ô hiển thị
+					// UI riêng — "Vũ khí xanh" nằm ở ItemColor.Green (Finder.cs:141), không phải Blue, nên không bị lọc.
+					bool suppressUiFeed = classification.Color is ItemColor.White or ItemColor.Blue;
+					if (! routinePickup && ! suppressUiFeed) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
 					context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={pendingPickupAttempts} | Raw={coordinate.X}/{coordinate.Y}");
 				} else if (! inventoryCountReadable || ! afterReadable) {
 					// Không đọc được túi thì KHÔNG được im lặng: im lặng ở đây sẽ giấu luôn cả lượt nhặt thật.

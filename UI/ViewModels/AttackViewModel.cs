@@ -68,6 +68,7 @@ public sealed class AttackViewModel : ViewModelBase {
 		OpenClassPriorityCommand = new RelayCommand(_ => OpenClassPriorityDialog());
 		RequestMonsterOptionsCommand = new RelayCommand(_ => RequestMonsterOptions());
 		CaptureCenterPositionCommand = new RelayCommand(_ => GetCurrentPosition());
+		OpenTrainingPointsCommand = new RelayCommand(_ => OpenTrainingPointsDialog(), _ => game != null);
 	}
 
 	public Settings Settings => settings;
@@ -434,6 +435,8 @@ public sealed class AttackViewModel : ViewModelBase {
 	// Đây là đường DUY NHẤT để đổi tâm sau lần đầu: checkbox "Quanh điểm" chỉ chụp khi tâm còn trống.
 	public RelayCommand CaptureCenterPositionCommand { get; }
 
+	public RelayCommand OpenTrainingPointsCommand { get; }
+
 	private void RequestMonsterOptions() {
 		if (game == null) return;
 		IReadOnlyList<MonsterOption> options;
@@ -594,5 +597,78 @@ public sealed class AttackViewModel : ViewModelBase {
 		PrioritizeTaoist = dialogViewModel.Taoist;
 		PrioritizeSummoner = dialogViewModel.Summoner;
 		PrioritizeWarrior = dialogViewModel.Warrior;
+	}
+
+	// Nút bánh răng ở dòng "Quanh điểm": quản lý danh sách điểm train tự lưu, chọn một điểm làm tâm bãi.
+	//
+	// Cùng khuôn OpenClassPriorityDialog/OpenPotionNamesDialog: sao chép dữ liệu vào hộp thoại, chỉ ghi ngược khi
+	// người dùng bấm "Đồng ý".
+	private void OpenTrainingPointsDialog() {
+		if (game == null) return;
+		// Danh sách điểm DÙNG CHUNG cho mọi account (chủ dự án chốt 2026-09-22) — đọc từ TrainingPointStore chứ
+		// không từ GameWindow. Cái riêng theo account chỉ là điểm ĐANG CHỌN (SavedTrainingMapId + Center*).
+		TrainingPointDialogViewModel dialogViewModel = new(TrainingPointStore.Points, game.SavedTrainingMapId, ReadCurrentTrainingPoint);
+		TrainingPointDialog dialog = new() { DataContext = dialogViewModel, Owner = Application.Current.MainWindow };
+
+		if (dialog.ShowDialog() != true) return;
+
+		// Ghi ngay ra đĩa: danh sách dùng chung không bám theo nhịp lưu hồ sơ 30 giây của từng account.
+		TrainingPointStore.Save(dialogViewModel.Points.Select(row => row.Point));
+		if (dialogViewModel.SelectedPoint != null) ApplyTrainingPoint(dialogViewModel.SelectedPoint.Point);
+	}
+
+	// Đọc map + vị trí hiện tại để thêm vào danh sách. Dùng CHUNG đường đọc map với TryCommitCenter, không dựng
+	// bản thứ hai — hai nơi đọc map khác nhau là nguồn lệch chắc chắn.
+	private (bool Success, TrainingPoint Point, string Failure) ReadCurrentTrainingPoint() {
+		if (game == null) return (false, default, "Không có account game đang được chọn.");
+		GameMapInfo map = GameMapReader.Read(game.ProcessId);
+		if (! map.Success || map.MapId <= 0 || game.X <= 0 || game.Y <= 0) {
+			return (false, default, $"Chưa đọc được vị trí hiện tại | ĐọcMap={map.Success} | MapId={map.MapId} | ViTri={game.X}/{game.Y}");
+		}
+		// Lưu kèm quái ĐANG CHỌN để lần sau chọn lại điểm này là khôi phục đủ cả bãi lẫn quái. Mục "Tất cả" không
+		// có signature nên lưu rỗng, và lúc áp dụng sẽ giữ nguyên quái đang chọn thay vì ép về "Tất cả".
+		TrainingPoint point = new(map.MapId, game.X, game.Y) {
+			MonsterName = settings.SelectedMonsterName,
+			MonsterSignature = settings.SelectedMonsterSignature
+		};
+		return (true, point, "");
+	}
+
+	// Áp dụng một điểm ĐÃ LƯU làm tâm bãi.
+	//
+	// KHÔNG dùng lại TryCommitCenter được: hàm đó đọc map ĐANG ĐỨNG từ bộ nhớ, mà điểm đã lưu có thể thuộc map
+	// khác hẳn nơi nhân vật đang đứng. Ở đây map id lấy thẳng từ chính điểm đó.
+	//
+	// Vẫn giữ nguyên bất biến của TryCommitCenter: toạ độ và map id luôn ghi thành MỘT CẶP, không thì
+	// IsOutsideTrainingArea (AccountEngineCoordinator.cs) thấy lệch map và kéo nhân vật về map cũ.
+	//
+	// Ghi thêm vào SavedTrainingMapId + TrainingPositionsByMap để nhánh "bãi đã lưu" của hai resolver bên Movement/
+	// có dữ liệu mà chạy — trước lượt này chưa có dòng code nào ghi vào hai trường đó nên nhánh ấy chết cứng.
+	private void ApplyTrainingPoint(TrainingPoint point) {
+		if (game == null || ! point.IsValid) return;
+		settings.CenterX = point.RawX;
+		settings.CenterY = point.RawY;
+		settings.CenterMapId = point.MapId;
+		game.SavedTrainingMapId = point.MapId;
+		game.TrainingPositionsByMap.Clear();
+		game.TrainingPositionsByMap[point.MapId] = (point.RawX, point.RawY);
+
+		// Áp dụng luôn quái của bãi đó vào giao diện (chủ dự án chốt 2026-09-22). Điểm cũ lưu trước lượt này không
+		// có quái — lúc đó giữ nguyên quái đang chọn chứ không ép về "Tất cả", vì ép về sẽ âm thầm đổi hành vi đánh.
+		if (point.HasMonster) {
+			MonsterOption? option = Monsters.FirstOrDefault(candidate => candidate.Signature == point.MonsterSignature);
+			// Quái có thể đang ngoài tầm quét nên chưa có trong danh sách: dựng lại mục từ tên + signature đã lưu,
+			// đúng cách RequestMonsterOptions bảo lưu quái đang chọn (AttackViewModel dòng 458).
+			if (option == null) {
+				option = new MonsterOption(point.MonsterName, point.MonsterSignature, AutoFsClientProfile.MonsterType);
+				Monsters.Add(option);
+			}
+			// Đi qua setter SelectedMonster để dùng đúng MỘT đường ghi: nó tự đặt OnlySelectedMonster +
+			// SelectedMonsterName + SelectedMonsterSignature và bắn OnPropertyChanged cho ComboBox.
+			SelectedMonster = option;
+		}
+
+		DebugLog.AddForProcess(game.ProcessId, $"Chọn điểm train đã lưu | PID={game.ProcessId} | Tâm={point.RawX}/{point.RawY} | MapTâm={point.MapId} | Quái={(point.HasMonster ? point.MonsterName : "(điểm cũ không lưu quái, giữ nguyên)")} | SốĐiểmDùngChung={TrainingPointStore.Points.Count}");
+		OnPropertyChanged(nameof(Center));
 	}
 }

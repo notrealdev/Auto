@@ -4,6 +4,8 @@ using Auto.Utils;
 
 public sealed class Finder {
 	private const int AttackSafetyMaxItems = 128;
+	// Quy đổi 1 ô hiển thị = 256 raw trục X, dùng riêng cho bán kính liệt kê đồ dưới đất ở ô chọn tab Nhặt.
+	private const int GroundDiscoveryRawPerMapUnit = 256;
 	// Bán kính quét Nhặt tính từ chính nhân vật. Giữ nhỏ để lệnh nhặt không bao giờ kéo nhân vật ra khỏi bãi.
 	// Đơn vị là raw: 1 ô toạ độ hiển thị = 256 raw theo trục X và 512 raw theo trục Y, nên 150 raw chưa tới nửa ô.
 	// public để Loot/Engine dùng chung đúng con số này cho chốt chặn OUT_OF_SCAN_RADIUS trong vòng lặp nhặt.
@@ -25,8 +27,23 @@ public sealed class Finder {
 		return spriteItemScanner.Find(snapshot.ProcessId, snapshot.X, snapshot.Y, settings.Range, 128);
 	}
 
+	// Dùng cho MỘT nơi duy nhất: đổ danh sách tên đồ dưới đất cho ô chọn ở tab Nhặt (Loot.Engine.DiscoverItemOptions).
+	//
+	// SỬA 2026-09-23 — lỗi lệch đơn vị. Trước đây truyền thẳng Math.Max(settings.Range, 10) làm bán kính, nhưng
+	// AutoFsGroundItemScanner so bán kính với GetRawDistance, tức đơn vị RAW (AutoFsGroundItemScanner.cs:89-90).
+	// settings.Range là số ô trên giao diện (mặc định 10), nên bán kính thật chỉ là 10 raw — chưa tới 1/25 ô, đồ
+	// phải nằm đúng chỗ nhân vật đứng mới lọt. Đo bằng scratchpad trên cả 6 client lúc dưới đất ĐANG có đồ: hàm
+	// này trả về 0 ở cả 6, đúng hiện tượng "ô chọn không hiện gì".
+	//
+	// Lỗi chỉ lộ ra sau khi bộ lọc bán kính được thêm vào scanner; trước đó tham số bị bỏ qua nên truyền gì cũng chạy
+	// (xem chính ghi chú ở AutoFsGroundItemScanner.cs:86-88).
+	//
+	// Quy đổi 1 ô = 256 raw, cùng thang RawXScale mà AttackViewModel dùng. KHÔNG dùng PlayerScanRadius (150 raw)
+	// của luồng nhặt thật: đó là bán kính để RA TAY nhặt, còn đây chỉ liệt kê tên cho người dùng chọn nên nhìn rộng
+	// bằng đúng ô Range người dùng đặt thì hợp lý hơn.
 	public List<LootSnapshot> FindVisibleSpriteItemsForAttackSafety(GameSnapshot snapshot) {
-		return spriteItemScanner.Find(snapshot.ProcessId, snapshot.X, snapshot.Y, Math.Max(settings.Range, 10), AttackSafetyMaxItems);
+		int rangeRaw = Math.Max(settings.Range, 1) * GroundDiscoveryRawPerMapUnit;
+		return spriteItemScanner.Find(snapshot.ProcessId, snapshot.X, snapshot.Y, rangeRaw, AttackSafetyMaxItems);
 	}
 
 	public LootFindResult Find(GameSnapshot snapshot) {
@@ -60,7 +77,16 @@ public sealed class Finder {
 
 			AddSpriteItemCandidates(snapshot, result, centerX, centerY, maxRange);
 			result.ObservedItems.AddRange(result.Candidates);
-			result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item)));
+			// Chủ dự án báo 2026-09-24: nhân vật nhặt tới mức vượt sức lực tối đa thì game khoá di chuyển. Nhặt trước
+			// đây không hề biết tới sức lực (0 tham chiếu InventoryStrengthReader trong cả file), nên dù luồng đi bán
+			// đã đúng công thức (RemainingStrength = Maximum - Current, đi bán khi < ngưỡng) vẫn không kịp cản một
+			// lần nhặt duy nhất đẩy Current vọt qua Maximum. Chặn nhặt tiếp ngay khi chạm đúng ngưỡng đi bán, cùng
+			// một điều kiện với Sale/InventorySaleEngine.ReadAutomaticTrigger để hai nơi không lệch nhau.
+			if (IsCarryingCapacityExhausted(snapshot.ProcessId)) {
+				result.Candidates.Clear();
+			} else {
+				result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item)));
+			}
 
 			result.Candidates.Sort(CompareCandidates);
 
@@ -106,6 +132,17 @@ public sealed class Finder {
 	public static string ToInventoryKey(string itemName) => InventoryPotionCounter.ToKey(itemName);
 
 	public string[] ConsumePotionCountDiagnostics() => potionCounter.ConsumeDiagnostics();
+
+	// public để Loot/Engine.ProcessCandidateBatch gọi lại GIỮA CHỪNG một loạt nhặt, không chỉ một lần đầu mỗi vòng
+	// quét — một batch có thể chứa nhiều món, nhặt hết cả loạt mới quay lại Find() là quá trễ.
+	//
+	// Chỉ đọc bộ nhớ khi tính năng "Sức lực còn dưới ngưỡng" đang bật — tắt thì giữ nguyên hành vi cũ, không thêm
+	// chi phí đọc bộ nhớ mỗi vòng quét 200ms.
+	public bool IsCarryingCapacityExhausted(int processId) {
+		if (! settings.EnableSaleRemainingStrengthThreshold) return false;
+		InventoryStrengthReading strength = InventoryStrengthReader.Read(processId);
+		return strength.Success && strength.Free < settings.SaleRemainingStrengthThreshold;
+	}
 
 	// Áp dụng category đã biết trước item riêng để checkbox category luôn có quyền quyết định
 	private bool ShouldPick(LootSnapshot snapshot, ItemClassification item) {

@@ -69,17 +69,27 @@ public sealed class Settings {
 
 	public string TrainingGroup { get; set; } = "Hoang Mạc";
 
-	public string TrainingMap { get; set; } = "Đồng Quan";
+	// SỬA 2026-09-22: sáu giá trị dưới đây trước là bản copy y nguyên của khối Teaching* ("Đồng Quan"/"Cổ Điêu"/
+	// "164/221"/42011/113653/14) — nhưng Đồng Quan thuộc nhóm THÀNH THỊ (TrainingLocationCatalog.CityMaps), không
+	// nằm trong nhóm Mê cung "Hoang Mạc" ở dòng trên, nên bộ mặc định tự mâu thuẫn.
+	//
+	// Hệ quả đã thấy: mỗi lần dựng giao diện, RepopulateTrainingMaps phải chữa lại thành map hợp lệ đầu tiên của
+	// nhóm, rồi giá trị đã chữa đó bị lưu xuống Profiles.json. Nên file luôn hiện "TrainingMap": "Hoang Mạc" ở MỌI
+	// nhân vật dù không ai bật chế độ Mê cung (TrainingEnabled=false), làm người đọc file tưởng đó là bãi đang train.
+	//
+	// Giá trị mới lấy từ chính Data/ToaDo/ToaDoQuai.map: mục "[Hoang Mạc]" có quái đầu là "Sa Hồn=48055,108397".
+	// Quy đổi hiển thị 48055/256=187, 108397/512=211 -> "187/211", khớp đúng giá trị mà giao diện tự sinh ra.
+	public string TrainingMap { get; set; } = "Hoang Mạc";
 
-	public int TrainingMapId { get; set; } = 14;
+	public int TrainingMapId { get; set; } = 22;
 
-	public string TrainingMonster { get; set; } = "Cổ Điêu";
+	public string TrainingMonster { get; set; } = "Sa Hồn";
 
-	public string TrainingCoordinate { get; set; } = "164/221";
+	public string TrainingCoordinate { get; set; } = "187/211";
 
-	public int TrainingRawX { get; set; } = 42011;
+	public int TrainingRawX { get; set; } = 48055;
 
-	public int TrainingRawY { get; set; } = 113653;
+	public int TrainingRawY { get; set; } = 108397;
 
 	// Bộ lọc mục tiêu theo quái thủ lĩnh/boss, port từ AutoFS (VectorFactory.cs:3345-3432). Hai cờ loại trừ nhau.
 	// DoNotAttackBoss còn kiêm luôn công tắc cơ chế NÉ (vùng cấm + chủ động lùi) — chốt với chủ dự án 2026-09-07,
@@ -105,7 +115,7 @@ public sealed class Settings {
 	// Đổi số này phải kiểm lại bất đẳng thức đó, nếu không lỗi đứng im quay lại ngay.
 	public int ElitePlayerRetreatRadius { get; set; } = 768;
 
-	public int Range { get; set; } = 2000;
+	public int Range { get; set; } = 3000;
 
 	public int CenterX { get; set; }
 

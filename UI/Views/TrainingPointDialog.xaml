@@ -1,0 +1,108 @@
+<Window
+	x:Class="Auto.UI.Views.TrainingPointDialog"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	Title="Cài đặt danh sách điểm train"
+	Width="320"
+	Height="380"
+	d:DataContext="{d:DesignInstance Type=vm:TrainingPointDialogViewModel}"
+	Background="{StaticResource Brush.Background}"
+	Foreground="{StaticResource Brush.TextPrimary}"
+	ResizeMode="NoResize"
+	ShowInTaskbar="False"
+	WindowStartupLocation="CenterOwner"
+	mc:Ignorable="d">
+
+	<Grid Margin="16">
+		<Grid.RowDefinitions>
+			<RowDefinition Height="Auto" />
+			<RowDefinition Height="*" />
+			<RowDefinition Height="Auto" />
+		</Grid.RowDefinitions>
+
+		<TextBlock
+			Grid.Row="0"
+			Margin="0,0,0,8"
+			Style="{StaticResource FieldLabel}"
+			Text="Nhấn đúp một điểm để áp dụng ngay, hoặc chọn rồi bấm Lưu."
+			TextWrapping="Wrap" />
+
+		<!--
+			Double-click để ÁP DỤNG điểm đó (chủ dự án chốt 2026-09-22), lệch có chủ ý so với AutoFS vốn dùng
+			double-click để xoá. Lý do đầy đủ ở TrainingPointDialogViewModel.ApplySelectedCommand.
+		-->
+		<ListBox
+			Grid.Row="1"
+			Margin="0,0,0,8"
+			Background="Transparent"
+			BorderBrush="{StaticResource Brush.Border}"
+			BorderThickness="1"
+			ItemsSource="{Binding Points}"
+			MouseDoubleClick="PointList_MouseDoubleClick"
+			SelectedItem="{Binding SelectedPoint}">
+			<ListBox.ItemTemplate>
+				<DataTemplate DataType="{x:Type vm:TrainingPointRowViewModel}">
+					<Grid Margin="0,2">
+						<Grid.ColumnDefinitions>
+							<ColumnDefinition Width="72" />
+							<ColumnDefinition Width="*" />
+							<ColumnDefinition Width="Auto" />
+						</Grid.ColumnDefinitions>
+						<TextBlock
+							Grid.Column="0"
+							Foreground="{StaticResource Brush.TextPrimary}"
+							Text="{Binding Coordinate}" />
+						<TextBlock
+							Grid.Column="1"
+							Foreground="{StaticResource Brush.TextSecondary}"
+							Text="{Binding MapName}"
+							TextTrimming="CharacterEllipsis" />
+						<!--  Điểm lưu trước 2026-09-22 không có quái nên cột này để trống, không bịa chữ vào.  -->
+						<TextBlock
+							Grid.Column="2"
+							Margin="6,0,0,0"
+							Foreground="{StaticResource Brush.TextSecondary}"
+							Text="{Binding MonsterName}"
+							TextTrimming="CharacterEllipsis" />
+					</Grid>
+				</DataTemplate>
+			</ListBox.ItemTemplate>
+		</ListBox>
+
+		<Grid Grid.Row="2">
+			<Grid.ColumnDefinitions>
+				<ColumnDefinition Width="Auto" />
+				<ColumnDefinition Width="Auto" />
+				<ColumnDefinition Width="*" />
+				<ColumnDefinition Width="Auto" />
+				<ColumnDefinition Width="Auto" />
+			</Grid.ColumnDefinitions>
+			<Button
+				Grid.Column="0"
+				Width="60"
+				Margin="0,0,6,0"
+				Command="{Binding AddCurrentCommand}"
+				Content="Thêm" />
+			<Button
+				Grid.Column="1"
+				Width="60"
+				Command="{Binding DeleteCommand}"
+				Content="Xoá" />
+			<Button
+				Grid.Column="3"
+				Width="60"
+				Margin="0,0,6,0"
+				Command="{Binding AcceptCommand}"
+				Content="Lưu"
+				Style="{StaticResource AccentButton}" />
+			<Button
+				Grid.Column="4"
+				Width="60"
+				Command="{Binding CancelCommand}"
+				Content="Hủy" />
+		</Grid>
+	</Grid>
+</Window>

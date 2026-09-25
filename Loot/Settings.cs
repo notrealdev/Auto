@@ -16,7 +16,7 @@ public sealed class Settings {
 	public bool EnableSaleQuantityThreshold { get; set; } = true;
 	public int SaleQuantityThreshold { get; set; } = 32;
 	public bool EnableSaleRemainingStrengthThreshold { get; set; } = true;
-	public int SaleRemainingStrengthThreshold { get; set; } = 30;
+	public int SaleRemainingStrengthThreshold { get; set; } = 20;
 	// Ngưỡng số lượng cho từng loại dược phẩm: đủ ngần này rồi thì ngừng nhặt riêng loại đó. <= 0 nghĩa là tắt giới hạn.
 	public int PotionQuantityLimit { get; set; } = 10;
 	public bool PickWhite { get; set; }
@@ -55,8 +55,8 @@ public sealed class Settings {
 		ExcludedItemSelections["Đồ Trắng"] = false;
 		ExcludedItemSelections["Đồ Xanh"] = false;
 		ExcludedItemSelections["Dược Phẩm"] = false;
-		SaleItemSelections["Đồ Trắng"] = false;
-		SaleItemSelections["Đồ Xanh"] = false;
+		SaleItemSelections["Đồ Trắng"] = true;
+		SaleItemSelections["Đồ Xanh"] = true;
 		SaleItemSelections["Dược Phẩm"] = false;
 		PotionNameSelections["Tiểu Hồng đơn"] = true;
 		PotionNameSelections["Trung Hồng đơn"] = true;

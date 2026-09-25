@@ -49,7 +49,8 @@ public static class ClientAddressAudit {
 		// đó là bình thường. Muốn đo thật thì chạy audit ngay khi client vừa mở, trước khi bấm qua ba hộp thoại.
 		("LOGIN_NOTICE_DIALOG", "LoginNoticeDialogRva"),
 		("LOGIN_SERVER_DIALOG", "LoginServerDialogRva"),
-		("LOGIN_SUBMIT_FUNCTIONS", "LoginSubmitFunctionRva+LoginAfterSubmitFunctionA/B/C+LoginSubmitContextRva")
+		("LOGIN_SUBMIT_FUNCTIONS", "LoginSubmitFunctionRva+LoginAfterSubmitFunctionA/B/C+LoginSubmitContextRva"),
+		("QUICK_BUY_FUNCTION", "QuickBuyFunctionRva")
 	];
 
 	// Hằng số thật sự không còn nơi nào tham chiếu. Trước 2026-09-08 danh sách này còn chứa 5 hằng số ĐANG được dùng

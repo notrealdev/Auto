@@ -97,6 +97,20 @@ namespace GameClientAddresses {
 	constexpr uintptr_t PassiveBuffFunctionRva = 0x0031F850;
 	constexpr uintptr_t PassiveBuffSendSiteOffset = 0x00000056;
 	constexpr int PassiveBuffMaximumSkillId = 0x7CF;
+	// Hàm mua vật phẩm của chức năng "Tự động mua thuốc" có sẵn trong client (tương ứng lệnh 95 của AutoFS, gọi hàm
+	// client cũ 0x5C3CB0 với (this, 1, mã, 0, số lượng)). Tìm ngày 2026-09-25 bằng dump ảnh Game.exe đang chạy (PID 2228):
+	//   - Xref chuỗi "Bạc và bạc khóa của bạn không đủ... tự động mua thuốc" và "Tắt/Mở Tự động dùng thuốc" dẫn tới
+	//     cụm 0x6C7xxx, cài đặt nằm ở InventoryRoot+0x6B760 (= this+0x35800 của hàm bọc 0x745ED0).
+	//   - Hàm bọc 0x745ED0 (this = InventoryRoot+0x35F60) gọi 0x746010 cho HP rồi MP với bộ ba lấy từ danh sách thuốc.
+	//   - 0x746010 dựng gói opcode 0xBE rồi gửi qua vtable[0x20] của [0x918718]; ret 0x1C = 7 tham số stack:
+	//     (loại, chi tiết, cụ thể, số lượng, byte1, byte2, byte3).
+	//   - Bộ ba thuốc đối chiếu với danh sách trong client: Tiểu Hồng (1,0,0), Trung Hồng (1,1,0), Bổ Tâm (1,19,0),
+	//     Bổ Tâm trung (1,20,0) — khớp mã 0/1/19/20 của AutoFS. Ba byte cuối do gói server opcode 0x32 mang tới, ý nghĩa
+	//     CHƯA biết nên Auto truyền 0.
+	// Chữ ký trùng khớp trên cả 6 client (cùng bản build 2026-09-18). Chưa gọi thử ở runtime.
+	constexpr uintptr_t QuickBuyFunctionRva = 0x00346010;
+	constexpr uintptr_t QuickBuyThisOffset = 0x00035F60;
+	constexpr int QuickBuyMaximumQuantity = 100;
 	constexpr uintptr_t PickupFunctionRva = 0x003AC300;
 	// Cập nhật 2026-09-06 sau khi client dời object popup Về thành. Nguồn: ModalVtableProbe chạy lúc popup chết đang mở
 	// (ModuleBase=0x00400000, Modal=0x008FED58), đối chiếu death.log ghi cùng giá trị ở cả 5 tiến trình lúc chết.

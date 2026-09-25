@@ -1,0 +1,41 @@
+<UserControl
+	x:Class="Auto.UI.Views.ConfigView"
+	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
+	d:DataContext="{d:DesignInstance Type=vm:ConfigViewModel}"
+	mc:Ignorable="d">
+
+	<Border Style="{StaticResource CardBorder}">
+		<StackPanel>
+			<TextBlock
+				Margin="0,0,0,4"
+				Style="{StaticResource FieldLabel}"
+				Text="Cấu hình của mọi tài khoản" />
+			<TextBlock
+				Margin="0,0,0,10"
+				Foreground="{StaticResource Brush.TextSecondary}"
+				Text="Auto không tự lưu và không tự áp dụng. Thay đổi chỉ xuống file khi bấm Lưu; mở Auto lên thì phải bấm Áp dụng mới nạp lại."
+				TextWrapping="Wrap" />
+			<StackPanel Margin="0,0,0,8" Orientation="Horizontal">
+				<Button
+					Margin="0,0,8,0"
+					Padding="10,6"
+					Command="{Binding SaveProfilesCommand}"
+					Content="Lưu cấu hình"
+					Style="{StaticResource AccentButton}" />
+				<Button
+					Padding="10,6"
+					Command="{Binding ApplyProfilesCommand}"
+					Content="Áp dụng cấu hình đã lưu"
+					Style="{StaticResource AccentButton}" />
+			</StackPanel>
+			<TextBlock
+				Foreground="{StaticResource Brush.TextSecondary}"
+				Text="{Binding StatusText}"
+				TextWrapping="Wrap" />
+		</StackPanel>
+	</Border>
+</UserControl>

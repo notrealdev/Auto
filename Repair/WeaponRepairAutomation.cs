@@ -57,6 +57,12 @@ public sealed class WeaponRepairAutomation {
 	private int returnRawX;
 	private int returnRawY;
 	private int returnMapId;
+	// Điểm quay lại đã chốt của chuyến đang dở, sống qua Reset() để chuyến LÀM LẠI sau khi bị huỷ dùng đúng điểm cũ.
+	// Chỉ xoá khi chuyến về tới bãi (Complete). Xem chú thích ở Start().
+	private int rememberedReturnMapId;
+	private int rememberedReturnRawX;
+	private int rememberedReturnRawY;
+	private DateTime rememberedReturnUntilUtc = DateTime.MinValue;
 	private readonly AutoFsTrainingOrderQueue returnOrderQueue = new();
 	private DateTime nextReturnLogUtc;
 	private int doctorClickAttempts;
@@ -371,6 +377,18 @@ public sealed class WeaponRepairAutomation {
 						nextActionUtc = DateTime.UtcNow;
 						break;
 					}
+					// Chuyến do BÁN kích hoạt, sửa chỉ là ghép thêm: đồ chưa hỏng thì độ bền đương nhiên không tăng, đó
+					// không phải lỗi. Trước đây nhánh này rơi vào Fail -> AbortAndRetry, nhả quyền NGAY TẠI NPC mà không
+					// quay lại bãi. Bằng chứng (repair.log 2026-09-24 16:45:06, PID=17904): bán xong 33->5 ô, Durability=12
+					// đã đầy từ chuyến 14:55 (10->12), "Sửa đồ hoãn | Độ bền không tăng", rồi auto-runtime.log cho thấy
+					// nhân vật đứng quanh 59500/92770 cạnh Đại Phu, mọi quái cách ~2000 đều bị cấm vì không tới được.
+					// ReadCurrent trả Maximum=0 nên nhánh "độ bền đã đầy" ở trên không bao giờ bắt được ca này.
+					if (! repairRequestedThisVisit && reading.Success) {
+						if (interactionLocked) BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+						log?.Invoke($"Dịch vụ NPC | sửa ghép chuyến bán nhưng độ bền không đổi | Current={reading.Current} | Đồ chưa hỏng nên không có gì để sửa; đóng shop và quay lại bãi.");
+						BeginReturn(game, log);
+						break;
+					}
 					return Fail(game, reading.Success ? $"Độ bền không tăng sau xác nhận | Current={reading.Current}" : reading.FailureReason, log);
 				} else {
 					pendingSuccessfulDurability = 0;
@@ -460,11 +478,28 @@ public sealed class WeaponRepairAutomation {
 			returnMapId = configuredMapId;
 			returnRawX = configuredRawX;
 			returnRawY = configuredRawY;
+		} else if (rememberedReturnUntilUtc > DateTime.UtcNow && rememberedReturnMapId == map.MapId) {
+			// Chuyến trước bị huỷ giữa đường (Buff giữ quyền, Hồi thành phù...) rồi làm lại: KHÔNG lấy vị trí hiện tại nữa,
+			// vì lúc này nhân vật đã đi gần tới Đại Phu. Bằng chứng (repair.log PID=22612 MaiAnhNhe 2026-09-24):
+			// 22:39:27 "Sửa đồ bắt đầu | QuayLại=Map32/62590/92806" (chỗ đang train), 22:39:50 "Sửa đồ huỷ | Buff hỗ trợ
+			// giữ quyền điều khiển | MovingToDoctor", 22:39:56 làm lại "QuayLại=Map32/59206/93193" — sát Đại Phu
+			// (59221/93184). Xong bán thì "Đã quay lại 59206/93193" tức KHÔNG đi đâu, nhân vật ở lại trong hốc cạnh NPC
+			// và loay hoay trái-phải 3 phút. Tài khoản không bật chế độ bãi nào (nhánh này) mới bị: có bãi cấu hình thì
+			// TryResolveTrainingPoint ở trên đã cho đích đúng.
+			returnMapId = rememberedReturnMapId;
+			returnRawX = rememberedReturnRawX;
+			returnRawY = rememberedReturnRawY;
 		} else {
 			returnMapId = map.MapId;
 			returnRawX = snapshot.X;
 			returnRawY = snapshot.Y;
 		}
+		// Nhớ điểm quay lại cho tới khi chuyến về tới bãi. 10 phút là trần để một chuyến bỏ dở từ lâu không kéo nhân vật về
+		// chỗ cũ khi nó đã sang khu khác.
+		rememberedReturnMapId = returnMapId;
+		rememberedReturnRawX = returnRawX;
+		rememberedReturnRawY = returnRawY;
+		rememberedReturnUntilUtc = DateTime.UtcNow.AddMinutes(10);
 		if (!TryAutoFsMovement(game, doctorRawX, doctorRawY, out string routeResult)) {
 			log?.Invoke("Sửa đồ FAIL | Không khởi tạo được tuyến nội bộ tới Đại Phu | " + routeResult);
 			Reset();
@@ -676,6 +711,8 @@ public sealed class WeaponRepairAutomation {
 		if (repairCompletionConfirmed) game.WeaponRepairMonitor.ConfirmRepairCompleted();
 		// Một chuyến trót lọt xoá chuỗi hỏng: lần hỏng tiếp theo lại được thử lại ngay như bình thường.
 		consecutiveAbortCount = 0;
+		// Về tới bãi rồi thì lần đi sau phải chốt điểm quay lại MỚI từ chỗ nhân vật đang đứng.
+		rememberedReturnUntilUtc = DateTime.MinValue;
 		game.WeaponRepairMonitor.ResetCache();
 		game.WeaponRepairMonitor.ScheduleImmediateCheck();
 		log?.Invoke(debugMode

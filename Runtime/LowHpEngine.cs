@@ -1,6 +1,7 @@
 namespace Auto.Runtime;
 
 using Auto.Attack;
+using Auto.Loot;
 using Auto.Utils;
 
 internal sealed class LowHpEngine {
@@ -8,20 +9,23 @@ internal sealed class LowHpEngine {
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	private const int DispatchRetryMilliseconds = 1000;
 	private const int MaximumDispatchAttempts = 5;
-	private const int HpCheckIntervalMilliseconds = 5000;
-	private const int MaximumStalledHpChecks = 5;
+	private const int PotionCheckIntervalMilliseconds = 1000;
+	// Từ lúc thấy thuốc HP trong túi tới lúc cho lên bãi (chủ dự án chốt 2026-09-25).
+	private const int ReturnToTrainingDelayMilliseconds = 2000;
 	private const int HoldReminderIntervalMilliseconds = 60000;
 	private const string ReturnTalismanNameFragment = "Hồi thành phù";
+	// Mọi vật phẩm có tên chứa cụm này đều là thuốc HP (Thanh Lộ, Thanh Lộ (tiểu), Bảo Hữu Thanh Lộ, Như ý Thanh Lộ...), chủ dự án chốt 2026-09-25.
+	private const string HpPotionNameFragment = "Thanh Lộ";
 	private readonly BasicSettings settings;
 	private readonly AutoFsAttackTransport transport;
+	private readonly InventoryPotionCounter potionCounter = new();
 	private TalismanState state;
 	private int sourceMapId;
 	private int townMapId;
 	private DateTime nextDispatchUtc;
 	private int dispatchAttempts;
-	private DateTime nextHpCheckUtc;
-	private int lastCheckedHp;
-	private int stalledHpChecks;
+	private DateTime nextPotionCheckUtc;
+	private DateTime? potionFoundUtc;
 	private DateTime nextHoldReminderUtc;
 	private bool returnToTrainingRequested;
 	private string lastFailure = "";
@@ -38,7 +42,7 @@ internal sealed class LowHpEngine {
 		return true;
 	}
 
-	// Dùng Hồi thành phù khi HP chạm ngưỡng, xác nhận bằng đổi map, rồi chờ HP hồi trước khi cho lên bãi lại.
+	// Dùng Hồi thành phù khi HP chạm ngưỡng, xác nhận bằng đổi map, rồi chờ có thuốc HP trong túi trước khi cho lên bãi lại.
 	public bool Tick(int processId, IntPtr gameWindowHandle, GameSnapshot snapshot, int mapId, Action<string>? log) {
 		if (! settings.EnableLowHpReturnTalisman || ! snapshot.Success || snapshot.Hp <= 0 || snapshot.MaxHp <= 0) {
 			Reset();
@@ -78,15 +82,14 @@ internal sealed class LowHpEngine {
 			townMapId = rememberedTownMapId;
 			return false;
 		}
-		if (state == TalismanState.RecoveringHp) return TickHpRecovery(snapshot, mapId, now, log);
+		if (state == TalismanState.WaitingForPotion) return TickWaitingForPotion(processId, snapshot, mapId, now, log);
 		if (state == TalismanState.WaitingMapChange) {
 			if (sourceMapId > 0 && mapId > 0 && mapId != sourceMapId) {
 				townMapId = mapId;
 				log?.Invoke($"LOW_HP_CONFIRMED | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | SourceMapId={sourceMapId} | TownMapId={townMapId} | Attempts={dispatchAttempts}");
-				state = TalismanState.RecoveringHp;
-				nextHpCheckUtc = now.AddMilliseconds(HpCheckIntervalMilliseconds);
-				lastCheckedHp = snapshot.Hp;
-				stalledHpChecks = 0;
+				state = TalismanState.WaitingForPotion;
+				nextPotionCheckUtc = now;
+				potionFoundUtc = null;
 				return true;
 			}
 			if (! belowThreshold) {
@@ -141,29 +144,40 @@ internal sealed class LowHpEngine {
 		return true;
 	}
 
-	// Sau khi về thành: cứ 5 giây kiểm tra HP một lần, chỉ cần HP đã tăng là cho lên bãi ngay,
-	// còn HP đứng yên đủ 5 lần liên tiếp thì dừng hẳn và đứng im.
-	private bool TickHpRecovery(GameSnapshot snapshot, int mapId, DateTime now, Action<string>? log) {
-		if (now < nextHpCheckUtc) return true;
-		nextHpCheckUtc = now.AddMilliseconds(HpCheckIntervalMilliseconds);
-		if (snapshot.Hp > lastCheckedHp || snapshot.Hp >= snapshot.MaxHp) {
-			log?.Invoke($"LOW_HP_HP_RECOVERING | Hp={snapshot.Hp}/{snapshot.MaxHp} | PreviousHp={lastCheckedHp} | TownMapId={townMapId} | CurrentMapId={mapId} | Action=REQUEST_RETURN_TO_TRAINING");
-			int rememberedTownMapId = townMapId;
-			Reset();
-			townMapId = rememberedTownMapId;
-			state = TalismanState.ArmingAfterReturn;
-			returnToTrainingRequested = true;
-			return false;
-		}
-		stalledHpChecks++;
-		if (stalledHpChecks >= MaximumStalledHpChecks) {
-			log?.Invoke($"LOW_HP_HP_STALLED | Hp={snapshot.Hp}/{snapshot.MaxHp} | PreviousHp={lastCheckedHp} | StalledChecks={stalledHpChecks}/{MaximumStalledHpChecks} | IntervalMs={HpCheckIntervalMilliseconds} | Action=STOP_AND_HOLD");
-			state = TalismanState.Stopped;
+	// Sau khi về thành: KHÔNG chờ HP hồi. Cứ 1 giây quét ô trang bị nhanh, túi chính và rương 2; thấy bất kỳ thuốc HP nào (Hồng đơn hoặc tên có "Thanh Lộ")
+	// thì đợi thêm 2 giây rồi cho lên bãi. Không có thuốc thì đứng chờ ở thành (mua nhanh, nếu bật, sẽ tự bổ sung thuốc).
+	private bool TickWaitingForPotion(int processId, GameSnapshot snapshot, int mapId, DateTime now, Action<string>? log) {
+		if (potionFoundUtc == null) {
+			if (now < nextPotionCheckUtc) return true;
+			nextPotionCheckUtc = now.AddMilliseconds(PotionCheckIntervalMilliseconds);
+			potionCounter.Invalidate();
+			if (! potionCounter.TrySnapshot(processId, out Dictionary<string, int> bag)) return true;
+			int potionCount = 0;
+			foreach ((string potionName, _) in QuickBuyPotions.Hp) potionCount += QuickBuyEngine.CountPotion(bag, potionName);
+			// Khoá trong bảng đếm đã bỏ dấu và viết hoa, nên cụm cần tìm phải qua cùng phép chuẩn hoá.
+			string fragmentKey = InventoryPotionCounter.ToKey(HpPotionNameFragment);
+			foreach ((string key, int count) in bag) {
+				if (key.Contains(fragmentKey, StringComparison.Ordinal)) potionCount += count;
+			}
+			if (potionCount <= 0) {
+				if (now >= nextHoldReminderUtc) {
+					nextHoldReminderUtc = now.AddMilliseconds(HoldReminderIntervalMilliseconds);
+					log?.Invoke($"LOW_HP_WAITING_POTION | Hp={snapshot.Hp}/{snapshot.MaxHp} | TownMapId={townMapId} | CurrentMapId={mapId} | Reason=Chưa có thuốc HP trong ô trang bị nhanh/túi chính/rương 2, đứng chờ ở thành");
+				}
+				return true;
+			}
+			potionFoundUtc = now;
+			log?.Invoke($"LOW_HP_POTION_FOUND | Hp={snapshot.Hp}/{snapshot.MaxHp} | PotionCount={potionCount} | TownMapId={townMapId} | CurrentMapId={mapId} | DelayMs={ReturnToTrainingDelayMilliseconds}");
 			return true;
 		}
-		log?.Invoke($"LOW_HP_HP_UNCHANGED | Hp={snapshot.Hp}/{snapshot.MaxHp} | PreviousHp={lastCheckedHp} | StalledChecks={stalledHpChecks}/{MaximumStalledHpChecks} | IntervalMs={HpCheckIntervalMilliseconds}");
-		lastCheckedHp = snapshot.Hp;
-		return true;
+		if ((now - potionFoundUtc.Value).TotalMilliseconds < ReturnToTrainingDelayMilliseconds) return true;
+		log?.Invoke($"LOW_HP_POTION_READY | Hp={snapshot.Hp}/{snapshot.MaxHp} | TownMapId={townMapId} | CurrentMapId={mapId} | Action=REQUEST_RETURN_TO_TRAINING");
+		int rememberedTownMapId = townMapId;
+		Reset();
+		townMapId = rememberedTownMapId;
+		state = TalismanState.ArmingAfterReturn;
+		returnToTrainingRequested = true;
+		return false;
 	}
 
 	public void Reset() {
@@ -172,9 +186,8 @@ internal sealed class LowHpEngine {
 		townMapId = 0;
 		nextDispatchUtc = DateTime.MinValue;
 		dispatchAttempts = 0;
-		nextHpCheckUtc = DateTime.MinValue;
-		lastCheckedHp = 0;
-		stalledHpChecks = 0;
+		nextPotionCheckUtc = DateTime.MinValue;
+		potionFoundUtc = null;
 		nextHoldReminderUtc = DateTime.MinValue;
 		returnToTrainingRequested = false;
 		lastFailure = "";
@@ -183,7 +196,7 @@ internal sealed class LowHpEngine {
 	private enum TalismanState {
 		Idle,
 		WaitingMapChange,
-		RecoveringHp,
+		WaitingForPotion,
 		ArmingAfterReturn,
 		Stopped
 	}

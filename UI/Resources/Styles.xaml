@@ -606,6 +606,14 @@
 			<Setter.Value>
 				<ControlTemplate TargetType="ScrollBar">
 					<Grid Background="{TemplateBinding Background}">
+						<!--
+							IsDirectionReversed chỉ đúng cho thanh DỌC. Tài liệu Track.IsDirectionReversed của Microsoft:
+							mặc định là false, "Track values increase from left to right for both horizontal Slider and
+							ScrollBar controls", riêng ScrollBar dọc mới tăng từ trên xuống; và ví dụ template kèm theo
+							đặt true đúng trong trường hợp "when the Orientation property is Vertical".
+							Đặt true cho thanh NGANG là tự đảo ngược nó — kéo thanh sang phải lại lùi nội dung sang
+							trái. Trigger bên dưới gỡ cờ này khi nằm ngang.
+						-->
 						<Track
 							x:Name="PART_Track"
 							IsDirectionReversed="True"
@@ -621,6 +629,16 @@
 							</Track.Thumb>
 						</Track>
 					</Grid>
+					<ControlTemplate.Triggers>
+						<!--
+							Phải đặt ở ControlTemplate.Triggers chứ không gộp vào Style.Triggers bên dưới: cờ này nằm
+							trên PART_Track BÊN TRONG template, chỉ tới được bằng TargetName. Style.Triggers chỉ đặt
+							được thuộc tính của chính ScrollBar (Width/Height).
+						-->
+						<Trigger Property="Orientation" Value="Horizontal">
+							<Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False" />
+						</Trigger>
+					</ControlTemplate.Triggers>
 				</ControlTemplate>
 			</Setter.Value>
 		</Setter>

@@ -22,7 +22,7 @@
 			<StackPanel>
 				<CheckBox
 					Margin="0,0,0,10"
-					Content="Làm nhiệm vụ"
+					Content="{Binding ScoutLabel}"
 					IsChecked="{Binding ScoutEnabled}" />
 
 				<Grid Margin="0,0,0,10">

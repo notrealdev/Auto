@@ -31,7 +31,7 @@
 						Grid.Column="1"
 						VerticalAlignment="Center"
 						Foreground="{StaticResource Brush.TextPrimary}"
-						Text="{Binding User}"
+						Text="{Binding MaskedUser}"
 						TextTrimming="CharacterEllipsis" />
 					<TextBlock
 						Grid.Column="2"
@@ -59,21 +59,16 @@
 				<TextBox
 					Grid.Column="0"
 					Margin="0,0,8,0"
+					IsReadOnly="True"
 					Style="{StaticResource NumericTextBox}"
-					Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}"
+					Text="{Binding GamePath, Mode=OneWay}"
 					TextAlignment="Left" />
 				<Button
 					Grid.Column="1"
 					Padding="10,4"
-					Command="{Binding ReloadCommand}"
-					Content="Đọc lại" />
+					Command="{Binding BrowseGamePathCommand}"
+					Content="Chọn đường dẫn game" />
 			</Grid>
-
-			<TextBlock
-				Margin="0,0,0,10"
-				Style="{StaticResource FieldLabel}"
-				Text="{Binding StatusText}"
-				TextWrapping="Wrap" />
 
 			<ListBox
 				MaxHeight="150"
@@ -87,9 +82,8 @@
 				ScrollViewer.HorizontalScrollBarVisibility="Disabled"
 				ScrollViewer.VerticalScrollBarVisibility="Auto" />
 
-			<Grid Margin="0,0,0,10">
+			<Grid>
 				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="Auto" />
 					<ColumnDefinition Width="Auto" />
 					<ColumnDefinition Width="Auto" />
 				</Grid.ColumnDefinitions>
@@ -101,30 +95,10 @@
 					Content="Đăng nhập" />
 				<Button
 					Grid.Column="1"
-					Margin="0,0,8,0"
 					Padding="10,4"
 					Command="{Binding StopCommand}"
 					Content="Dừng" />
-				<Button
-					Grid.Column="2"
-					Padding="10,4"
-					Command="{Binding ClearLogCommand}"
-					Content="Clear" />
 			</Grid>
-
-			<TextBox
-				Height="160"
-				Padding="8,8"
-				AcceptsReturn="True"
-				FontFamily="Consolas"
-				IsReadOnly="True"
-				Style="{StaticResource NumericTextBox}"
-				Text="{Binding LogText, Mode=OneWay}"
-				TextAlignment="Left"
-				TextWrapping="NoWrap"
-				VerticalContentAlignment="Top"
-				VerticalScrollBarVisibility="Auto"
-				HorizontalScrollBarVisibility="Auto" />
 		</StackPanel>
 	</Border>
 </UserControl>

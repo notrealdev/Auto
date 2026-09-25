@@ -44,6 +44,10 @@ public sealed class Settings {
 	// 2026-09-09): engine tìm trong ô trang bị nhanh, thấy bản nào thì dùng bản đó, không bắt chọn trước.
 	public bool ScoutReturnTownTalisman { get; set; } = true;
 
+	// Trạng thái lượt Thám quân gần nhất, do ScoutQuestAutomation ghi khi kết thúc (xong/lỗi/dừng) — chỉ để hiển thị
+	// trên UI, không ảnh hưởng máy trạng thái. Rỗng nghĩa là chưa chạy lượt nào từ lúc mở Auto.
+	public string ScoutStatus { get; set; } = "";
+
 	// ===== Bào Thương =====
 
 	// Công tắc chính: tắt thì bỏ qua toàn bộ nhánh Bào Thương.

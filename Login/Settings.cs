@@ -37,6 +37,13 @@ public sealed class Settings {
 	[JsonPropertyName("WaitBeforeLogin")] public int WaitBeforeLogin { get; set; } = 2000;
 	// Mỗi bước (đóng hộp thoại, chọn máy chủ) được gửi lại 0,5 giây một lần trong bấy nhiêu mili giây trước khi bỏ cuộc.
 	[JsonPropertyName("StepTimeoutMilliseconds")] public int StepTimeoutMilliseconds { get; set; } = 60000;
+	// Cho phép Auto TỰ giết client rồi đăng nhập lại khi một account nằm ngoài game quá lâu.
+	//
+	// MẶC ĐỊNH TẮT, và phải để tắt cho tới khi đã chạy ít nhất một ngày ở chế độ dry-run: lúc tắt, Auto vẫn chạy
+	// đủ chuỗi kiểm tra và ghi dòng RELOGIN_WOULD_START vào login.log nhưng KHÔNG đụng vào tiến trình nào. Đối
+	// chiếu những dòng đó với client-freeze.log để chắc rằng nó chỉ nhắm đúng account kẹt thật, rồi mới bật.
+	[JsonPropertyName("AutoReloginEnabled")] public bool AutoReloginEnabled { get; set; }
+
 	[JsonPropertyName("Accounts")] public List<LoginAccount> Accounts { get; set; } = [];
 
 	// Cùng quy ước đường dẫn với Runtime\DebugLog.cs: mọi thứ nằm cạnh file exe.
@@ -67,6 +74,24 @@ public sealed class Settings {
 				failure = $"ExeLink không tồn tại: {settings.ExeLink}";
 				return false;
 			}
+			return true;
+		} catch (Exception ex) {
+			failure = $"{ex.GetType().Name}: {ex.Message}";
+			return false;
+		}
+	}
+
+	// Ghi lại nguyên đối tượng Settings (kể cả Accounts với mật khẩu thật) — dùng khi UI chỉ đổi ExeLink, không đụng
+	// tới User/Pass. Giữ tab (không phải 2 khoảng trắng) để khớp định dạng Login.json hiện có.
+	public static bool TrySave(string path, Settings settings, out string failure) {
+		failure = "";
+		try {
+			string json = JsonSerializer.Serialize(settings, new JsonSerializerOptions {
+				WriteIndented = true,
+				IndentCharacter = '\t',
+				IndentSize = 1
+			});
+			File.WriteAllText(path, json);
 			return true;
 		} catch (Exception ex) {
 			failure = $"{ex.GetType().Name}: {ex.Message}";

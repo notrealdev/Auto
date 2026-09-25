@@ -1,6 +1,7 @@
 namespace Auto.Sale;
 
 using Auto.Attack;
+using Auto.DebugTools;
 using Auto.Utils;
 using LootSettings = Auto.Loot.Settings;
 
@@ -10,6 +11,10 @@ internal sealed class InventorySaleEngine {
 	private const int SaleCommand = 47;
 	private const int ArrangeInventoryCommand = 24;
 	private const int ConfirmationMilliseconds = 1000;
+	// Số lần gửi ESC tối đa cho MỘT popup. Có trần để không bắn ESC vô hạn khi popup không chịu tắt — hết trần thì
+	// dừng an toàn và để người dùng xử lý tay, đúng tinh thần "không đoán, không spam".
+	private const int MaximumPopupCancelAttempts = 5;
+	private const int PopupCancelIntervalMilliseconds = 400;
 	private const int ArrangementWaitMilliseconds = 500;
 	private const int MaximumNameLength = 64;
 	private const int MaximumTypeLength = 32;
@@ -24,8 +29,16 @@ internal sealed class InventorySaleEngine {
 	private int soldItemCount;
 	private bool arrangementPosted;
 	private DateTime arrangementDeadlineUtc;
+	// Ô của món đã bật popup xác nhận, giữ cho tới khi popup tắt hẳn rồi mới bỏ qua đúng ô đó. -1 = không có.
+	private int popupBlockedIndex = -1;
+	private int popupCancelAttempts;
+	private DateTime nextPopupCancelUtc = DateTime.MinValue;
 
 	public bool IsAutomaticSaleEnabled => settings.SaleItemSelections.Any(entry => entry.Value) && (settings.EnableSaleQuantityThreshold || settings.EnableSaleRemainingStrengthThreshold);
+
+	// Đang có chuyến bán do người dùng bấm nút "Bán ngay" ở tab Debug. AccountEngineCoordinator đọc cờ này để bơm
+	// Tick kể cả khi Auto tổng đang TẮT — mà tắt Auto tổng lại đúng là điều kiện bắt buộc của nút đó (xem Start).
+	public bool IsDebugRun => active && debugBypassMasterSwitch;
 
 	public InventorySaleEngine(LootSettings settings, AutoFsAttackTransport transport) {
 		this.settings = settings;
@@ -61,6 +74,9 @@ internal sealed class InventorySaleEngine {
 		soldItemCount = 0;
 		arrangementPosted = false;
 		arrangementDeadlineUtc = DateTime.MinValue;
+		popupBlockedIndex = -1;
+		popupCancelAttempts = 0;
+		nextPopupCancelUtc = DateTime.MinValue;
 	}
 
 	public InventorySaleTriggerReading ReadAutomaticTrigger(int processId) {
@@ -114,7 +130,39 @@ internal sealed class InventorySaleEngine {
 			using MemoryReader reader = new(processId);
 			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
 			if (moduleBase == IntPtr.Zero) return Fail("Game.exe không tồn tại.", out failureReason);
-			if (ReadUInt32(reader, IntPtr.Add(moduleBase, GameAddresses.Globals.ModalState)) != 0) return Fail("SALE_MODAL_DETECTED | Không xác nhận popup bán.", out failureReason);
+			// POPUP XÁC NHẬN BÁN -> HUỶ NGAY BẰNG ESC, BỎ QUA ĐÚNG MÓN ĐÓ, BÁN TIẾP CÁC MÓN CÒN LẠI.
+			//
+			// Đồ nhiệm vụ (và các món quý khác) bật popup xác nhận khi bán — chủ dự án xác nhận 2026-09-23. Bản
+			// trước chỉ Fail rồi bỏ cả chuyến, để popup nằm lại trên màn hình che client.
+			//
+			// ESC CHỈ ĐƯỢC GỬI Ở ĐÂY, ngay sau khi vừa đọc ModalState != 0 — tức đã CHỨNG MINH có popup đang mở.
+			// Cấm gửi ESC mò: không có popup mà ấn ESC thì client bật popup tuỳ chọn hệ thống (chủ dự án đã dặn),
+			// tức tự tay tạo ra đúng cái modal mình đang tránh. BackgroundEscapeCommand.Run là PostMessage thô,
+			// KHÔNG tự kiểm tra gì, nên trách nhiệm kiểm nằm hết ở nơi gọi.
+			uint modalState = ReadUInt32(reader, IntPtr.Add(moduleBase, GameAddresses.Globals.ModalState));
+			if (modalState != 0) {
+				// Chỉ nhận popup do CHÍNH lệnh bán vừa gửi gây ra (đang có món chờ xác nhận). Popup từ nguồn khác
+				// thì dừng an toàn như cũ — không tự ý ESC thứ mình không gây ra.
+				if (popupBlockedIndex < 0) popupBlockedIndex = pendingMemoryIndex;
+				if (popupBlockedIndex < 0) return Fail($"SALE_MODAL_DETECTED | Popup không do lệnh bán gây ra | ModalState=0x{modalState:X8}", out failureReason);
+				if (DateTime.UtcNow < nextPopupCancelUtc) return InventorySaleTickResult.Running;
+				if (popupCancelAttempts >= MaximumPopupCancelAttempts) return Fail($"SALE_MODAL_STUCK | Đã gửi ESC {popupCancelAttempts} lần mà popup không tắt | ModalState=0x{modalState:X8}", out failureReason);
+				popupCancelAttempts++;
+				nextPopupCancelUtc = DateTime.UtcNow.AddMilliseconds(PopupCancelIntervalMilliseconds);
+				BackgroundEscapeCommand.Run(processId, gameWindowHandle);
+				log?.Invoke($"SALE_POPUP_CANCELLED | MemoryIndex={popupBlockedIndex} | ItemId={pendingItemId} | ModalState=0x{modalState:X8} | Lần={popupCancelAttempts}/{MaximumPopupCancelAttempts} | Action=ESC");
+				return InventorySaleTickResult.Running;
+			}
+			// Popup đã tắt: bỏ qua đúng món vừa bật popup rồi đi tiếp, KHÔNG thử bán lại nó.
+			if (popupBlockedIndex >= 0) {
+				log?.Invoke($"SALE_POPUP_ITEM_SKIPPED | MemoryIndex={popupBlockedIndex} | ItemId={pendingItemId} | SốLầnESC={popupCancelAttempts} | Lý do=Món này cần xác nhận tay nên Auto không bán");
+				nextMemoryIndex = popupBlockedIndex + 1;
+				pendingMemoryIndex = -1;
+				pendingItemId = 0;
+				popupBlockedIndex = -1;
+				popupCancelAttempts = 0;
+				nextPopupCancelUtc = DateTime.MinValue;
+			}
 			if (ReadUInt32(reader, IntPtr.Add(moduleBase, GameAddresses.Globals.ShopState)) != 2) return Fail("SALE_SHOP_NOT_READY | ShopState khác 2.", out failureReason);
 
 			IntPtr inventoryRoot = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Globals.InventoryRoot));

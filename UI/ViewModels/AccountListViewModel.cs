@@ -14,9 +14,17 @@ public sealed class AccountListViewModel : ViewModelBase {
 	private bool isScanTicking;
 	private bool isEngineTicking;
 	private bool autoLogSessionActive;
+	// Hồ sơ đã đọc được cho account mở app lần đầu (không phải do Auto tự relogin) nhưng CHƯA áp dụng vào UI —
+	// chờ người dùng bấm nút Áp dụng. Khoá theo ProcessId vì đó là thứ ổn định trong một phiên chạy của cửa sổ.
+	private readonly Dictionary<int, AccountProfile> pendingManualApply = new();
 
 	public AccountListViewModel() {
 		AttackHotkeyTracker.ResetAll();
+		// Đọc hồ sơ TRƯỚC lần quét đầu tiên: ScanTick có thể đọc được tên nhân vật ngay nhịp đầu, mà lúc đó kho
+		// hồ sơ chưa nạp thì account đó mất lượt khôi phục (ProfileRestored chỉ chạy đúng một lần).
+		AccountProfileStore.LoadAll();
+		// Danh sách điểm train dùng chung cho mọi account, nạp cùng lúc với hồ sơ.
+		TrainingPointStore.Load();
 
 		scanTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
 		scanTimer.Tick += async (_, _) => await ScanTick();
@@ -32,6 +40,10 @@ public sealed class AccountListViewModel : ViewModelBase {
 
 	// Raised khi hotkey Ctrl+A đổi AttackSettings.Enabled từ bên ngoài, để tab Đánh đang mở tự cập nhật lại.
 	public event Action<GameWindow>? AttackToggledExternally;
+
+	// Raised sau khi hồ sơ cấu hình vừa được khôi phục cho một account. Các tab đọc Settings qua getter nên WPF
+	// không biết giá trị vừa đổi từ code — MainWindowViewModel nghe sự kiện này để dựng lại tab đang mở.
+	public event Action<GameWindow>? ProfileRestored;
 
 	public AccountRowViewModel? SelectedRow {
 		get => selectedRow;
@@ -49,23 +61,55 @@ public sealed class AccountListViewModel : ViewModelBase {
 				.Select(game => (game.ProcessId, game.Handle, game.CharacterName))
 				.ToArray();
 
-			(List<GameWindow> scanned, Dictionary<int, GameSnapshot> snapshots) = await Task.Run(() => {
+			(List<GameWindow> scanned, Dictionary<int, GameSnapshot> snapshots, Dictionary<int, InventoryStrengthReading> strengths, Dictionary<int, int> moneys) = await Task.Run(() => {
 				List<GameWindow> scannedWindows = WindowScanner.FindGameWindows();
 				Dictionary<int, GameSnapshot> snapshotByProcessId = new();
-				foreach (int processId in knownProcessIds) snapshotByProcessId[processId] = GameMemory.ReadSnapshot(processId);
+				Dictionary<int, InventoryStrengthReading> strengthByProcessId = new();
+				Dictionary<int, int> moneyByProcessId = new();
+				foreach (int processId in knownProcessIds) {
+					GameSnapshot snapshot = GameMemory.ReadSnapshot(processId);
+					snapshotByProcessId[processId] = snapshot;
+					// Chỉ đọc sức lực và tiền khi đã vào game: chưa đăng nhập thì con trỏ gốc bằng 0, đọc chỉ tốn thêm một lần mở tiến trình.
+					// Read (số lớn hơn giữa ô game và tổng trọng lượng túi), KHÔNG dùng ReadRaw: ô game +0x27C trễ so với số
+					// trong túi đồ game hiển thị. Chủ dự án quan sát 2026-09-25: dòng account 2x/335 trong khi mở túi trong
+					// game thấy 7x/335, vài giây sau dòng account mới nhảy lên. Đo cùng ngày: Read thêm ~0,9ms/lượt cho 6 client.
+					strengthByProcessId[processId] = snapshot.Success ? InventoryStrengthReader.Read(processId) : InventoryStrengthReading.Fail("Chưa vào game.");
+					moneyByProcessId[processId] = snapshot.Success ? InventoryMoneyReader.Read(processId) : -1;
+				}
 				// Dò treo ở đây chứ không ở luồng UI: IsHungAppWindow gần như miễn phí, nhưng nhánh đo WM_NULL bên
 				// trong Probe là một chuyến đồng bộ sang luồng UI của client, không được để nó chắn giao diện Auto.
 				foreach ((int processId, IntPtr handle, string name) in knownWindows) WindowResponsiveness.Probe(processId, handle, name);
-				return (scannedWindows, snapshotByProcessId);
+				return (scannedWindows, snapshotByProcessId, strengthByProcessId, moneyByProcessId);
 			});
 
-			ApplyScanResult(scanned, snapshots);
+			ApplyScanResult(scanned, snapshots, strengths, moneys);
 		} finally {
 			isScanTicking = false;
 		}
 	}
 
-	private void ApplyScanResult(List<GameWindow> scanned, Dictionary<int, GameSnapshot> snapshots) {
+	// Ghi ĐỒNG BỘ xuống Profiles.json — chỉ chạy khi người dùng bấm nút Lưu (chủ dự án chốt 2026-09-22: không còn
+	// tự lưu định kỳ, không tự lưu khi đóng app; chưa bấm Lưu thì thay đổi trong phiên mất khi tắt Auto).
+	public void SaveProfilesNow() {
+		AccountProfile[] captured = CaptureProfiles();
+		if (captured.Length == 0) return;
+		AccountProfileStore.SaveIfChanged(captured);
+	}
+
+	// lock(game.AutoSync) là bắt buộc: hàm này chạy luồng UI, còn EngineTick chạy Parallel.ForEach(TickOne) trên
+	// thread pool và TickOne giữ đúng khoá đó (AccountEngineCoordinator.cs:81). Hai bên chạy song song thật.
+	private AccountProfile[] CaptureProfiles() {
+		List<AccountProfile> captured = [];
+		foreach (AccountRowViewModel row in Accounts) {
+			GameWindow game = row.GameWindow;
+			// Chưa đọc được tên nhân vật thì chưa biết lưu vào khoá nào.
+			if (game.CharacterName.Length == 0) continue;
+			lock (game.AutoSync) captured.Add(AccountProfileStore.Capture(game));
+		}
+		return [.. captured];
+	}
+
+	private void ApplyScanResult(List<GameWindow> scanned, Dictionary<int, GameSnapshot> snapshots, Dictionary<int, InventoryStrengthReading> strengths, Dictionary<int, int> moneys) {
 		HashSet<int> scannedIds = scanned.Select(game => game.ProcessId).ToHashSet();
 
 		foreach (int deadId in knownByProcessId.Keys.Where(id => !scannedIds.Contains(id)).ToList()) {
@@ -82,8 +126,12 @@ public sealed class AccountListViewModel : ViewModelBase {
 				: "SnapshotCuối=KHÔNG_ĐỌC_ĐƯỢC";
 			DebugLog.AddClientEvent($"GAME_WINDOW_LOST | PID={deadId} | {deadWindow.CharacterName} | {lastState} | Map={deadWindow.LastObservedMapId} | SốAccountCònLại={scannedIds.Count}");
 			knownByProcessId.Remove(deadId);
+			pendingManualApply.Remove(deadId);
 			WindowResponsiveness.Forget(deadId);
 			ClientFreezeWatch.Forget(deadId);
+			// Hai bảng khoá theo HWND, trước đây không ai dọn nên rò một mục cho mỗi client đã đóng.
+			AccountEngineCoordinator.Forget(deadWindow.Handle);
+			AttackHotkeyTracker.Untrack(deadWindow.Handle);
 			AccountRowViewModel? deadRow = Accounts.FirstOrDefault(row => row.GameWindow.ProcessId == deadId);
 			if (deadRow == null) continue;
 			Accounts.Remove(deadRow);
@@ -101,8 +149,15 @@ public sealed class AccountListViewModel : ViewModelBase {
 		// khi Auto tổng bật, nên không thể dùng chung 1 nguồn snapshot cho hiển thị cơ bản.
 		foreach ((int processId, GameSnapshot snapshot) in snapshots) {
 			if (!knownByProcessId.TryGetValue(processId, out GameWindow? game)) continue;
+			// Ghi TRƯỚC nhánh snapshot hỏng bên dưới: client thoát ra màn chọn nhân vật thì phải xoá số cũ, không để
+			// dòng account treo mãi sức lực của phiên trước. strengths và snapshots cùng khoá (dựng chung một vòng lặp).
+			InventoryStrengthReading strength = strengths[processId];
+			game.StrengthCurrent = strength.Success ? strength.Current : -1;
+			game.StrengthMaximum = strength.Success ? strength.Maximum : 0;
+			game.Money = moneys[processId];
 			if (!snapshot.Success) continue;
 			game.CharacterName = snapshot.CharacterName;
+			RestoreProfileOnce(game);
 			game.Level = snapshot.Level;
 			game.Hp = snapshot.Hp;
 			game.MaxHp = snapshot.MaxHp;
@@ -152,6 +207,42 @@ public sealed class AccountListViewModel : ViewModelBase {
 		} finally {
 			isEngineTicking = false;
 		}
+	}
+
+	// Khôi phục hồ sơ cấu hình ĐÚNG MỘT LẦN cho mỗi cửa sổ, ngay lần đầu đọc được tên nhân vật.
+	//
+	// Đặt ở đây vì đây là chỗ duy nhất trong app mà CharacterName lần đầu có giá trị. Không kiểm cờ ProfileRestored
+	// thì mỗi nhịp quét 1 giây lại nạp đè lên đúng thứ người dùng vừa sửa tay trên tab.
+	private void RestoreProfileOnce(GameWindow game) {
+		if (game.ProfileRestored || game.CharacterName.Length == 0) return;
+		game.ProfileRestored = true;
+		if (! AccountProfileStore.TryGet(game.CharacterName, out AccountProfile profile)) {
+			DebugLog.AddProfileEvent($"PROFILE_NOT_FOUND | PID={game.ProcessId} | NhânVật={game.CharacterName} | Chưa có hồ sơ, giữ nguyên mặc định.");
+			return;
+		}
+		// Client do CHÍNH Auto đăng nhập lại thì bật lại đúng trạng thái trước khi rớt — không thì cứu xong account
+		// vẫn nằm im, vô nghĩa. Consume: lấy ra và xoá, nên chỉ có tác dụng đúng một lần.
+		bool autoLaunched = ReloginSupervisor.ConsumeAutoLaunched(game.CharacterName);
+		if (autoLaunched) {
+			lock (game.AutoSync) AccountProfileStore.Apply(game, profile, autoEnableMaster: true);
+			ProfileRestored?.Invoke(game);
+			return;
+		}
+		// Client chủ dự án tự mở tay (không phải Auto tự relogin): KHÔNG tự áp dụng nữa (chốt 2026-09-22) — chỉ
+		// giữ lại hồ sơ, chờ bấm nút "Áp dụng cấu hình đã lưu" ở ApplyAllProfilesNow.
+		pendingManualApply[game.ProcessId] = profile;
+		DebugLog.AddProfileEvent($"PROFILE_PENDING_MANUAL_APPLY | PID={game.ProcessId} | NhânVật={game.CharacterName} | Chờ bấm nút Áp dụng.");
+	}
+
+	// Áp dụng TẤT CẢ hồ sơ đang chờ (mở app lần đầu, chưa qua relogin tự động) vào UI/engine cùng lúc — người dùng
+	// bấm nút "Áp dụng cấu hình đã lưu" (chốt 2026-09-22: không còn tự áp dụng khi mở app).
+	public void ApplyAllProfilesNow() {
+		foreach ((int processId, AccountProfile profile) in pendingManualApply) {
+			if (! knownByProcessId.TryGetValue(processId, out GameWindow? game)) continue;
+			lock (game.AutoSync) AccountProfileStore.Apply(game, profile, autoEnableMaster: false);
+			ProfileRestored?.Invoke(game);
+		}
+		pendingManualApply.Clear();
 	}
 
 	// Chỉ khi có session Auto đang chạy thì DebugLog mới thực sự ghi file (xem DebugLog.autoLoggingEnabled).

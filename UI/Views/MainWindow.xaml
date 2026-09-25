@@ -58,10 +58,38 @@
 		<DataTemplate DataType="{x:Type vm:LoginViewModel}">
 			<views:LoginView />
 		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:ConfigViewModel}">
+			<views:ConfigView />
+		</DataTemplate>
 		<DataTemplate DataType="{x:Type vm:DebugViewModel}">
 			<views:DebugView />
 		</DataTemplate>
 		<DataTemplate x:Key="AccountRowTemplate" DataType="{x:Type vm:AccountRowViewModel}">
+			<DataTemplate.Resources>
+				<!--
+					Foreground KHÔNG đặt tay trên từng TextBlock: giá trị đặt tay thắng mọi trigger nên DataTrigger quá tải
+					không đổi được màu. Đặt qua Style thì trigger mới đè được. Quá tải (sức lực hiện tại > tối đa, game khoá
+					di chuyển) thì in đỏ CẢ dòng: hai style chỉ khác màu mặc định, cùng một trigger.
+				-->
+				<Style x:Key="AccountRowText" TargetType="TextBlock">
+					<Setter Property="VerticalAlignment" Value="Center" />
+					<Setter Property="Foreground" Value="{StaticResource Brush.TextPrimary}" />
+					<Style.Triggers>
+						<DataTrigger Binding="{Binding IsOverweight}" Value="True">
+							<Setter Property="Foreground" Value="{StaticResource Brush.Danger}" />
+						</DataTrigger>
+					</Style.Triggers>
+				</Style>
+				<Style x:Key="AccountRowSecondaryText" TargetType="TextBlock">
+					<Setter Property="VerticalAlignment" Value="Center" />
+					<Setter Property="Foreground" Value="{StaticResource Brush.TextSecondary}" />
+					<Style.Triggers>
+						<DataTrigger Binding="{Binding IsOverweight}" Value="True">
+							<Setter Property="Foreground" Value="{StaticResource Brush.Danger}" />
+						</DataTrigger>
+					</Style.Triggers>
+				</Style>
+			</DataTemplate.Resources>
 			<StackPanel>
 				<!--
 					Đặt ContextMenu ở ĐÂY chứ không ở ItemContainerStyle: MenuItem thừa kế DataContext là chính
@@ -85,10 +113,17 @@
 					Margin="0,0,0,4"
 					Background="Transparent"
 					MouseLeftButtonDown="AccountRow_Clicked">
+					<!--
+						Format dòng: Tên [khoảng cách lớn] Tiền vạn [khoảng cách] Sức lực hiện tại/tối đa [khoảng cách] HP% | MP%.
+						Ba cột số có bề rộng CỐ ĐỊNH và canh phải để số thẳng hàng giữa các account (mỗi dòng là một Grid
+						riêng nên cột Auto sẽ lệch nhau); cột tên co giãn nên khoảng cách lớn sau tên tự có.
+					-->
 					<Grid.ColumnDefinitions>
 						<ColumnDefinition Width="Auto" />
-						<ColumnDefinition Width="3*" />
-						<ColumnDefinition Width="1*" />
+						<ColumnDefinition Width="*" />
+						<ColumnDefinition Width="64" />
+						<ColumnDefinition Width="68" />
+						<ColumnDefinition Width="84" />
 					</Grid.ColumnDefinitions>
 					<!--
 						Click vào CheckBox thì WPF đánh dấu sự kiện chuột đã xử lý, nên ListBoxItem chứa nó KHÔNG
@@ -104,16 +139,24 @@
 						Unchecked="AccountAutoEnabled_Toggled" />
 					<TextBlock
 						Grid.Column="1"
-						VerticalAlignment="Center"
-						Foreground="{StaticResource Brush.TextPrimary}"
-						Text="{Binding DisplayName}"
+						Style="{StaticResource AccountRowText}"
+						Text="{Binding CharacterNameText}"
 						TextTrimming="CharacterEllipsis" />
 					<TextBlock
 						Grid.Column="2"
-						VerticalAlignment="Center"
-						Foreground="{StaticResource Brush.TextSecondary}"
+						Style="{StaticResource AccountRowSecondaryText}"
+						Text="{Binding MoneyText}"
+						TextAlignment="Right" />
+					<TextBlock
+						Grid.Column="3"
+						Style="{StaticResource AccountRowSecondaryText}"
+						Text="{Binding StrengthText}"
+						TextAlignment="Right" />
+					<TextBlock
+						Grid.Column="4"
+						Style="{StaticResource AccountRowSecondaryText}"
 						Text="{Binding Vitals}"
-						TextTrimming="CharacterEllipsis" />
+						TextAlignment="Right" />
 				</Grid>
 			</StackPanel>
 			<DataTemplate.Triggers>
@@ -223,7 +266,12 @@
 					</ItemsControl>
 				</Border>
 
-				<ContentControl Grid.Row="1" Content="{Binding SelectedTabContent}" />
+				<ScrollViewer
+					Grid.Row="1"
+					HorizontalScrollBarVisibility="Disabled"
+					VerticalScrollBarVisibility="Auto">
+					<ContentControl Content="{Binding SelectedTabContent}" />
+				</ScrollViewer>
 			</Grid>
 		</Grid>
 

@@ -72,6 +72,22 @@ public static class AttackHotkeyTracker {
 		LogDiagnostic($"TRACK_WINDOW | HWND=0x{gameWindowHandle.ToInt64():X8} | PID={gameProcessId} | Added={added} | Hook=0x{keyboardHook.ToInt64():X8} | HookThreadId={keyboardHookThreadId}");
 	}
 
+	// Bỏ theo dõi một cửa sổ đã chết.
+	//
+	// Trước lượt này gameWindowHandles chỉ có đường Add và đường xoá SẠCH (ResetAll), không có đường xoá lẻ, nên
+	// mỗi client đóng đi để lại vĩnh viễn một HWND chết trong tập. Mỗi lượt tự đăng nhập lại sinh một HWND mới nên
+	// phải dọn, cùng lý do với AccountEngineCoordinator.Forget.
+	public static void Untrack(IntPtr gameWindowHandle) {
+		if (gameWindowHandle == IntPtr.Zero) return;
+		bool removed;
+		int remaining;
+		lock (syncRoot) {
+			removed = gameWindowHandles.Remove(gameWindowHandle);
+			remaining = gameWindowHandles.Count;
+		}
+		if (removed) LogDiagnostic($"UNTRACK_WINDOW | HWND=0x{gameWindowHandle.ToInt64():X8} | CònLại={remaining}");
+	}
+
 	// Dừng theo dõi bàn phím và ghi lại trạng thái bị xóa để chẩn đoán vòng đời hook.
 	public static void ResetAll() {
 		int trackedCount;

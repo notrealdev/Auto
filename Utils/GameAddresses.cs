@@ -37,6 +37,16 @@ public static class GameAddresses {
 		// Modal=0x008FED58 với ModuleBase=0x00400000 ở cả 5 tiến trình lúc chết, xác nhận lại bằng ModalVtableProbe
 		// (MODAL_VTABLE_OBJECT | InModule=True | ObjectRva=0x4FED58).
 		public const int ReturnToTownModal = 0x4FED58;
+		// Con trỏ tới khối chứa sức lực mang đồ; cộng Inventory.CurrentStrength / Inventory.MaximumStrength để ra cặp.
+		//
+		// Tìm bằng cách quét ngược con trỏ tới ô 0x28079C9C đã lọc được: trong 65 con trỏ trỏ vào khối đó, chỉ 2 cái
+		// nằm tĩnh trong Game.exe, và chỉ cái này đọc ra cặp hợp lệ trên CẢ 6 client (cái kia, RVA 0x2170384, trả
+		// con trỏ 0 hoặc rác ở 5/6 client).
+		//
+		// Đo 2026-09-23 qua chuỗi này: PID 19860=69/414, 23828=299/515, 2272=81/335, 24512=61/343, 3848=31/335,
+		// 24236=105/277. Cả 6 đều thoả 0 < hiện tại <= tối đa, và tối đa KHÁC nhau theo từng nhân vật — đúng bản
+		// chất dữ liệu riêng chứ không phải bảng dùng chung. Riêng 299/515 khớp đúng số chủ dự án đọc trong game.
+		public const int StrengthRoot = 0x5010D4;
 	}
 
 	public static class Entity {
@@ -138,11 +148,26 @@ public static class GameAddresses {
 		// "Đại địa nhãn" x44, "Tiền đồng" x16 — chủ dự án xác nhận đây là rương thứ 2 của túi đồ.
 		public const int ExtendedSlotListPointer = 0x02F8;
 		public const int ExtendedSlotCount = 35;
-		public const int FirstStrength = 0x0FFC8;
-		public const int SecondStrength = 0x0FE88;
-		public const int ThirdStrength = 0x10090;
 		public const int EquippedWeightItemIndex = 0x0BD78;
-		public const int MaximumStrength = 0x21DDC;
+		// Sức lực mang đồ. Offset tính từ CON TRỎ Globals.StrengthRoot, KHÔNG phải từ Inventory.Object.
+		//
+		// Bốn hằng số cũ (FirstStrength 0x0FFC8, SecondStrength 0x0FE88, ThirdStrength 0x10090, MaximumStrength
+		// 0x21DDC, đều tính từ Inventory.Object) đã bị xoá ngày 2026-09-23 vì ĐO RA LÀ SAI: đọc thử trên 6 client
+		// thì ba cái đầu ra 0 ở mọi client, còn 0x21DDC ra 729 trên PID=19860 nhưng đó chỉ là một phần tử của dãy
+		// tăng đều 719,718,720,719,721… và cùng offset đó ở 5 client kia ra -1 / số rác / 0. Không ai tham chiếu
+		// chúng nên xoá không ảnh hưởng gì.
+		//
+		// Cặp đúng dò ra bằng lọc vi sai (2026-09-23, PID=23828 TiểuHồngĐơn): chủ dự án đọc trong game 318/515, quét
+		// toàn tiến trình được 256 ô mang giá trị 318; đổi sức lực sang 299/515 rồi đọc lại đúng 256 ô đó thì CHỈ
+		// MỘT ô đổi — 0x28079C9C: 318 -> 299 — và ô liền trước 0x28079C98 giữ 515. Bảng tĩnh không thể đổi giá trị
+		// đúng lúc người chơi vứt đồ, nên phép lọc này loại sạch trùng hợp.
+		public const int CurrentStrength = 0x027C;
+		public const int MaximumStrength = 0x0278;
+		// Số tiền (đơn vị XU, 1 vạn = 10.000 xu) hiện trong túi đồ. Cùng đối tượng với sức lực: tính từ CON TRỎ
+		// Globals.StrengthRoot. Dò bằng lọc vi sai trên client thật (2026-09-24, PID=22612 MaiAnhNhe): bán 12 món
+		// (SALE_COMPLETE Sold=12) ô này 1.351.038 -> 1.356.312 (+5.274), rồi sửa đồ ngay sau đó 1.356.312 -> 1.355.782 (-530).
+		// Chủ dự án đối chiếu số hiển thị trong game với 6 account và xác nhận chính xác (đổi ra vạn = chia 10.000).
+		public const int Money = 0x05F0;
 		public const int ReceiptDecrement = 0x0FE2C;
 		public const int ReceiptFirstIncrement = 0x0FE38;
 		public const int ReceiptSecondIncrement = 0x0FE7C;

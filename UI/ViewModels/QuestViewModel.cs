@@ -96,4 +96,18 @@ public sealed class QuestViewModel : ViewModelBase {
 		}
 	}
 
+	// Trạng thái lượt gần nhất, ScoutQuestAutomation ghi thẳng vào settings khi kết thúc (không qua setter ở trên
+	// nên không tự bắn PropertyChanged) — MainWindowViewModel gọi RefreshLiveState() theo nhịp statusBarTimer sẵn có
+	// (2 giây, xem MainWindowViewModel.RefreshStatusBar) để tab này cập nhật theo, không dựng thêm timer riêng.
+	public string ScoutStatus => settings.ScoutStatus;
+
+	// Gộp thẳng vào nhãn checkbox thay vì để riêng một dòng — chủ dự án chốt 2026-09-21: để dòng riêng thừa khoảng
+	// trống khi chưa có trạng thái.
+	public string ScoutLabel => "Làm nhiệm vụ" + (ScoutStatus.Length > 0 ? " (Đã hoàn thành)" : "");
+
+	public void RefreshLiveState() {
+		OnPropertyChanged(nameof(ScoutStatus));
+		OnPropertyChanged(nameof(ScoutLabel));
+		OnPropertyChanged(nameof(ScoutEnabled));
+	}
 }

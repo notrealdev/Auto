@@ -16,16 +16,30 @@ public static class RuntimeLayoutResolver {
 	private static readonly ConcurrentDictionary<int, RuntimeLayout> confirmedByProcess = new();
 	private static readonly ConcurrentDictionary<string, RuntimeLayout> confirmedByFingerprint = new(StringComparer.Ordinal);
 	private static readonly ConcurrentDictionary<int, (DateTime RetryUtc, RuntimeLayout Layout)> unavailableByProcess = new();
+	private static readonly ConcurrentDictionary<int, string> fingerprintByProcess = new();
 	public static RuntimeLayout Unavailable => CreateUnavailable("UNAVAILABLE", CreateUnavailableStates(), "Runtime layout has not been resolved for a game process.");
 
 	// Dùng cache ngắn khi nhân vật chưa sẵn sàng để tránh quét toàn bộ Game.exe mỗi chu kỳ
 	public static RuntimeLayout Resolve(int processId) {
 		if (confirmedByProcess.TryGetValue(processId, out RuntimeLayout? cached)) return cached;
 		if (unavailableByProcess.TryGetValue(processId, out (DateTime RetryUtc, RuntimeLayout Layout) unavailable) && DateTime.UtcNow < unavailable.RetryUtc) return unavailable.Layout;
-		string fingerprint = GetFingerprint(processId);
-		if (fingerprint != "UNAVAILABLE" && confirmedByFingerprint.TryGetValue(fingerprint, out cached) && ValidatePlayer(processId, cached, out _)) {
-			confirmedByProcess[processId] = cached;
-			return cached;
+		// File Game.exe của một tiến trình không đổi suốt đời tiến trình, nên băm SHA256 cả file một lần là đủ.
+		if (! fingerprintByProcess.TryGetValue(processId, out string? fingerprint)) {
+			fingerprint = GetFingerprint(processId);
+			if (fingerprint != "UNAVAILABLE") fingerprintByProcess[processId] = fingerprint;
+		}
+		if (fingerprint != "UNAVAILABLE" && confirmedByFingerprint.TryGetValue(fingerprint, out cached)) {
+			if (ValidatePlayer(processId, cached, out _)) {
+				confirmedByProcess[processId] = cached;
+				return cached;
+			}
+			// Cùng bản Game.exe đã có layout xác nhận trên client khác, nên quét lại ảnh cũng ra đúng layout này. Không
+			// đọc được nhân vật tức là client CHƯA VÀO GAME, không phải layout sai: trả chưa sẵn sàng, bỏ ResolveCore.
+			// Đo 2026-09-25 (21 client, 15 client tiêu đề PING:0, không có tên nhân vật): 21 lần ReadSnapshot tốn
+			// 3.177ms vì mỗi client chưa vào game cứ 2 giây lại dump + quét cả ảnh Game.exe.
+			RuntimeLayout notInGame = CreateUnavailable(fingerprint, CreateUnavailableStates(), "Confirmed layout of this Game.exe build does not validate yet (character not in game).");
+			unavailableByProcess[processId] = (DateTime.UtcNow.AddSeconds(2), notInGame);
+			return notInGame;
 		}
 		RuntimeLayout resolved = ResolveCore(processId, fingerprint);
 		if (resolved.PlayerReady) {

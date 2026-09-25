@@ -28,6 +28,9 @@ internal sealed class AutoFsAttackTransport {
 	private const int SelectEntityCommand = 323;
 	private const int ReadCurrentTargetCommand = 324;
 	private const int MaximumPassiveBuffSkillId = 0x7CF;
+	// Phải khớp SystemUint.cpp (QuickBuyCommand, QuickBuyMaximumQuantity).
+	private const int QuickBuyCommand = 327;
+	private const int MaximumQuickBuyQuantity = 100;
 	private const uint SendMessageTimeoutMilliseconds = 500;
 	// Các bước đăng nhập dựng lại cả màn hình nên lâu hơn hẳn một lần gửi gói; xem TrySendLoginCommand.
 	private const uint LoginSendTimeoutMilliseconds = 10000;
@@ -151,6 +154,33 @@ internal sealed class AutoFsAttackTransport {
 	public bool TrySendConfirmedCommandForDebug(IntPtr gameWindow, int command, int payload, out string error) {
 		string currentError = "";
 		bool sent = actionGate.RunDebugCommand(() => TrySendConfirmedCommandCore(gameWindow, command, payload, out currentError));
+		error = currentError;
+		return sent;
+	}
+
+	// Mua nhanh thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client, payload dạng lệnh 95 của AutoFS:
+	// mã chi tiết của thuốc (16 bit thấp) | số lượng << 16. Bản chẩn đoán: bỏ qua công tắc Auto tổng, giữ khoá chống gửi trùng.
+	// Native trả 1 chỉ chứng minh hàm client đã được gọi, KHÔNG chứng minh server đã bán — phải đọc lại số thuốc trong túi.
+	public bool TrySendQuickBuyForDebug(IntPtr gameWindow, int potionCode, int quantity, out string error) {
+		if (potionCode < 0 || potionCode > 0xFFFF || quantity < 1 || quantity > MaximumQuickBuyQuantity) {
+			error = $"Invalid quick-buy arguments. PotionCode={potionCode}, Quantity={quantity}.";
+			return false;
+		}
+		return TrySendConfirmedCommandForDebug(gameWindow, QuickBuyCommand, potionCode | (quantity << 16), out error);
+	}
+
+	// Bản tự động của TrySendQuickBuyForDebug: chỉ chạy khi Auto tổng bật, đi qua cùng khoá hành động với các lệnh khác.
+	public bool TrySendQuickBuy(IntPtr gameWindow, int potionCode, int quantity, out string error) {
+		if (! actionGate.AutomationEnabled) {
+			error = "Master automation switch is disabled.";
+			return false;
+		}
+		if (potionCode < 0 || potionCode > 0xFFFF || quantity < 1 || quantity > MaximumQuickBuyQuantity) {
+			error = $"Invalid quick-buy arguments. PotionCode={potionCode}, Quantity={quantity}.";
+			return false;
+		}
+		string currentError = "";
+		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, QuickBuyCommand, potionCode | (quantity << 16), out currentError));
 		error = currentError;
 		return sent;
 	}

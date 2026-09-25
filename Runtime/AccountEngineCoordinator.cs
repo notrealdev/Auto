@@ -24,6 +24,9 @@ public static class AccountEngineCoordinator {
 	private sealed class OutOfWorldState {
 		public DateTime SinceUtc;
 		public DateTime NextReportUtc;
+		// Đã yêu cầu đăng nhập lại cho ĐỢT rớt này chưa. Một đợt chỉ yêu cầu một lần, không thì nhịp 100ms sẽ
+		// bắn yêu cầu liên tục.
+		public bool ReloginRequested;
 	}
 	private static readonly ConcurrentDictionary<IntPtr, DateTime> deathDetectedUtcByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, string> lastRuntimeGateByWindow = new();
@@ -63,17 +66,68 @@ public static class AccountEngineCoordinator {
 	private const int StuckSupervisorRadiusRaw = 256;
 	// Bỏ hẳn yêu cầu sửa trong quãng này khi phải cứu kẹt, để HasPendingRepairRequest về false và repairPriority nhả.
 	private const int StuckSupervisorRepairCooldownSeconds = 600;
+	// Ngoài bãi liên tục quá chừng này thì kéo về, KHÔNG đòi đứng im. Lưới an toàn cho ca nhân vật kẹt trong hốc cạnh NPC
+	// mà cứ dao động trái-phải: dao động rộng hơn StuckSupervisorRadiusRaw nên mốc đứng im (10 giây, bán kính 256) luôn bị
+	// reset, và ShouldRestartStationaryAttack còn đòi !recentAttack trong khi luồng Đánh vẫn bắn lệnh vào từng con quái
+	// "không tới được". Bằng chứng (Release/Diagnostics PID=22612 MaiAnhNhe 2026-09-24): xong chuyến bán 22:40:05 nhân vật
+	// dao động trong x 59199-59870, y 92585-93114 (cách tâm bãi ~4990 raw, Range=3000) suốt tới 22:43:15 mới có
+	// ANTI_AFK_COORDINATION_RECOVERY, rồi "Tự lên bãi" đi từ chính chỗ đó về tâm bãi trong 20 giây — tức đường về thông,
+	// chỉ là không ai gọi nó sớm. 20 giây dài hơn mọi lần đuổi quái sát mép bãi bình thường.
+	private const int OutsideAreaReturnSeconds = 20;
+	private static readonly ConcurrentDictionary<IntPtr, DateTime> outsideAreaSinceByWindow = new();
 	private static readonly ConcurrentDictionary<IntPtr, StuckAnchor> stuckAnchorByWindow = new();
 	// Máu của nhịp trước, để phân biệt "đang hồi máu" với "đang bị đánh" — xem chỗ dùng trong lớp giám sát đứng im.
 	private static readonly ConcurrentDictionary<IntPtr, int> lastStuckHpByWindow = new();
 
-	// Tránh boss chặn Buff tối đa bao lâu. Cần trần này vì có tình huống trốn KHÔNG bao giờ xong: cả bốn góc đều nằm
-	// trong vùng cấm thì Engine.TryRetreatFromElitesCore ghi ELITE_NO_SAFE_CORNER rồi đứng im. Không có trần thì nhân
-	// vật đứng cạnh boss và vĩnh viễn không được heal — chết chắc hơn là để Buff chen vào.
-	private const int EliteRetreatBuffBlockSeconds = 5;
-	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatSinceByWindow = new();
+	// Trốn boss bị KẸT: đang trốn mà vị trí xê dịch không quá EliteRetreatStuckRadius trong EliteRetreatStuckSeconds.
+	// Chỉ lúc đó Buff mới được heal trong vùng cấm (chủ dự án chốt 2026-09-24). Số đo từ movement.log PID=2228: chạy
+	// bình thường ~495 raw trong 1,7 giây (23:14:27 -> 23:14:28), kẹt thật chỉ xê dịch ~16 raw trong 5 giây
+	// (23:14:52 -> 23:14:57, 63941/92762 -> 63939/92746) — 64 raw trong 3 giây tách được hai ca.
+	private const int EliteRetreatStuckSeconds = 3;
+	private const int EliteRetreatStuckRadius = 64;
+	private static readonly ConcurrentDictionary<IntPtr, AttackPositionState> eliteRetreatAnchorByWindow = new();
+	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatStuckLoggedByWindow = new();
+	// Mốc bắt đầu đợt trốn boss hiện tại, dùng RIÊNG cho việc chặn ANTI_AFK.
+	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatAntiAfkSinceByWindow = new();
+	// Trốn boss được miễn ANTI_AFK trong bấy nhiêu lâu. Dài hơn hẳn StationaryRestartSeconds (10s) vì một chặng trốn
+	// bình thường đã tốn hơn thế; nhưng vẫn có trần để ca trốn treo thật không kẹt vĩnh viễn — hết trần thì ANTI_AFK
+	// được đập worker như cũ.
+	private const int EliteRetreatAntiAfkGraceSeconds = 60;
 
 	private readonly record struct AttackPositionState(int X, int Y, DateTime SinceUtc);
+
+	// Dọn toàn bộ trạng thái theo cửa sổ khi cửa sổ game biến mất.
+	//
+	// Trước lượt này KHÔNG ai dọn: ApplyScanResult chỉ gọi WindowResponsiveness.Forget và ClientFreezeWatch.Forget,
+	// nên 17 bảng dưới đây giữ lại một mục cho mỗi HWND đã chết suốt vòng đời app. Hôm nay chỉ rò khi client crash;
+	// từ lúc có tính năng tự đăng nhập lại thì mỗi lượt cứu account sinh một HWND mới, tức rò theo nhịp.
+	//
+	// THÊM BẢNG MỚI Ở TRÊN THÌ PHẢI THÊM MỘT DÒNG Ở ĐÂY.
+	//
+	// Nhận Handle chứ không nhận processId như hai Forget sẵn có — khác kiểu tham số là cố ý, vì các bảng này
+	// khoá theo HWND.
+	public static void Forget(IntPtr handle) {
+		attackPositionByWindow.TryRemove(handle, out _);
+		outOfWorldByWindow.TryRemove(handle, out _);
+		deathDetectedUtcByWindow.TryRemove(handle, out _);
+		lastRuntimeGateByWindow.TryRemove(handle, out _);
+		lastAutoGateByWindow.TryRemove(handle, out _);
+		lastQuestGateByWindow.TryRemove(handle, out _);
+		deathReturnLoggedByWindow.TryRemove(handle, out _);
+		deathReadErrorLoggedByWindow.TryRemove(handle, out _);
+		deathUndetectedLoggedByWindow.TryRemove(handle, out _);
+		addressAuditRanByWindow.TryRemove(handle, out _);
+		attackEnabledByWindow.TryRemove(handle, out _);
+		lastReturnRequestFailureByWindow.TryRemove(handle, out _);
+		nextHeartbeatByWindow.TryRemove(handle, out _);
+		deathSendFailureByWindow.TryRemove(handle, out _);
+		stuckAnchorByWindow.TryRemove(handle, out _);
+		lastStuckHpByWindow.TryRemove(handle, out _);
+		eliteRetreatAntiAfkSinceByWindow.TryRemove(handle, out _);
+		eliteRetreatAnchorByWindow.TryRemove(handle, out _);
+		eliteRetreatStuckLoggedByWindow.TryRemove(handle, out _);
+		outsideAreaSinceByWindow.TryRemove(handle, out _);
+	}
 
 	public static void TickOne(GameWindow game) {
 		long profilerStart = HotPathProfiler.Begin();
@@ -87,6 +141,26 @@ public static class AccountEngineCoordinator {
 			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
 			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun);
 			DebugLog.SetProcessLoggingEnabled(game.ProcessId, masterEnabled);
+			// Auto tổng tắt (và không có chuyến sửa/bán chạy tay) thì account này KHÔNG chạy luồng nào (chủ dự án chốt
+			// 2026-09-24): chỉ dọn đúng những gì cổng tắt bên dưới vẫn dọn rồi thoát, không đọc bộ nhớ game. Trước đây
+			// account tắt vẫn đi qua ReadSnapshot/RefreshMapState/ClientFreezeWatch/WeaponRepairMonitor mỗi 100ms.
+			// Bằng chứng (perf.log bản 16:50, bật 6/21 account): 6 client ĐọcNhânVật=88 lần/s, 24,5ms/s; 21 client
+			// ĐọcNhânVật=209 lần/s (= 21 account x 10 nhịp), 549ms/s, MộtNhịpAccount=759ms/s, CPU 50-90% của 1 lõi.
+			// Dòng account trên UI vẫn có HP/MP/tên vì AccountListViewModel.ScanTick tự đọc riêng mỗi giây.
+			// Giữ lại DUY NHẤT RefreshMapState (tự giới hạn 1 lần/giây): công cụ Debug chạy khi Auto tổng tắt đọc
+			// LastObservedMapId (ReturnTalismanProbe), và để map cũ thì lúc bật lại Auto bị tính nhầm là đổi map.
+			if (! masterEnabled && ! debugRepairRun && ! game.InventorySaleEngine.IsDebugRun) {
+				RefreshMapState(game, null);
+				LogAutoGate(game, masterEnabled, game.AttackSettings.Enabled, game.LootSettings.Enabled, game.BasicSettings.EnableWeaponRepair, game.InventorySaleEngine.IsAutomaticSaleEnabled);
+				game.WeaponRepairMonitor.SetEnabled(false);
+				stuckAnchorByWindow.TryRemove(game.Handle, out _);
+				attackEnabledByWindow.TryRemove(game.Handle, out _);
+				game.ReturnToTrainingAutomation.Cancel();
+				game.ConfiguredTrainingMovementAutomation.Cancel();
+				game.AttackEngine.Stop();
+				game.LootEngine.Stop();
+				return;
+			}
 			Action<string> accountLog = text => DebugLog.AddForProcess(game.ProcessId, text);
 			Action<string> accountDropLog = text => DebugLog.AddLootDropForProcess(game.ProcessId, text);
 			Action<string> accountTargetLifecycleLog = text => DebugLog.AddTargetLifecycleForProcess(game.ProcessId, text);
@@ -130,7 +204,16 @@ public static class AccountEngineCoordinator {
 				repairEnabled = false;
 			}
 
-			RuntimeLayout layout = RuntimeLayoutResolver.Resolve(game.ProcessId);
+			// CHỈ resolve khi có lý do dùng tới kết quả. RuntimeLayoutResolver.Resolve tự cache VĨNH VIỄN một khi
+			// PlayerReady, nhưng lúc CHƯA sẵn sàng (chưa login, đang ở màn chọn nhân vật...) nó dump lại TOÀN BỘ ảnh
+			// Game.exe (module.ModuleMemorySize, cỡ 33MB) rồi quét chữ ký mỗi 2 giây (RuntimeLayoutResolver.cs:35,
+			// unavailableByProcess retry). LogRuntimeGate/RunAddressAuditOnce đều tự no-op khi log tiến trình đang tắt
+			// (DebugLog.IsProcessLoggingEnabled = masterEnabled, đặt ở trên), và mọi nơi đọc game.RuntimeLayout khác
+			// (ScoutQuestAutomation, WeaponRepairAutomation, AutoFsMovementCommand) chỉ chạy sau cổng masterEnabled ở
+			// dưới — nên kết quả Resolve() hoàn toàn không dùng tới khi Auto tổng tắt. Trước đây gọi vô điều kiện nên
+			// mỗi client mở sẵn nhưng CHƯA login/CHƯA bật Auto tổng vẫn tự dump+quét 33MB mỗi 2 giây, cộng dồn theo số
+			// client mở — đúng hiện tượng CPU/RAM tăng theo số client dù chưa bật gì (chủ dự án báo 2026-09-21).
+			RuntimeLayout layout = masterEnabled || debugRepairRun ? RuntimeLayoutResolver.Resolve(game.ProcessId) : game.RuntimeLayout;
 			game.RuntimeLayout = layout;
 			LogRuntimeGate(game, layout, attackEnabled, lootEnabled, repairEnabled, saleEnabled, accountLog);
 			RunAddressAuditOnce(game);
@@ -158,6 +241,10 @@ public static class AccountEngineCoordinator {
 			}
 			ReportAccountBackInWorld(game);
 			game.AutoFsActionGate.SetRuntimeSuspended(false);
+
+			// Mua nhanh thuốc luôn chạy khi Auto tổng bật (chủ dự án chốt 2026-09-25) nên đặt TRƯỚC mọi nhánh return bên dưới, để
+			// Hồi thành phù, Về thành, Sửa đồ, Buff... đều không chặn được nó. Chỉ gửi một lệnh mua, không giữ quyền điều khiển.
+			if (masterEnabled && layout.PlayerReady && layout.InventoryReady) game.QuickBuyEngine.Tick(game.ProcessId, game.Handle, accountLog);
 
 			// Đặt NGAY ĐÂY, trước mọi nhánh return của từng luồng. Mọi nhánh bên dưới đều có đường thoát sớm
 			// (Hồi thành phù, tắt Auto tổng, chết, Buff, Tự lên bãi, Di chuyển bãi), nên đặt sau bất kỳ nhánh nào
@@ -215,6 +302,21 @@ public static class AccountEngineCoordinator {
 				game.ConfiguredTrainingMovementAutomation.Cancel();
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
+				// Chuyến bán chạy tay (nút "Bán ngay" tab Debug) cũng vậy. Nút đó BẮT BUỘC Auto tổng phải tắt, nên
+				// đây là chỗ DUY NHẤT bơm được Tick cho nó — luồng bán tự động nằm trong WeaponRepairAutomation và
+				// luồng đó không chạy khi Auto tổng tắt.
+				//
+				// Dùng AddDebugForProcess chứ KHÔNG dùng accountLog: accountLog đi qua DebugLog.AddForProcess, mà hàm
+				// đó đòi cả phiên log đang bật LẪN log của tiến trình này đang bật (DebugLog.CanLogProcess) — cả hai
+				// đều tắt theo masterEnabled ở dòng trên. Dùng accountLog thì chuyến bán chẩn đoán không ghi nổi một
+				// dòng nào, tức mất sạch bằng chứng đúng lúc cần nhất.
+				if (game.InventorySaleEngine.IsDebugRun) {
+					Action<string> saleDebugLog = text => DebugLog.AddDebugForProcess(game.ProcessId, text);
+					if (game.InventorySaleEngine.Tick(game.ProcessId, game.Handle, saleDebugLog, out string saleDebugFailure) == Auto.Sale.InventorySaleTickResult.Failed) {
+						saleDebugLog($"SALE_DEBUG_FAILED | {saleDebugFailure}");
+					}
+					return;
+				}
 				// Chuyến sửa đồ chạy tay vẫn được đi tiếp: nó là lệnh trực tiếp của chủ dự án, không phải luồng tự động.
 				// Đánh và Nhặt đã dừng ở trên nên không ai tranh quyền điều khiển — đúng điều kiện sạch để chẩn đoán.
 				if (debugRepairRun) {
@@ -300,10 +402,22 @@ public static class AccountEngineCoordinator {
 			// dừng — thiếu đường thứ hai thì cờ đóng băng ở false và boss tới sau đó không ai thấy.
 			bool eliteRetreatActive = attackEnabled && !manualInputActive
 				&& (game.AttackEngine.IsRetreatingFromElite || game.AttackEngine.IsInsideEliteZoneNow(game.ProcessId));
-			bool eliteBlockExpired = UpdateEliteRetreatBuffBlock(game, eliteRetreatActive, accountLog);
-			if (eliteRetreatActive && !eliteBlockExpired) {
+			// Chặn Buff SUỐT đợt trốn, không có trần thời gian (chủ dự án chốt lại 2026-09-24: tránh boss là ưu tiên số 1,
+			// mọi chức năng khác phải dừng). Trần 5 giây cũ trả quyền cho Buff giữa lúc boss còn sát người. Bằng chứng
+			// (movement.log + buff.log, PID=2228 ZALO0988777666): 23:14:57.459 ELITE_RETREAT_BUFF_BLOCK_EXPIRED khi
+			// Distance=121; 23:15:16.747 ELITE_DETECTED ToPlayer=376 mà cùng lúc BUFF_CAST_CONFIRMED Target=Owner
+			// Exclusive=True, heal đứng im tới 23:15:20. Cả ngày 2026-09-24 có 58 lần Buff giành quyền kiểu này.
+			// Ngoại lệ DUY NHẤT: trốn bị kẹt (xem EliteRetreatStuckSeconds) thì cho Buff heal tại chỗ, vì đứng im cạnh boss
+			// mà không heal thì chắc chết. Đường heal này đã chạy được lúc trốn: buff.log PID=2228 23:15:16-23:15:20 HP
+			// 101 -> 418 với Target=Owner Exclusive=True.
+			bool eliteRetreatStuck = IsEliteRetreatStuck(game, snapshot, eliteRetreatActive, accountLog);
+			if (eliteRetreatActive && !eliteRetreatStuck) {
 				game.SupportEngine.ReleaseForHigherPriority();
-			} else if (game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), accountLog)) {
+			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), accountLog)) {
+				// Buff không cần giữ quyền (heal xong hoặc máu còn đủ): trả luồng trốn thêm một lượt 3 giây để thử đi
+				// tiếp, thay vì nhịp sau lại coi là kẹt ngay vì mốc vị trí đã cũ.
+				if (eliteRetreatStuck) eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, DateTime.UtcNow);
+			} else {
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.WeaponRepairAutomation.Cancel(game, accountLog, "Buff hỗ trợ giữ quyền điều khiển");
@@ -328,8 +442,28 @@ public static class AccountEngineCoordinator {
 
 			bool movementRecoveryPending = game.ReturnToTrainingAutomation.IsBusy || game.ConfiguredTrainingMovementAutomation.IsBusy;
 			bool recentAttack = game.AttackEngine.HasRecentAttack(TimeSpan.FromSeconds(5));
-			if (attackEnabled && !manualInputActive && !repairPriority && (movementRecoveryPending || !recentAttack) && ShouldRestartStationaryAttack(game.Handle, snapshot, out int stationaryMilliseconds)) {
-				string reason = $"ANTI_AFK_POSITION_UNCHANGED_{StationaryRestartSeconds}_SECONDS | StationaryMilliseconds={stationaryMilliseconds} | Position={snapshot.X}/{snapshot.Y} | RecentAttack={recentAttack} | MovementBusy={movementRecoveryPending}";
+			// ĐANG TRỐN BOSS THÌ KHÔNG ĐƯỢC ĐẬP WORKER ĐÁNH.
+			//
+			// Nguyên nhân gốc của vụ PID=24236 MaiAnhNhe kẹt ngày 2026-09-22, đã truy ra trọn vòng lặp bằng log:
+			//   1. Trốn boss thì nhánh trên KHÔNG gửi lệnh đánh (eliteRetreatActive -> ReleaseForHigherPriority),
+			//      nên recentAttack = false và cổng "(movementRecoveryPending || !recentAttack)" luôn mở.
+			//   2. Nhân vật chưa đi hết chặng trốn (~520 raw) trong StationaryRestartSeconds -> bị coi là đứng im.
+			//   3. Nhánh else gọi AttackEngine.Stop(), mà Stop() xoá eliteWalkDestinationX/Y + loggedEliteNames +
+			//      nextOutsideAreaWalkUtc (Attack/Engine.cs:249-256).
+			//   4. Worker dựng lại: mất đích đang giữ nên tính đích MỚI từ chỗ vừa đứng, và in lại ELITE_DETECTED.
+			// Số đo: anti-afk.log 09:20:10 -> 09:22:31 có 19 dòng ANTI_AFK_POSITION_UNCHANGED_10_SECONDS cách nhau
+			// đúng 10 giây, tất cả Flow=AUTO_ATTACK | RecentAttack=False; cùng khoảng đó movement.log có MỌI dòng
+			// ELITE_RETREAT mang LýDoBắn=ĐÍCH_MỚI | CònCáchĐíchCũ="chưa có đích", và nhân vật đứng nguyên quanh
+			// 62265/91411. Tức luật "chốt đích, đi cho hết chỗ đó" bị chính ANTI_AFK vô hiệu hoá mỗi 10 giây.
+			//
+			bool eliteRetreatHoldingControl = IsEliteRetreatWithinAntiAfkGrace(game.Handle, eliteRetreatActive);
+			if (attackEnabled && !manualInputActive && !repairPriority && !eliteRetreatHoldingControl && (movementRecoveryPending || !recentAttack) && ShouldRestartStationaryAttack(game.Handle, snapshot, out int stationaryMilliseconds)) {
+				// CHẨN ĐOÁN 2026-09-22: chủ dự án khẳng định tận mắt thấy "mất Đệ -> Chủ đứng im" ở PID=19860, nhưng
+				// buff.log/movement.log thật không trùng thời điểm — không đủ bằng chứng để sửa mù theo giả thuyết
+				// đó (Mục 4 CLAUDE.md). Ghi thêm trạng thái Đệ ngay tại đúng thời điểm coordinator xác nhận đứng im,
+				// để lần sau đối chiếu trực tiếp thay vì suy luận gián tiếp qua buff.log như lần này.
+				Auto.Support.PetHealthReading petReading = Auto.Support.PetHealthReader.Read(game.ProcessId);
+				string reason = $"ANTI_AFK_POSITION_UNCHANGED_{StationaryRestartSeconds}_SECONDS | StationaryMilliseconds={stationaryMilliseconds} | Position={snapshot.X}/{snapshot.Y} | RecentAttack={recentAttack} | MovementBusy={movementRecoveryPending} | Đệ={(petReading.Success ? (petReading.Present ? "CÓ" : "KHÔNG_CÓ") : "KHÔNG_ĐỌC_ĐƯỢC")}";
 				string recoveredFlow;
 				if (game.ReturnToTrainingAutomation.IsBusy) {
 					game.ReturnToTrainingAutomation.Recover(accountLog, reason);
@@ -349,6 +483,22 @@ public static class AccountEngineCoordinator {
 					recoveredFlow = "AUTO_ATTACK";
 				}
 				accountLog($"ANTI_AFK_COORDINATION_RECOVERY | Reason={reason} | Flow={recoveredFlow} | AttackWorker=RECREATE_ON_TICK");
+			}
+
+			// Ngoài bãi liên tục quá OutsideAreaReturnSeconds thì kéo về bãi, không phụ thuộc đứng im — xem chú thích ở hằng số.
+			// Bỏ qua khi có luồng nào đang giữ quyền di chuyển (đồng hồ cũng về 0 để lần sau đếm lại từ đầu).
+			if (attackEnabled && !manualInputActive && !repairPriority && !eliteRetreatHoldingControl && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && IsOutsideTrainingArea(game, snapshot)) {
+				DateTime outsideSinceUtc = outsideAreaSinceByWindow.GetOrAdd(game.Handle, DateTime.UtcNow);
+				double outsideSeconds = (DateTime.UtcNow - outsideSinceUtc).TotalSeconds;
+				if (outsideSeconds >= OutsideAreaReturnSeconds) {
+					// Đặt lại mốc TRƯỚC khi gọi: nếu chuyến về không khởi động được thì thử lại sau đúng một chu kỳ, không bắn mỗi nhịp.
+					outsideAreaSinceByWindow[game.Handle] = DateTime.UtcNow;
+					accountLog($"OUTSIDE_AREA_RETURN | PID={game.ProcessId} | NgoàiBãi={outsideSeconds:F0}s | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | Tâm={game.AttackSettings.CenterX}/{game.AttackSettings.CenterY} | Range={game.AttackSettings.Range} | Action=Tự lên bãi");
+					RequestReturnToTrainingCenter(game, snapshot, accountLog, "Ngoài bãi quá lâu");
+					game.AttackEngine.Stop();
+				}
+			} else {
+				outsideAreaSinceByWindow.TryRemove(game.Handle, out _);
 			}
 
 			// Công tắc Tự động đánh khóa thực thi các luồng Tân thủ, Thành thị và Mê cung nhưng không sửa cấu hình của chúng.
@@ -571,23 +721,40 @@ public static class AccountEngineCoordinator {
 		DebugLog.AddForProcess(game.ProcessId, "Auto chưa chạy | " + gate + " | Cần bật Auto tổng và ít nhất một module.");
 	}
 
-	// Theo dõi một đợt tránh boss kéo dài bao lâu. Trả về true khi đã quá trần và phải trả quyền lại cho Buff.
-	// Ghi log đúng MỘT lần mỗi đợt: mốc thời gian được đẩy lên tương lai sau khi ghi nên nhịp sau không ghi lại nữa.
-	private static bool UpdateEliteRetreatBuffBlock(GameWindow game, bool retreatActive, Action<string> accountLog) {
-		if (!retreatActive) {
-			eliteRetreatSinceByWindow.TryRemove(game.Handle, out _);
+	// Trốn boss có đang bị kẹt không. Mốc vị trí dời theo nhân vật mỗi khi nó đi được quá EliteRetreatStuckRadius, nên
+	// "kẹt" nghĩa là đứng trong vòng đó liên tục EliteRetreatStuckSeconds. Ghi log một lần lúc bắt đầu kẹt.
+	private static bool IsEliteRetreatStuck(GameWindow game, GameSnapshot snapshot, bool retreatActive, Action<string> accountLog) {
+		if (! retreatActive) {
+			eliteRetreatAnchorByWindow.TryRemove(game.Handle, out _);
 			return false;
 		}
 		DateTime now = DateTime.UtcNow;
-		DateTime since = eliteRetreatSinceByWindow.GetOrAdd(game.Handle, now);
-		// MinValue = đã hết hạn ở nhịp trước. Giữ nguyên trạng thái hết hạn cho tới khi đợt trốn này kết thúc hẳn,
-		// không thì nhịp sau lại tính ra "chưa đủ 15 giây" và chặn Buff trở lại.
-		if (since == DateTime.MinValue) return true;
-		if ((now - since).TotalSeconds < EliteRetreatBuffBlockSeconds) return false;
-		if (eliteRetreatSinceByWindow.TryUpdate(game.Handle, DateTime.MinValue, since)) {
-			accountLog($"ELITE_RETREAT_BUFF_BLOCK_EXPIRED | PID={game.ProcessId} | Seconds={EliteRetreatBuffBlockSeconds} | Action=Trả quyền lại cho Buff vì trốn boss quá lâu chưa xong");
+		AttackPositionState anchor = eliteRetreatAnchorByWindow.GetOrAdd(game.Handle, new AttackPositionState(snapshot.X, snapshot.Y, now));
+		long dx = snapshot.X - anchor.X;
+		long dy = snapshot.Y - anchor.Y;
+		if (dx * dx + dy * dy > (long)EliteRetreatStuckRadius * EliteRetreatStuckRadius) {
+			eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, now);
+			return false;
 		}
+		double stuckSeconds = (now - anchor.SinceUtc).TotalSeconds;
+		if (stuckSeconds < EliteRetreatStuckSeconds) return false;
+		// Mốc mới (nhân vật đi được hoặc hết đợt trốn) thì SinceUtc đổi, nên so với mốc đã log là biết đợt kẹt mới.
+		if (eliteRetreatStuckLoggedByWindow.TryGetValue(game.Handle, out DateTime loggedSince) && loggedSince == anchor.SinceUtc) return true;
+		eliteRetreatStuckLoggedByWindow[game.Handle] = anchor.SinceUtc;
+		accountLog($"ELITE_RETREAT_STUCK_HEAL_ALLOWED | PID={game.ProcessId} | Player={snapshot.X}/{snapshot.Y} | Seconds={stuckSeconds:F1} | Radius={EliteRetreatStuckRadius} | Action=Trốn boss bị kẹt, cho Buff heal tại chỗ");
 		return true;
+	}
+
+	// Đợt trốn boss này còn trong thời gian được miễn ANTI_AFK hay không.
+	//
+	// Hết đợt trốn thì xoá mốc ngay, nên đợt sau đo lại từ đầu thay vì thừa hưởng thời gian của đợt trước.
+	private static bool IsEliteRetreatWithinAntiAfkGrace(IntPtr handle, bool retreatActive) {
+		if (! retreatActive) {
+			eliteRetreatAntiAfkSinceByWindow.TryRemove(handle, out _);
+			return false;
+		}
+		DateTime since = eliteRetreatAntiAfkSinceByWindow.GetOrAdd(handle, DateTime.UtcNow);
+		return (DateTime.UtcNow - since).TotalSeconds < EliteRetreatAntiAfkGraceSeconds;
 	}
 
 	// CẢNH BÁO ACCOUNT RƠI KHỎI GAME.
@@ -600,19 +767,30 @@ public static class AccountEngineCoordinator {
 	// rơi cùng lúc; 5 account vào lại sau ~5 phút, riêng PID=32364 (XinLỗiEm) nằm ngoài game từ 09:05:46 tới
 	// 10:33:51 — 88 phút — mà không một dòng log nào ở mức cảnh báo. Muốn biết phải tự mở heartbeat ra đếm.
 	//
-	// Đây CHỈ là cảnh báo, không tự đăng nhập lại. Việc đăng nhập lại thuộc tab Login (Login/LoginAutomation.cs,
-	// đang dang dở).
+	// Cảnh báo giữ nguyên như cũ. Phần MỚI là nhánh gọi ReloginSupervisor khi đã rớt quá ngưỡng — hiện đang ở chế
+	// độ dry-run, chỉ ghi log chứ chưa giết client (xem ghi chú đầu ReloginSupervisor.cs).
 	private static void ReportAccountOutOfWorld(GameWindow game, GameSnapshot snapshot) {
 		DateTime now = DateTime.UtcNow;
 		OutOfWorldState state = outOfWorldByWindow.GetOrAdd(game.Handle, _ => new OutOfWorldState { SinceUtc = now });
 		double minutes = (now - state.SinceUtc).TotalMinutes;
+
+		// CHỈ nhận NameReadFailed — đó mới đúng nghĩa "nhân vật không còn trong thế giới" (trường tên rỗng, tức
+		// đang ở màn đăng nhập/chọn nhân vật). StatsPointerFailed là lỗi đọc layout bộ nhớ, client vẫn đang trong
+		// game: giết nó là giết oan, đúng ca hàng loạt ngày 2026-09-18.
+		if (! state.ReloginRequested && minutes >= ReloginSupervisor.ThresholdMinutes && snapshot.Status == SnapshotStatus.NameReadFailed) {
+			state.ReloginRequested = true;
+			ReloginSupervisor.Request(game, minutes, snapshot.Status);
+		}
+
 		if (minutes < OutOfWorldWarnAfterMinutes) return;
 		if (now < state.NextReportUtc) return;
 		state.NextReportUtc = now.AddMinutes(OutOfWorldRepeatMinutes);
-		DebugLog.AddClientEvent($"ACCOUNT_OUT_OF_WORLD | PID={game.ProcessId} | {game.CharacterName} | RơiKhỏiGame={minutes:F1} phút | Lý do={snapshot.Status} | {snapshot.FailReason} | Auto đã treo cổng hành động và dừng worker; KHÔNG tự đăng nhập lại được (tab Login chưa xong).");
+		DebugLog.AddClientEvent($"ACCOUNT_OUT_OF_WORLD | PID={game.ProcessId} | {game.CharacterName} | RơiKhỏiGame={minutes:F1} phút | Lý do={snapshot.Status} | {snapshot.FailReason} | Auto đã treo cổng hành động và dừng worker.");
 	}
 
 	private static void ReportAccountBackInWorld(GameWindow game) {
+		// Quên bộ đếm số lần thử: vào lại được game nghĩa là đợt rớt đó đã khép lại.
+		ReloginSupervisor.NoteBackInWorld(game.CharacterName);
 		if (! outOfWorldByWindow.TryRemove(game.Handle, out OutOfWorldState? state)) return;
 		double minutes = (DateTime.UtcNow - state.SinceUtc).TotalMinutes;
 		// Chỉ báo khi đã từng cảnh báo, để những nhịp trượt một hai giây không đẻ rác log.

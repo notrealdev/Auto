@@ -29,6 +29,15 @@ public static class AppVersion {
 		}
 	}
 
+	// Cùng lý do tách Diagnostics/DiagnosticsBeta: bản beta và bản release chạy chung một thư mục Release/ (hai exe
+	// cạnh nhau), nên nếu dùng chung "Profiles" thì mở bản beta để debug sẽ ghi đè cấu hình/điểm train/bản đồ
+	// account của bản release đang chạy thật. Tách ra để bản beta không bao giờ đụng vào dữ liệu bản release.
+	public static string ProfilesDirectoryName {
+		get {
+			return IsBetaBuild ? "ProfilesBeta" : "Profiles";
+		}
+	}
+
 	// Bản beta ghi đủ cả dòng thành công theo từng nhịp để soi được lỗi kiểu "gửi đúng lệnh nhưng client làm sai";
 	// bản release chỉ ghi lỗi và mốc chuyển trạng thái. Đo 2026-09-06: release ghi ~37 MB trong 1h20m, trong đó
 	// loot-scan/attack/buff/movement là 14.840/14.847 dòng đều không có lỗi.

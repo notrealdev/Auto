@@ -39,11 +39,15 @@ public static class WindowScanner {
 				return true;
 			}
 
+			// KHÔNG gọi RuntimeLayoutResolver.Resolve ở đây. Client chưa PlayerReady thì mỗi lần Resolve là dump cả ảnh
+			// Game.exe rồi quét chữ ký, mà hàm này chạy mỗi giây cho MỌI cửa sổ kể cả account tắt Auto tổng. Đo trên 21
+			// client (6 bật Auto, 2026-09-25): perf.log QuétCửaSổ=563ms/lần; đo riêng 21 lần Resolve = 3.120ms, chỉ 6/21
+			// PlayerReady. Kết quả ở đây cũng chỉ dùng cho cửa sổ MỚI (AccountListViewModel.ApplyScanResult bỏ qua cửa sổ
+			// đã biết); layout thật do AccountEngineCoordinator.TickOne resolve khi Auto tổng bật.
 			games.Add(new GameWindow {
 				Handle = hWnd,
 				ProcessId = processId,
-				Title = title,
-				RuntimeLayout = RuntimeLayoutResolver.Resolve(processId)
+				Title = title
 			});
 
 			return true;

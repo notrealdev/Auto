@@ -44,6 +44,9 @@ namespace {
 	constexpr WPARAM SelectEntityCommand = 323;
 	// Chi doc bien muc tieu dang chon, khong ghi gi. Dung lam moc do truoc/sau.
 	constexpr WPARAM ReadCurrentTargetCommand = 324;
+	// Mua nhanh thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client. lParam = mã chi tiết của thuốc
+	// (16 bit thấp) | số lượng << 16, cùng dạng payload lệnh 95 của AutoFS. Số 327 là số mới của Auto, không phải 95.
+	constexpr WPARAM QuickBuyCommand = 327;
 	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
 	constexpr WPARAM LoginNoticeCommand = 280;
 	constexpr WPARAM LoginVersionCommand = 281;
@@ -85,12 +88,32 @@ namespace {
 	constexpr WPARAM LoginClearPendingCredentialsCommand = 316;
 	// Doc tung byte cau thong bao dang hien o man dang nhap (lParam = chi so byte).
 	constexpr WPARAM LoginReadStatusMessageByteCommand = 317;
+	// CHẨN ĐOÁN 2026-09-22: chủ dự án báo ô mật khẩu đôi khi hiện TRỐNG trên màn hình dù TryWriteLoginCredentialFields
+	// (lệnh 315) đã trả về thành công. Đọc lại đúng offset [field object]+0x288 (độ dài chuỗi, tài liệu tại
+	// GameClientAddresses.h dòng 258) của CHÍNH ô vừa ghi, để phân biệt "SetText ghi sai địa chỉ ô" (client vừa cập
+	// nhật dịch offset LoginAccountFieldOffset/LoginPasswordFieldOffset) với "ghi đúng ô nhưng hiển thị bị chặn vì lý
+	// do khác" — không suy đoán qua ảnh chụp màn hình. lParam: 0 = ô tài khoản, 1 = ô mật khẩu.
+	constexpr WPARAM LoginReadCredentialFieldLengthCommand = 318;
+	// CHẨN ĐOÁN TIẾP 2026-09-22: độ dài đã khớp (đo được 10=10) nhưng KHÔNG chứng minh nội dung đúng. Lệnh này đọc
+	// lại nội dung thật qua GetText rồi băm FNV-1a, trả về hash để C# so sánh — không bao giờ trả/log chuỗi thật.
+	// lParam: 0 = ô tài khoản, 1 = ô mật khẩu.
+	constexpr WPARAM LoginReadCredentialFieldHashCommand = 319;
+	// CHẨN ĐOÁN TIẾP 2026-09-22: đo được TàiKhoảnKhớp=True nhưng MậtKhẩuKhớp=False dù độ dài đúng (10=10) — nội
+	// dung ô mật khẩu SAI, cùng hàm cùng luồng gọi với ô tài khoản đang đúng. Không dump nội dung (mật khẩu thật)
+	// ra log. Thay vào đó so VTABLE (4 byte đầu đối tượng) của hai ô — cùng lớp TextField thì vtable phải BẰNG
+	// NHAU; khác nhau tức LoginPasswordFieldOffset không trỏ cùng loại đối tượng với ô tài khoản (lệch offset sau
+	// khi client cập nhật cấu trúc dialog). Trả về RVA so với gameBase — chỉ là địa chỉ mã, không nhạy cảm.
+	constexpr WPARAM LoginReadFieldVtableRvaCommand = 325;
+	// CHẨN ĐOÁN 2026-09-22 (sau khi 16 mã byte che đều không khớp): thay vì đoán tiếp nội dung ô mật khẩu là gì,
+	// GHI ĐÈ nó bằng chuỗi test đã biết rồi đọc lại — nội dung đọc ra là chuỗi test của chính mình nên dump được
+	// tự do, không lộ mật khẩu. lParam = chỉ số byte muốn đọc. Xem SelfTestPasswordField.
+	constexpr WPARAM LoginSelfTestPasswordFieldCommand = 326;
 	// CHƯA CÓ cách đọc "đang ở bước đăng nhập nào". Đã thử dựa vào ba ô con trỏ hộp thoại nhưng ĐO RA LÀ SAI:
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990005;
-	constexpr int AuditEntryCount = 31;
+	constexpr int NativeBuildStamp = 99990010;
+	constexpr int AuditEntryCount = 32;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
 
@@ -125,6 +148,7 @@ namespace {
 	using PickupMovementFunction = void(__thiscall*)(void*, int, int, int, int);
 	using CastSkillFunction = void(__cdecl*)(int, int, int);
 	using PassiveBuffFunction = void(__thiscall*)(void*, int);
+	using QuickBuyFunction = void(__thiscall*)(void*, int, int, int, int, int, int, int);
 	using PickupFunction = void(__cdecl*)(int, int);
 	using ReturnToTownFunction = void(__thiscall*)(void*, int);
 	using ListSetSelectionFunction = int(__thiscall*)(void*, int);
@@ -148,6 +172,11 @@ namespace {
 	// Sửa: byte thật tại RVA đã xác nhận (cả dump 2026-08-12 và 2026-08-28) có prologue 55 8B EC đứng trước, chữ ký cũ thiếu 3 byte này nên luôn safe-reject kể cả trên client trước bản cập nhật hôm nay.
 	constexpr uint8_t ResetPickupFunctionSignature[] = {
 		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x56, 0x8B, 0xF1
+	};
+	// 24 byte đầu của hàm mua (RVA 0x346010): prologue, cookie bảo vệ stack 0x8DD000 và nạp tham số đầu tiên.
+	constexpr uint8_t QuickBuyFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x5C, 0xA1, 0x00, 0xD0, 0x8D, 0x00, 0x33, 0xC5, 0x89, 0x45, 0xFC,
+		0x53, 0x8B, 0x5D, 0x08, 0x8B, 0xC1, 0x56, 0x57
 	};
 	constexpr uint8_t GroundCoordinateConverterSignature[] = {
 		0x55, 0x8B, 0xEC, 0xFF, 0x75, 0x0C, 0xFF, 0x75, 0x08, 0xFF, 0x71, 0x3C
@@ -689,6 +718,34 @@ namespace {
 		return 1;
 	}
 
+	// Mua thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client. packed = mã chi tiết (16 bit thấp) |
+	// số lượng << 16; bộ ba vật phẩm là (1, mã, 0) như lệnh 95 của AutoFS.
+	// Trả 1 khi đã gọi, 40 tham số sai, 41 image lạ, 42 địa chỉ không thực thi, 43 chữ ký hàm lệch, 44 InventoryRoot bằng 0.
+	int TryDispatchQuickBuy(uint32_t packed) {
+		int code = static_cast<int>(packed & 0xFFFF);
+		int quantity = static_cast<int>(packed >> 16);
+		if (quantity < 1 || quantity > GameClientAddresses::QuickBuyMaximumQuantity) {
+			return 40;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 41;
+		}
+		auto buy = reinterpret_cast<QuickBuyFunction>(gameBase + GameClientAddresses::QuickBuyFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(buy))) {
+			return 42;
+		}
+		if (memcmp(reinterpret_cast<void*>(buy), QuickBuyFunctionSignature, sizeof(QuickBuyFunctionSignature)) != 0) {
+			return 43;
+		}
+		void* inventoryRoot = *reinterpret_cast<void**>(gameBase + GameClientAddresses::InventoryRootRva);
+		if (inventoryRoot == nullptr) {
+			return 44;
+		}
+		buy(reinterpret_cast<uint8_t*>(inventoryRoot) + GameClientAddresses::QuickBuyThisOffset, 1, code, 0, quantity, 0, 0, 0);
+		return 1;
+	}
+
 	// Chuyển lựa chọn xử lý khi chết của AutoFS vào cùng handler popup của game.
 	bool TryDispatchReturnToTown(int option) {
 		if (option < 0 || option > 2) {
@@ -1093,6 +1150,7 @@ namespace {
 			case 28: return AuditGlobalPointer(gameBase, GameClientAddresses::LoginNoticeDialogRva, true);
 			case 29: return AuditGlobalPointer(gameBase, GameClientAddresses::LoginServerDialogRva, true);
 			case 30: return AuditLoginSubmitFunctions(gameBase);
+			case 31: return AuditCodeSignature(gameBase, GameClientAddresses::QuickBuyFunctionRva, 0, QuickBuyFunctionSignature, sizeof(QuickBuyFunctionSignature));
 			default: return 0;
 		}
 	}
@@ -1214,6 +1272,104 @@ namespace {
 
 	// SetText cua lop o nhap (RVA 0x2BEB0). length = -1 de ham tu goi strlen.
 	using FieldSetTextFunction = int(__thiscall*)(void* self, const char* text, int length, int flag);
+	// GetText cua lop o nhap (RVA 0x28820). Xem GameClientAddresses.h dong 259: __thiscall(char* out, int maxLen,
+	// int flag), "ret 0xC". Dung de doc lai NOI DUNG that (khac LoginReadCredentialFieldLengthCommand chi doc do dai).
+	using FieldGetTextFunction = int(__thiscall*)(void* self, char* out, int maxLen, int flag);
+
+	// CHAN DOAN 2026-09-22 (tiep theo LoginReadCredentialFieldLengthCommand): do dai da khop nhung khong chung minh
+	// NOI DUNG dung. Doc lai chuoi that qua GetText roi bam FNV-1a — TUYET DOI KHONG tra/ghi chuoi mat khau ra ngoai,
+	// chi tra ve hash de C# so sanh va ghi log dung/sai.
+	uint32_t HashLoginCredentialField(int fieldIndex) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 0;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableRange(dialog, GameClientAddresses::LoginPasswordFieldOffset + 0x2A0)) {
+			return 0;
+		}
+		auto getText = reinterpret_cast<FieldGetTextFunction>(gameBase + GameClientAddresses::FieldGetTextFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(getText))) {
+			return 0;
+		}
+		void* field = reinterpret_cast<uint8_t*>(dialog) +
+			(fieldIndex == 0 ? GameClientAddresses::LoginAccountFieldOffset : GameClientAddresses::LoginPasswordFieldOffset);
+		char buffer[GameClientAddresses::LoginCredentialBufferSize + 1]{};
+		int length = getText(field, buffer, static_cast<int>(GameClientAddresses::LoginCredentialBufferSize), 0);
+		if (length < 0) length = 0;
+		if (length > static_cast<int>(GameClientAddresses::LoginCredentialBufferSize)) length = static_cast<int>(GameClientAddresses::LoginCredentialBufferSize);
+		uint32_t hash = 2166136261u;
+		for (int index = 0; index < length; index++) {
+			hash ^= static_cast<uint8_t>(buffer[index]);
+			hash *= 16777619u;
+		}
+		return hash;
+	}
+
+	// Chuỗi test cho SelfTestPasswordField. Mỗi vị trí một ký tự KHÁC NHAU để nhìn ra ngay nội dung bị biến đổi
+	// theo kiểu gì (bị che, bị dịch, bị cắt, bị đảo). Độ dài 10 đúng bằng độ dài mật khẩu đang test.
+	constexpr char PasswordFieldTestString[] = "ABCDEFGHIJ";
+
+	// Round-trip AN TOÀN trên ô mật khẩu: GHI ĐÈ bằng chuỗi test đã biết rồi đọc lại và trả về một byte của kết quả.
+	//
+	// Vì sao phải làm vậy thay vì đọc thẳng nội dung ô: nội dung thật là mật khẩu của chủ dự án, không được dump ra
+	// log. Ghi chuỗi test trước MỖI lần đọc nên hàm này KHÔNG BAO GIỜ trả về được byte nào của mật khẩu thật.
+	//
+	// Đây là phép đo trực tiếp thay cho việc đoán: setText và getText dùng CÙNG offset trên CÙNG đối tượng, nếu
+	// round-trip chuỗi test cũng sai thì lỗi nằm ở cặp hàm/đối tượng đó; nếu round-trip đúng thì lỗi nằm ở chỗ khác.
+	//
+	// Người gọi PHẢI ghi lại mật khẩu thật (lệnh 315) sau khi dùng hàm này, nếu không ô sẽ còn chuỗi test.
+	int SelfTestPasswordField(int byteIndex) {
+		if (byteIndex < 0 || byteIndex >= static_cast<int>(GameClientAddresses::LoginCredentialBufferSize)) {
+			return -1;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return -1;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableRange(dialog, GameClientAddresses::LoginPasswordFieldOffset + 0x2A0)) {
+			return -1;
+		}
+		auto setText = reinterpret_cast<FieldSetTextFunction>(gameBase + GameClientAddresses::FieldSetTextFunctionRva);
+		auto getText = reinterpret_cast<FieldGetTextFunction>(gameBase + GameClientAddresses::FieldGetTextFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(setText)) || !IsExecutableAddress(reinterpret_cast<void*>(getText))) {
+			return -1;
+		}
+		void* field = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginPasswordFieldOffset;
+		setText(field, PasswordFieldTestString, -1, 0);
+		char buffer[GameClientAddresses::LoginCredentialBufferSize + 1]{};
+		getText(field, buffer, static_cast<int>(GameClientAddresses::LoginCredentialBufferSize), 0);
+		return static_cast<uint8_t>(buffer[byteIndex]);
+	}
+
+	// Xem LoginReadFieldVtableRvaCommand: KHÔNG đọc nội dung chuỗi, chỉ đọc 4 byte đầu đối tượng (vtable pointer)
+	// để so lớp giữa ô tài khoản và ô mật khẩu — an toàn để log vì đây là địa chỉ mã, không phải dữ liệu người dùng.
+	uint32_t ReadLoginFieldVtableRva(int fieldIndex) {
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 0;
+		}
+		void* dialog = *reinterpret_cast<void**>(gameBase + GameClientAddresses::LoginCredentialDialogRva);
+		if (dialog == nullptr || !IsReadableRange(dialog, GameClientAddresses::LoginPasswordFieldOffset + 0x2A0)) {
+			return 0;
+		}
+		void* field = reinterpret_cast<uint8_t*>(dialog) +
+			(fieldIndex == 0 ? GameClientAddresses::LoginAccountFieldOffset : GameClientAddresses::LoginPasswordFieldOffset);
+		if (!IsReadableAddress(field)) {
+			return 0;
+		}
+		void* vtable = *reinterpret_cast<void**>(field);
+		if (vtable == nullptr) {
+			return 0;
+		}
+		uintptr_t vtableAddress = reinterpret_cast<uintptr_t>(vtable);
+		uintptr_t base = reinterpret_cast<uintptr_t>(gameBase);
+		if (vtableAddress < base) {
+			return 0;
+		}
+		return static_cast<uint32_t>(vtableAddress - base);
+	}
 
 	// Ghi thang noi dung vao HAI O NHAP tren giao dien bang chinh ham cua client, roi de client tu doc lai
 	// khi bam "Bat dau tro choi". Khong gia lap ban phim, khong tu dung buffer rieng nhu AutoFS.
@@ -1575,6 +1731,9 @@ namespace {
 			if (wParam == PassiveBuffCommand) {
 				return TryDispatchPassiveBuff(static_cast<int>(lParam));
 			}
+			if (wParam == QuickBuyCommand) {
+				return TryDispatchQuickBuy(static_cast<uint32_t>(lParam));
+			}
 			if (wParam == NativeBuildStampCommand) {
 				return NativeBuildStamp;
 			}
@@ -1710,6 +1869,19 @@ namespace {
 					pendingLoginPassword[index] = '\0';
 				}
 				return 1;
+			}
+			if (wParam == LoginReadCredentialFieldLengthCommand) {
+				size_t fieldOffset = lParam == 0 ? GameClientAddresses::LoginAccountFieldOffset : GameClientAddresses::LoginPasswordFieldOffset;
+				return static_cast<LRESULT>(ReadLoginDialogField(GameClientAddresses::LoginCredentialDialogRva, fieldOffset + 0x288));
+			}
+			if (wParam == LoginReadCredentialFieldHashCommand) {
+				return static_cast<LRESULT>(HashLoginCredentialField(static_cast<int>(lParam)));
+			}
+			if (wParam == LoginReadFieldVtableRvaCommand) {
+				return static_cast<LRESULT>(ReadLoginFieldVtableRva(static_cast<int>(lParam)));
+			}
+			if (wParam == LoginSelfTestPasswordFieldCommand) {
+				return static_cast<LRESULT>(SelfTestPasswordField(static_cast<int>(lParam)));
 			}
 			if (wParam == LoginReadStatusMessageByteCommand) {
 				return static_cast<LRESULT>(ReadLoginStatusMessageByte(static_cast<int>(lParam)));

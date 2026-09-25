@@ -4,7 +4,6 @@ using System.Collections.ObjectModel;
 using System.Text;
 using Auto.DebugTools;
 using Auto.Runtime;
-using Auto.Sale;
 using Auto.Utils;
 
 public sealed class DebugViewModel : ViewModelBase {
@@ -18,15 +17,17 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
 	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
-	// Dò bước còn thiếu để bỏ chuột giả lập khi click NPC. Không đụng luồng Sửa đồ đang chạy.
-	private const string ToolSelectEntity = "Chọn Đại Phu bằng lệnh (không dùng chuột)";
-	// Mở client thật và gõ tài khoản thật của dòng đầu tiên trong Login\Login.json.
-	private const string ToolLoginTest = "Đăng nhập: thử account đầu tiên (MỞ CLIENT THẬT)";
-	// Chụp ảnh bộ nhớ rồi so hai trạng thái, đúng GAME-ADDRESSES-GUIDE.md §5.1. Chỉ đọc.
-	private const string ToolLoginDialogDiff = "Đăng nhập: chụp & so bộ nhớ tìm hộp thoại";
-	private const string ToolLoginDialogDiffReset = "Đăng nhập: xoá ảnh chụp, bắt đầu lại";
-	// Chỉ đọc: in nguyên giá trị ở từng địa chỉ AutoFS dùng, để biết chuỗi gãy ở mắt xích nào.
-	private const string ToolLoginAutoFsAddress = "Đăng nhập: đọc địa chỉ AutoFS";
+	private const string ToolImmediateSale = "Bán ngay (phải mở sẵn cửa hàng)";
+	private const string ToolInventoryStrength = "Sức lực mang đồ (đối chiếu với game)";
+	// Chủ dự án chỉ ra 2026-09-24: "Tham Lang Yêu Đái" chỉ nặng 4 điểm trong game, nhưng cặp CurrentStrength/
+	// MaximumStrength lại đo được lệch 72 điểm sau đúng 1 lần nhặt món này — nghi cặp offset StrengthRoot+0x27C/
+	// 0x278 đọc sai địa chỉ. InventoryInfoProbe dùng offset Item.Weight (0x6EC) ĐÃ xác minh riêng (2026-09-07, đối
+	// chiếu game), độc lập hoàn toàn với cặp StrengthRoot — dùng để đối chiếu chéo, không phải để sửa mù.
+	private const string ToolInventoryInfo = "Trọng lượng từng món trong túi (đối chiếu với game)";
+	// Dò ô nhớ số tiền vạn hiển thị trong túi đồ (chưa có offset), dùng lọc vi sai giữa hai lần chạy.
+	private const string ToolInventoryMoney = "Tiền vạn trong túi (dò ô nhớ)";
+	// Thử hàm mua của chức năng "Tự động mua thuốc" trong client. Dùng ô tick, loại thuốc và số bình ở khối "Mua item hồi phục" (tab Cơ bản).
+	private const string ToolQuickBuy = "Mua nhanh thuốc (GỬI LỆNH THẬT, TIÊU TIỀN)";
 
 	// Trên mức này thì báo cáo đối chiếu không đọc được. Lấy rộng hơn DoctorRouteArrivalDistance (1,5 ô) của luồng
 	// Sửa đồ để lượt bấm ngay sát NPC vẫn được coi là hợp lệ.
@@ -63,11 +64,11 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolModalVtable,
 		ToolNpcMenuCapture,
 		ToolImmediateRepair,
-		ToolSelectEntity,
-		ToolLoginTest,
-		ToolLoginAutoFsAddress,
-		ToolLoginDialogDiff,
-		ToolLoginDialogDiffReset
+		ToolImmediateSale,
+		ToolInventoryStrength,
+		ToolInventoryInfo,
+		ToolInventoryMoney,
+		ToolQuickBuy
 	];
 
 	// Số lệnh và tham số khi thử điểm đến. Chỉ tool ToolTransitGateSelect đọc hai giá trị này.
@@ -119,63 +120,25 @@ public sealed class DebugViewModel : ViewModelBase {
 			case ToolImmediateRepair:
 				StartWeaponRepairFlowTest();
 				return;
-			case ToolSelectEntity:
-				StartSelectEntityProbe();
+			case ToolImmediateSale:
+				StartImmediateSale();
 				return;
-			case ToolLoginTest:
-				StartLoginTest();
+			case ToolInventoryStrength:
+				StartInventoryStrengthProbe();
 				return;
-			case ToolLoginAutoFsAddress:
-				StartLoginAutoFsAddress();
+			case ToolInventoryInfo:
+				StartInventoryInfoProbe();
 				return;
-			case ToolLoginDialogDiff:
-				StartLoginDialogDiff();
+			case ToolInventoryMoney:
+				StartInventoryMoneyProbe();
 				return;
-			case ToolLoginDialogDiffReset:
-				AccountInfoText = LoginDialogDiffProbe.Reset();
+			case ToolQuickBuy:
+				StartQuickBuy();
 				return;
 			default:
 				AccountInfoText = $"Không nhận diện được công cụ: {selectedTool}";
 				return;
 		}
-	}
-
-	// Không cần account đang chọn: luồng này TỰ MỞ client mới rồi mới gõ tài khoản.
-	private async void StartLoginTest() {
-		AccountInfoText = "Đang mở client và gửi chuỗi lệnh đăng nhập...";
-		AccountInfoText = await Task.Run(LoginTestProbe.Run);
-	}
-
-	private async void StartLoginAutoFsAddress() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		AccountInfoText = $"PID={target.ProcessId} | Đang đọc các địa chỉ đăng nhập của AutoFS...";
-		AccountInfoText = await Task.Run(() => LoginAutoFsAddressProbe.Run(target));
-	}
-
-	private async void StartSelectEntityProbe() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh chọn Đại Phu...";
-		string result = await Task.Run(() => SelectEntityProbe.Run(target));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = result;
-	}
-
-	private async void StartLoginDialogDiff() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		AccountInfoText = $"PID={target.ProcessId} | Đang chụp ảnh bộ nhớ Game.exe...";
-		AccountInfoText = await Task.Run(() => LoginDialogDiffProbe.Run(target));
 	}
 
 	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.
@@ -234,6 +197,101 @@ public sealed class DebugViewModel : ViewModelBase {
 		AccountInfoText = $"PID={game.ProcessId} | {status}\r\n\r\n{conformance}\r\n" +
 			"KHÔNG cần bật Auto tổng, KHÔNG cần bật Đánh, KHÔNG cần đợi độ bền tụt. Nhân vật tự đi tới NPC, sửa toàn bộ rồi quay lại chỗ cũ.\r\n" +
 			"Xem repair.log để biết NPC thuộc dạng nào: \"Doctor confirmation modal\" = popup xác nhận, \"Doctor shop menu\" = menu nhiều lựa chọn.";
+	}
+
+	// Đối chiếu sức lực đọc từ bộ nhớ với số hiển thị trong game, cho ĐÚNG account đang chọn.
+	// Chỉ đọc, không gửi lệnh nào — chạy được kể cả khi Auto tổng đang bật.
+	private void StartInventoryStrengthProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		string result = InventoryStrengthProbe.Read(game);
+		DebugLog.AddDebugForProcess(game.ProcessId, result);
+		AccountInfoText = result;
+	}
+
+	// Đối chiếu chéo với ToolInventoryStrength: đọc TRỌNG LƯỢNG THẬT từng món trong túi qua offset Item.Weight
+	// (đã xác minh riêng, độc lập với cặp StrengthRoot đang bị nghi đọc sai). Chỉ đọc, không gửi lệnh nào.
+	private void StartInventoryInfoProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		string result = InventoryInfoProbe.Run(game.ProcessId);
+		DebugLog.AddDebugForProcess(game.ProcessId, result);
+		AccountInfoText = result;
+	}
+
+	// Dò ô số tiền vạn bằng lọc vi sai: chạy, làm một giao dịch có số tiền biết trước, chạy lại. Chỉ đọc.
+	private void StartInventoryMoneyProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		string result = InventoryMoneyProbe.Read(game);
+		DebugLog.AddDebugForProcess(game.ProcessId, result);
+		AccountInfoText = result;
+	}
+
+	// GỬI LỆNH THẬT: mua nhanh thuốc HP/MP theo ô tick, loại thuốc và số bình ở khối "Mua item hồi phục", rồi báo túi có tăng không.
+	// Chạy tuần tự HP rồi MP để hai lần đo túi không chồng lên nhau.
+	private async void StartQuickBuy() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		BasicSettings settings = target.BasicSettings;
+		bool buyHp = settings.EnableQuickBuyHp;
+		bool buyMp = settings.EnableQuickBuyMp;
+		if (!buyHp && !buyMp) {
+			AccountInfoText = $"PID={target.ProcessId} | Chưa tick \"Mua máu nhanh\" hay \"Mua mana nhanh\" ở tab Cơ bản nên không có gì để mua.";
+			return;
+		}
+		int hpCode = settings.QuickBuyHpPotionCode;
+		int mpCode = settings.QuickBuyMpPotionCode;
+		int hpQuantity = settings.QuickBuyHpQuantity;
+		int mpQuantity = settings.QuickBuyMpQuantity;
+		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh mua nhanh...";
+		string result = await Task.Run(() => {
+			StringBuilder output = new();
+			if (buyHp) output.AppendLine(QuickBuyProbe.Run(target, "máu", hpCode, hpQuantity));
+			if (buyMp) output.AppendLine(QuickBuyProbe.Run(target, "mana", mpCode, mpQuantity));
+			return output.ToString();
+		});
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = result;
+	}
+
+	// Bán ngay số đồ đã tick ở mục "Bán" (tab Nhặt), bỏ qua hai ngưỡng số lượng/sức lực.
+	//
+	// Vì sao cần: luồng bán tự động chỉ kích hoạt khi túi quá ngưỡng, nên muốn kiểm nó có chạy đúng không thì phải
+	// ngồi đợi đầy túi. Tính tới 2026-09-23 chức năng bán CHƯA CHẠY LẦN NÀO (0 dòng SALE_ trong Diagnostics,
+	// 3912/3912 dòng heartbeat ghi Sale=False), nên đây là đường duy nhất lấy được bằng chứng trong vài giây.
+	//
+	// KHÁC nút "Đi sửa đồ": nút này KHÔNG tự đi tới NPC. Engine đòi ShopState == 2 (InventorySaleEngine.Tick) tức
+	// cửa hàng phải đang mở sẵn trên màn hình.
+	private void StartImmediateSale() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		if (game.Enabled) {
+			AccountInfoText = $"PID={game.ProcessId} | Phải TẮT Auto tổng của account này trước khi bán ngay.\r\n" +
+				"Auto tổng đang bật thì Đánh/Nhặt/Sửa đồ cùng chen lệnh vào và làm bẩn phép đo.";
+			return;
+		}
+		string selected = string.Join(", ", game.LootSettings.SaleItemSelections.Where(entry => entry.Value).Select(entry => entry.Key));
+		if (selected.Length == 0) {
+			AccountInfoText = $"PID={game.ProcessId} | Chưa tick món nào ở mục \"Bán\" (tab Nhặt) nên không có gì để bán.";
+			return;
+		}
+		lock (game.AutoSync) game.InventorySaleEngine.Start(text => DebugLog.AddDebugForProcess(game.ProcessId, text), bypassMasterSwitch: true);
+		AccountInfoText = $"PID={game.ProcessId} | Đã bắt đầu bán ngay.\r\nĐang bán: {selected}\r\n\r\n" +
+			"Cửa hàng Đại Phu PHẢI đang mở sẵn — nút này không tự đi tới NPC.\r\n" +
+			"Xem auto-runtime.log để đối chiếu: SALE_START -> SALE_FILTER từng ô -> SALE_COMMAND_POSTED -> SALE_CONFIRMED -> SALE_COMPLETE.\r\n" +
+			"Đồ Lục và Đồ Vàng bị chặn cứng, sẽ hiện GREEN_POPUP_BLOCKED / YELLOW_VALUABLE_BLOCKED ở dòng SALE_FILTER.";
 	}
 
 	// Đổ danh sách điểm đến trong popup Điểm chuyển tiếp ĐANG hiện. Không đi bộ, không click, không chọn mục nào.

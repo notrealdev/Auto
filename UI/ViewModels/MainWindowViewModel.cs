@@ -30,6 +30,8 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		InfoViewModel    infoTab    = new();
 		// Tab Login KHÔNG dựng lại theo account đang chọn: lúc đăng nhập chưa có client nào tồn tại để chọn.
 		LoginViewModel loginTab = new();
+		// Tab Config cũng vậy: hai lệnh của nó tác động lên TẤT CẢ account, không riêng account đang trỏ.
+		ConfigViewModel configTab = new(() => AccountList.SaveProfilesNow(), () => AccountList.ApplyAllProfilesNow());
 		DebugViewModel debugTab = new();
 
 		attackTabItem  = new TabItemViewModel("Attack", attackTab) { IsSelected = true };
@@ -49,6 +51,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 			marketTabItem,
 			basicTabItem,
 			new TabItemViewModel("Login", loginTab),
+			new TabItemViewModel("Config", configTab),
 			infoTabItem,
 			debugTabItem
 		];
@@ -58,6 +61,9 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		foreach (TabItemViewModel tab in Tabs) tab.PropertyChanged += OnTabPropertyChanged;
 		AccountList.PropertyChanged += OnAccountListPropertyChanged;
 		AccountList.AttackToggledExternally += OnAttackToggledExternally;
+		// Hồ sơ vừa khôi phục ghi thẳng vào Settings từ code, WPF không biết giá trị đã đổi. Dựng lại tab là cách
+		// rẻ và chắc chắn nhất — đúng thứ code đã làm khi đổi dòng account.
+		AccountList.ProfileRestored += OnProfileRestored;
 
 		// 2 giây một nhịp: đủ mượt để nhìn, và đủ thưa để phép chia thời gian CPU không bị nhiễu.
 		statusBarTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -97,6 +103,9 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		// bản đo cũ là 19MB/G2=9964, bản sau khi sửa là 20MB/G2=184. Hai số đó dựng lên chỉ để truy vụ phình heap
 		// đó, không phải chỉ số thường trực. Cần đo lại thì thêm tạm GC.GetTotalMemory(false)/GC.CollectionCount(2).
 		StatusBarText = $"CPU: {percent:F1}% | RAM: {ProcessLoadMonitor.WorkingSetMegabytes:F0}MB | Power: {ProcessLoadMonitor.DescribeLoad(percent)} | Account: {AccountList.Accounts.Count}";
+		// ScoutQuestAutomation ghi ScoutStatus/ScoutEnabled thẳng vào Settings từ luồng worker, không qua setter của
+		// QuestViewModel nên không tự bắn PropertyChanged — mượn nhịp 2 giây có sẵn ở đây thay vì dựng thêm timer.
+		if (questTabItem.Content is QuestViewModel questViewModel) questViewModel.RefreshLiveState();
 	}
 
 	public AccountListViewModel AccountList { get; } = new();
@@ -124,9 +133,19 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		if (attackTabItem.Content is AttackViewModel attackViewModel) attackViewModel.RefreshEnabled();
 	}
 
+	// Chỉ dựng lại tab khi hồ sơ vừa khôi phục thuộc đúng account đang chọn — account khác thì tab của nó sẽ được
+	// dựng lại lúc người dùng bấm sang, không cần làm gì bây giờ.
+	private void OnProfileRestored(GameWindow game) {
+		if (game != AccountList.SelectedRow?.GameWindow) return;
+		RebuildTabs();
+	}
+
 	private void OnAccountListPropertyChanged(object? sender, PropertyChangedEventArgs e) {
 		if (e.PropertyName != nameof(AccountListViewModel.SelectedRow)) return;
+		RebuildTabs();
+	}
 
+	private void RebuildTabs() {
 		GameWindow? selected = AccountList.SelectedRow?.GameWindow;
 
 		bool wasAttackSelected  = attackTabItem.Content  == SelectedTabContent;
@@ -139,7 +158,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		bool wasDebugSelected   = debugTabItem.Content   == SelectedTabContent;
 
 		AttackViewModel  newAttackTab  = selected != null ? new AttackViewModel(selected.AttackSettings, selected) : new AttackViewModel();
-		LootViewModel    newLootTab    = selected != null ? new LootViewModel(selected.LootSettings) : new LootViewModel();
+		LootViewModel    newLootTab    = selected != null ? new LootViewModel(selected.LootSettings, selected) : new LootViewModel();
 		QuestViewModel   newQuestTab   = selected != null ? new QuestViewModel(selected.QuestSettings) : new QuestViewModel();
 		BasicViewModel   newBasicTab   = selected != null ? new BasicViewModel(selected.BasicSettings) : new BasicViewModel();
 		SupportViewModel newSupportTab = selected != null ? new SupportViewModel(selected.SupportSettings) : new SupportViewModel();
