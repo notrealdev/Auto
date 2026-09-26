@@ -30,6 +30,9 @@ internal sealed class AutoFsAttackTransport {
 	private const int MaximumPassiveBuffSkillId = 0x7CF;
 	// Phải khớp SystemUint.cpp (QuickBuyCommand, QuickBuyMaximumQuantity).
 	private const int QuickBuyCommand = 327;
+	private const int QuickBuyRawCommand = 328;
+	private const int UseItemByIdCommand = 329;
+	private const int MaximumUseItemId = 0x001FFFFF;
 	private const int MaximumQuickBuyQuantity = 100;
 	private const uint SendMessageTimeoutMilliseconds = 500;
 	// Các bước đăng nhập dựng lại cả màn hình nên lâu hơn hẳn một lần gửi gói; xem TrySendLoginCommand.
@@ -161,26 +164,51 @@ internal sealed class AutoFsAttackTransport {
 	// Mua nhanh thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client, payload dạng lệnh 95 của AutoFS:
 	// mã chi tiết của thuốc (16 bit thấp) | số lượng << 16. Bản chẩn đoán: bỏ qua công tắc Auto tổng, giữ khoá chống gửi trùng.
 	// Native trả 1 chỉ chứng minh hàm client đã được gọi, KHÔNG chứng minh server đã bán — phải đọc lại số thuốc trong túi.
-	public bool TrySendQuickBuyForDebug(IntPtr gameWindow, int potionCode, int quantity, out string error) {
-		if (potionCode < 0 || potionCode > 0xFFFF || quantity < 1 || quantity > MaximumQuickBuyQuantity) {
-			error = $"Invalid quick-buy arguments. PotionCode={potionCode}, Quantity={quantity}.";
-			return false;
-		}
-		return TrySendConfirmedCommandForDebug(gameWindow, QuickBuyCommand, potionCode | (quantity << 16), out error);
+	// Lệnh 328: native tự dựng gói mua, bỏ qua các kiểm tra của hàm mua client. (room, x, y) là ô đích của thuốc mua về.
+	public bool TrySendQuickBuyRawForDebug(IntPtr gameWindow, int potionCode, int quantity, int room, int slotX, int slotY, out string error) {
+		if (!TryPackQuickBuy(potionCode, quantity, room, slotX, slotY, out int payload, out error)) return false;
+		return TrySendConfirmedCommandForDebug(gameWindow, QuickBuyRawCommand, payload, out error);
 	}
 
-	// Bản tự động của TrySendQuickBuyForDebug: chỉ chạy khi Auto tổng bật, đi qua cùng khoá hành động với các lệnh khác.
-	public bool TrySendQuickBuy(IntPtr gameWindow, int potionCode, int quantity, out string error) {
+	// Phải khớp cách tách lParam của TryDispatchQuickBuy/TryDispatchQuickBuyRaw trong SystemUint.cpp.
+	private static bool TryPackQuickBuy(int potionCode, int quantity, int room, int slotX, int slotY, out int payload, out string error) {
+		payload = 0;
+		if (potionCode < 0 || potionCode > 0xFF || quantity < 1 || quantity > MaximumQuickBuyQuantity || room < 0 || room > 0xFF || slotX < 0 || slotX > 0xF || slotY < 0 || slotY > 0xF) {
+			error = $"Invalid quick-buy arguments. PotionCode={potionCode}, Quantity={quantity}, Room={room}, X={slotX}, Y={slotY}.";
+			return false;
+		}
+		payload = potionCode | (quantity << 8) | (room << 16) | (slotX << 24) | (slotY << 28);
+		error = "";
+		return true;
+	}
+
+	// Dùng vật phẩm theo id bảng item bằng hàm dùng vật phẩm của client (lệnh 329, RVA 0x3D5550). Khác phím tắt ô trang bị
+	// nhanh: dùng được vật phẩm ở bất kỳ container nào (ô nhanh, túi chính, rương 2) — đúng hàm mà tính năng tự dùng thuốc
+	// của game gọi. Chỉ chạy khi Auto tổng bật, đi qua cùng khoá hành động với các lệnh khác.
+	public bool TryUseItemById(IntPtr gameWindow, int itemId, out string error) {
 		if (! actionGate.AutomationEnabled) {
 			error = "Master automation switch is disabled.";
 			return false;
 		}
-		if (potionCode < 0 || potionCode > 0xFFFF || quantity < 1 || quantity > MaximumQuickBuyQuantity) {
-			error = $"Invalid quick-buy arguments. PotionCode={potionCode}, Quantity={quantity}.";
+		if (itemId <= 0 || itemId > MaximumUseItemId) {
+			error = $"Invalid item id. ItemId={itemId}.";
 			return false;
 		}
 		string currentError = "";
-		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, QuickBuyCommand, potionCode | (quantity << 16), out currentError));
+		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, UseItemByIdCommand, itemId, out currentError));
+		error = currentError;
+		return sent;
+	}
+
+	// Mua nhanh bằng hàm mua của client (lệnh 327): chỉ chạy khi Auto tổng bật, đi qua cùng khoá hành động với các lệnh khác.
+	public bool TrySendQuickBuy(IntPtr gameWindow, int potionCode, int quantity, int room, int slotX, int slotY, out string error) {
+		if (! actionGate.AutomationEnabled) {
+			error = "Master automation switch is disabled.";
+			return false;
+		}
+		if (!TryPackQuickBuy(potionCode, quantity, room, slotX, slotY, out int payload, out error)) return false;
+		string currentError = "";
+		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, QuickBuyCommand, payload, out currentError));
 		error = currentError;
 		return sent;
 	}

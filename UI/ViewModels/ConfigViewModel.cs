@@ -1,5 +1,7 @@
 namespace Auto.UI.ViewModels;
 
+using System.Windows;
+
 // Tab "Config": nơi duy nhất ghi/nạp Profiles.json bằng tay.
 //
 // Tách khỏi khung chính (chủ dự án chốt 2026-09-23): hai nút này trước nằm ngay dưới danh sách account, dính vào
@@ -14,6 +16,18 @@ public sealed class ConfigViewModel : ViewModelBase {
 
 	public ConfigViewModel(Action? saveProfiles, Action? applyProfiles) {
 		SaveProfilesCommand = new RelayCommand(_ => {
+			// Hỏi lại trước khi ghi (chủ dự án yêu cầu 2026-09-26): lưu là ghi đè Profiles.json của MỌI account cùng lúc.
+			MessageBoxResult answer = MessageBox.Show(
+				Application.Current.MainWindow,
+				"Lưu cấu hình hiện tại của TẤT CẢ account?\n\nFile cấu hình đã lưu trước đó sẽ bị ghi đè.",
+				"Lưu cấu hình",
+				MessageBoxButton.YesNo,
+				MessageBoxImage.Warning,
+				MessageBoxResult.No);
+			if (answer != MessageBoxResult.Yes) {
+				StatusText = "Đã huỷ lưu cấu hình.";
+				return;
+			}
 			saveProfiles?.Invoke();
 			StatusText = "Đã lưu cấu hình.";
 		});

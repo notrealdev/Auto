@@ -47,6 +47,10 @@ namespace {
 	// Mua nhanh thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client. lParam = mã chi tiết của thuốc
 	// (16 bit thấp) | số lượng << 16, cùng dạng payload lệnh 95 của AutoFS. Số 327 là số mới của Auto, không phải 95.
 	constexpr WPARAM QuickBuyCommand = 327;
+	// Lệnh 328: tự dựng và gửi gói mua 0xBE/0x31, bỏ qua các kiểm tra của hàm mua client (đã có món trong túi, cờ chặn, dung lượng...).
+	constexpr WPARAM QuickBuyRawCommand = 328;
+	// Lệnh 329: dùng một vật phẩm theo id bảng item (uống thuốc hồi phục).
+	constexpr WPARAM UseItemByIdCommand = 329;
 	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
 	constexpr WPARAM LoginNoticeCommand = 280;
 	constexpr WPARAM LoginVersionCommand = 281;
@@ -112,8 +116,8 @@ namespace {
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990010;
-	constexpr int AuditEntryCount = 32;
+	constexpr int NativeBuildStamp = 99990013;
+	constexpr int AuditEntryCount = 34;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
 
@@ -149,6 +153,9 @@ namespace {
 	using CastSkillFunction = void(__cdecl*)(int, int, int);
 	using PassiveBuffFunction = void(__thiscall*)(void*, int);
 	using QuickBuyFunction = void(__thiscall*)(void*, int, int, int, int, int, int, int);
+	using UseItemFunction = void(__thiscall*)(void*, int);
+	using QuickBuyLookupFunction = int(__thiscall*)(void*, int, int, int, int*);
+	using QuickBuySendFunction = void(__thiscall*)(void*, void*, void*, void*);
 	using PickupFunction = void(__cdecl*)(int, int);
 	using ReturnToTownFunction = void(__thiscall*)(void*, int);
 	using ListSetSelectionFunction = int(__thiscall*)(void*, int);
@@ -177,6 +184,15 @@ namespace {
 	constexpr uint8_t QuickBuyFunctionSignature[] = {
 		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x5C, 0xA1, 0x00, 0xD0, 0x8D, 0x00, 0x33, 0xC5, 0x89, 0x45, 0xFC,
 		0x53, 0x8B, 0x5D, 0x08, 0x8B, 0xC1, 0x56, 0x57
+	};
+	// 24 byte đầu của hàm dùng vật phẩm (RVA 0x3D5550): prologue, cookie 0x8DD000, nạp id vật phẩm và this.
+	constexpr uint8_t UseItemFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14, 0xA1, 0x00, 0xD0, 0x8D, 0x00, 0x33, 0xC5, 0x89, 0x45, 0xFC,
+		0x56, 0x57, 0x8B, 0x7D, 0x08, 0x8B, 0xF1, 0x57
+	};
+	// Đầu hàm tra bảng thuốc (RVA 0x355D20): prologue, nạp tham số cuối, test null.
+	constexpr uint8_t QuickBuyLookupFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x56, 0x8B, 0x75, 0x14, 0x57, 0x8B, 0xF9, 0x85, 0xF6, 0x74
 	};
 	constexpr uint8_t GroundCoordinateConverterSignature[] = {
 		0x55, 0x8B, 0xEC, 0xFF, 0x75, 0x0C, 0xFF, 0x75, 0x08, 0xFF, 0x71, 0x3C
@@ -718,12 +734,17 @@ namespace {
 		return 1;
 	}
 
-	// Mua thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client. packed = mã chi tiết (16 bit thấp) |
-	// số lượng << 16; bộ ba vật phẩm là (1, mã, 0) như lệnh 95 của AutoFS.
+	// Mua thuốc bằng hàm mua của chức năng "Tự động mua thuốc" trong client. packed = mã chi tiết (8 bit) | số lượng << 8 |
+	// room << 16 | x << 24 (4 bit) | y << 28 (4 bit); bộ ba vật phẩm là (1, mã, 0) như lệnh 95 của AutoFS.
+	// (room, x, y) là ô đích: 3 byte cuối của hàm mua, game lấy từ gói server 0x32 và luôn điền thuốc vào đúng ô vừa trống
+	// (đo PID 21740, 2026-09-26). Truyền 0,0,0 thì server vẫn trừ tiền nhưng thuốc không xuất hiện ở ô nào.
 	// Trả 1 khi đã gọi, 40 tham số sai, 41 image lạ, 42 địa chỉ không thực thi, 43 chữ ký hàm lệch, 44 InventoryRoot bằng 0.
 	int TryDispatchQuickBuy(uint32_t packed) {
-		int code = static_cast<int>(packed & 0xFFFF);
-		int quantity = static_cast<int>(packed >> 16);
+		int code = static_cast<int>(packed & 0xFF);
+		int quantity = static_cast<int>((packed >> 8) & 0xFF);
+		int room = static_cast<int>((packed >> 16) & 0xFF);
+		int slotX = static_cast<int>((packed >> 24) & 0xF);
+		int slotY = static_cast<int>((packed >> 28) & 0xF);
 		if (quantity < 1 || quantity > GameClientAddresses::QuickBuyMaximumQuantity) {
 			return 40;
 		}
@@ -742,7 +763,95 @@ namespace {
 		if (inventoryRoot == nullptr) {
 			return 44;
 		}
-		buy(reinterpret_cast<uint8_t*>(inventoryRoot) + GameClientAddresses::QuickBuyThisOffset, 1, code, 0, quantity, 0, 0, 0);
+		buy(reinterpret_cast<uint8_t*>(inventoryRoot) + GameClientAddresses::QuickBuyThisOffset, 1, code, 0, quantity, room, slotX, slotY);
+		return 1;
+	}
+
+	// Tự dựng gói mua thuốc đúng layout hàm client 0x346010 dựng ở 0x74640A..0x74646D (27 byte), không đi qua các kiểm tra của hàm đó.
+	// Hai dword +4/+8 lấy từ bảng thuốc bằng hàm 0x755D20. Ba byte +20..22 = ô đích (room, x, y), cùng cách đóng gói với lệnh 327.
+	// Trả 1 khi đã gửi, 40 tham số sai, 41 image lạ, 42 địa chỉ không thực thi, 43 chữ ký lệch, 44 InventoryRoot null,
+	// 45 đối tượng mạng null, 46 mã thuốc không có trong bảng tra.
+	int TryDispatchQuickBuyRaw(uint32_t packed) {
+		int code = static_cast<int>(packed & 0xFF);
+		int quantity = static_cast<int>((packed >> 8) & 0xFF);
+		int room = static_cast<int>((packed >> 16) & 0xFF);
+		int slotX = static_cast<int>((packed >> 24) & 0xF);
+		int slotY = static_cast<int>((packed >> 28) & 0xF);
+		if (quantity < 1 || quantity > GameClientAddresses::QuickBuyMaximumQuantity) {
+			return 40;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 41;
+		}
+		auto lookup = reinterpret_cast<QuickBuyLookupFunction>(gameBase + GameClientAddresses::QuickBuyLookupFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(lookup))) {
+			return 42;
+		}
+		if (memcmp(reinterpret_cast<void*>(lookup), QuickBuyLookupFunctionSignature, sizeof(QuickBuyLookupFunctionSignature)) != 0) {
+			return 43;
+		}
+		auto inventoryRoot = *reinterpret_cast<uint8_t**>(gameBase + GameClientAddresses::InventoryRootRva);
+		if (inventoryRoot == nullptr) {
+			return 44;
+		}
+		void* network = *reinterpret_cast<void**>(gameBase + GameClientAddresses::QuickBuyNetworkObjectRva);
+		if (network == nullptr) {
+			return 45;
+		}
+		int fields[2] = {0, 0};
+		if (lookup(gameBase + GameClientAddresses::QuickBuyPotionTableRva, 1, code, 0, fields) == 0) {
+			return 46;
+		}
+		uint8_t packet[0x1B] = {};
+		int length = 0x1B;
+		int currency = *reinterpret_cast<int*>(inventoryRoot + GameClientAddresses::QuickBuyCurrencyTypeOffset);
+		int triple = (((1 << 12) | code) << 12) | 0;
+		packet[0] = 0xBE;
+		packet[1] = 0x1A;
+		packet[3] = 0x31;
+		memcpy(packet + 4, &fields[0], 4);
+		memcpy(packet + 8, &fields[1], 4);
+		memcpy(packet + 12, &quantity, 4);
+		memcpy(packet + 16, &currency, 4);
+		packet[20] = static_cast<uint8_t>(room);
+		packet[21] = static_cast<uint8_t>(slotX);
+		packet[22] = static_cast<uint8_t>(slotY);
+		memcpy(packet + 23, &triple, 4);
+		auto vtable = *reinterpret_cast<uint8_t***>(network);
+		auto send = reinterpret_cast<QuickBuySendFunction>(*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vtable) + 0x20));
+		send(network, network, packet, &length);
+		// Hàm client gọi 0x7D2430 ngay sau khi gửi: đặt cờ chờ phản hồi [root+0x4B79C] = 1 nếu đang 0.
+		int* pending = reinterpret_cast<int*>(inventoryRoot + GameClientAddresses::QuickBuyPendingFlagOffset);
+		if (*pending == 0) {
+			*pending = 1;
+		}
+		return 1;
+	}
+
+	// Dùng vật phẩm theo id bảng item bằng hàm dùng vật phẩm của client (xem UseItemFunctionRva). Hàm tự bỏ qua khi id
+	// không nằm trong danh sách vật phẩm của nhân vật (0x7D0670 trả <= 0), nên id sai không gửi gói nào.
+	// Trả 1 khi đã gọi, 40 id ngoài phạm vi, 41 image lạ, 42 địa chỉ không thực thi, 43 chữ ký lệch, 44 InventoryRoot null.
+	int TryDispatchUseItemById(int itemId) {
+		if (itemId <= 0 || itemId > GameClientAddresses::UseItemMaximumItemId) {
+			return 40;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 41;
+		}
+		auto useItem = reinterpret_cast<UseItemFunction>(gameBase + GameClientAddresses::UseItemFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(useItem))) {
+			return 42;
+		}
+		if (memcmp(reinterpret_cast<void*>(useItem), UseItemFunctionSignature, sizeof(UseItemFunctionSignature)) != 0) {
+			return 43;
+		}
+		auto inventoryRoot = *reinterpret_cast<uint8_t**>(gameBase + GameClientAddresses::InventoryRootRva);
+		if (inventoryRoot == nullptr) {
+			return 44;
+		}
+		useItem(inventoryRoot + GameClientAddresses::UseItemThisOffset, itemId);
 		return 1;
 	}
 
@@ -1151,6 +1260,8 @@ namespace {
 			case 29: return AuditGlobalPointer(gameBase, GameClientAddresses::LoginServerDialogRva, true);
 			case 30: return AuditLoginSubmitFunctions(gameBase);
 			case 31: return AuditCodeSignature(gameBase, GameClientAddresses::QuickBuyFunctionRva, 0, QuickBuyFunctionSignature, sizeof(QuickBuyFunctionSignature));
+			case 32: return AuditCodeSignature(gameBase, GameClientAddresses::QuickBuyLookupFunctionRva, 0, QuickBuyLookupFunctionSignature, sizeof(QuickBuyLookupFunctionSignature));
+			case 33: return AuditCodeSignature(gameBase, GameClientAddresses::UseItemFunctionRva, 0, UseItemFunctionSignature, sizeof(UseItemFunctionSignature));
 			default: return 0;
 		}
 	}
@@ -1733,6 +1844,12 @@ namespace {
 			}
 			if (wParam == QuickBuyCommand) {
 				return TryDispatchQuickBuy(static_cast<uint32_t>(lParam));
+			}
+			if (wParam == QuickBuyRawCommand) {
+				return TryDispatchQuickBuyRaw(static_cast<uint32_t>(lParam));
+			}
+			if (wParam == UseItemByIdCommand) {
+				return TryDispatchUseItemById(static_cast<int>(lParam));
 			}
 			if (wParam == NativeBuildStampCommand) {
 				return NativeBuildStamp;

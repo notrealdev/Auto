@@ -77,6 +77,7 @@ public class GameWindow {
 	public BasicSettings BasicSettings { get; } = new();
 	internal LowHpEngine LowHpEngine { get; }
 	internal QuickBuyEngine QuickBuyEngine { get; }
+	internal RecoveryEngine RecoveryEngine { get; }
 
 	public Auto.Market.Settings MarketSettings { get; } = new();
 	internal Auto.Market.ChatEngine ChatEngine { get; }
@@ -119,6 +120,7 @@ public class GameWindow {
 		InventorySaleEngine = new InventorySaleEngine(LootSettings, AutoFsTransport);
 		LowHpEngine = new LowHpEngine(BasicSettings, AutoFsTransport);
 		QuickBuyEngine = new QuickBuyEngine(BasicSettings, AutoFsTransport);
+		RecoveryEngine = new RecoveryEngine(BasicSettings, AutoFsTransport);
 		ChatEngine = new Auto.Market.ChatEngine(MarketSettings, AutoFsTransport);
 	}
 

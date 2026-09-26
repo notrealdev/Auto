@@ -29,7 +29,6 @@
 					<RowDefinition Height="Auto" />
 					<RowDefinition Height="Auto" />
 					<RowDefinition Height="Auto" />
-					<RowDefinition Height="Auto" />
 				</Grid.RowDefinitions>
 
 				<TextBlock
@@ -37,14 +36,14 @@
 					Grid.Column="0"
 					Grid.ColumnSpan="4"
 					Style="{StaticResource SectionLabel}"
-					Text="Mua item hồi phục" />
+					Text="Hồi phục" />
 
 				<CheckBox
 					Grid.Row="1"
 					Grid.Column="0"
 					Margin="0,0,10,10"
-					Content="Mua máu nhanh"
-					IsChecked="{Binding EnableQuickBuyHp}" />
+					Content="Máu"
+					IsChecked="{Binding EnableRecoverHp}" />
 				<ComboBox
 					Grid.Row="1"
 					Grid.Column="1"
@@ -62,19 +61,25 @@
 				<TextBox
 					Grid.Row="1"
 					Grid.Column="2"
-					Width="40"
+					Width="50"
 					Margin="0,0,6,10"
 					HorizontalAlignment="Left"
 					Style="{StaticResource NumericTextBox}"
-					Text="{Binding QuickBuyHpQuantity, UpdateSourceTrigger=LostFocus}"
+					Text="{Binding RecoverHpThreshold, UpdateSourceTrigger=LostFocus}"
 					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock
+					Grid.Row="1"
+					Grid.Column="3"
+					Margin="0,0,0,10"
+					Style="{StaticResource FieldLabel}"
+					Text="điểm" />
 
 				<CheckBox
 					Grid.Row="2"
 					Grid.Column="0"
 					Margin="0,0,10,10"
-					Content="Mua mana nhanh"
-					IsChecked="{Binding EnableQuickBuyMp}" />
+					Content="Mana"
+					IsChecked="{Binding EnableRecoverMp}" />
 				<ComboBox
 					Grid.Row="2"
 					Grid.Column="1"
@@ -92,17 +97,90 @@
 				<TextBox
 					Grid.Row="2"
 					Grid.Column="2"
+					Width="50"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding RecoverMpThreshold, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock
+					Grid.Row="2"
+					Grid.Column="3"
+					Margin="0,0,0,10"
+					Style="{StaticResource FieldLabel}"
+					Text="điểm" />
+			</Grid>
+		</Border>
+
+		<Border Style="{StaticResource CardBorder}">
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="*" />
+				</Grid.ColumnDefinitions>
+				<Grid.RowDefinitions>
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+					<RowDefinition Height="Auto" />
+				</Grid.RowDefinitions>
+
+				<TextBlock
+					Grid.Row="0"
+					Grid.Column="0"
+					Grid.ColumnSpan="3"
+					Style="{StaticResource SectionLabel}"
+					Text="Mua item hồi phục" />
+
+				<CheckBox
+					Grid.Row="1"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Mua máu nhanh"
+					IsChecked="{Binding EnableQuickBuyHp}" />
+				<TextBox
+					Grid.Row="1"
+					Grid.Column="1"
+					Width="40"
+					Margin="0,0,6,10"
+					HorizontalAlignment="Left"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding QuickBuyHpQuantity, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock
+					Grid.Row="1"
+					Grid.Column="2"
+					Margin="0,0,0,10"
+					Style="{StaticResource FieldLabel}"
+					Text="bình" />
+
+				<CheckBox
+					Grid.Row="2"
+					Grid.Column="0"
+					Margin="0,0,10,10"
+					Content="Mua mana nhanh"
+					IsChecked="{Binding EnableQuickBuyMp}" />
+				<TextBox
+					Grid.Row="2"
+					Grid.Column="1"
 					Width="40"
 					Margin="0,0,6,10"
 					HorizontalAlignment="Left"
 					Style="{StaticResource NumericTextBox}"
 					Text="{Binding QuickBuyMpQuantity, UpdateSourceTrigger=LostFocus}"
 					controls:NumericInputBehavior.IsEnabled="True" />
+				<TextBlock
+					Grid.Row="2"
+					Grid.Column="2"
+					Margin="0,0,0,10"
+					Style="{StaticResource FieldLabel}"
+					Text="bình" />
 
 				<CheckBox
 					Grid.Row="3"
 					Grid.Column="0"
-					Grid.ColumnSpan="4"
+					Grid.ColumnSpan="3"
 					Content="Mua ở Đại phu khi hết 1000 bình mua nhanh"
 					IsChecked="{Binding EnableQuickBuyAtDoctor}" />
 			</Grid>

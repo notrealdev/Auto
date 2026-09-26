@@ -244,6 +244,8 @@ public static class AccountEngineCoordinator {
 
 			// Mua nhanh thuốc luôn chạy khi Auto tổng bật (chủ dự án chốt 2026-09-25) nên đặt TRƯỚC mọi nhánh return bên dưới, để
 			// Hồi thành phù, Về thành, Sửa đồ, Buff... đều không chặn được nó. Chỉ gửi một lệnh mua, không giữ quyền điều khiển.
+			// Hồi phục (dùng thuốc khi HP/MP dưới ngưỡng) cùng vị trí và cùng lý do với mua nhanh: không luồng nào được chặn nó.
+			if (masterEnabled && layout.PlayerReady && layout.InventoryReady) game.RecoveryEngine.Tick(game.ProcessId, game.Handle, snapshot, accountLog);
 			if (masterEnabled && layout.PlayerReady && layout.InventoryReady) game.QuickBuyEngine.Tick(game.ProcessId, game.Handle, accountLog);
 
 			// Đặt NGAY ĐÂY, trước mọi nhánh return của từng luồng. Mọi nhánh bên dưới đều có đường thoát sớm
@@ -251,7 +253,9 @@ public static class AccountEngineCoordinator {
 			// là lại đẻ ra đúng lỗ hổng cũ: luồng nào ôm quyền thì lớp giám sát tắt theo.
 			SuperviseStuckAccount(game, snapshot, masterEnabled, accountLog);
 
-			if (masterEnabled && returnTalismanEnabled && game.LowHpEngine.Tick(game.ProcessId, game.Handle, snapshot, game.LastObservedMapId, accountLog)) {
+			// "Đang train" để Hồi thành phù bật lại sau khi về thành: đã tới bãi, không còn luồng di chuyển nào đang kéo nhân vật đi.
+			bool isTraining = game.LastObservedMapId > 0 && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && !IsOutsideTrainingArea(game, snapshot);
+			if (masterEnabled && returnTalismanEnabled && game.LowHpEngine.Tick(game.ProcessId, game.Handle, snapshot, game.LastObservedMapId, isTraining, accountLog)) {
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
 				game.WeaponRepairAutomation.Cancel(game, accountLog, "Hồi thành phù giữ quyền điều khiển");
@@ -411,9 +415,15 @@ public static class AccountEngineCoordinator {
 			// mà không heal thì chắc chết. Đường heal này đã chạy được lúc trốn: buff.log PID=2228 23:15:16-23:15:20 HP
 			// 101 -> 418 với Target=Owner Exclusive=True.
 			bool eliteRetreatStuck = IsEliteRetreatStuck(game, snapshot, eliteRetreatActive, accountLog);
+			// Đệ không được làm nhân vật đứng im (chủ dự án chốt 2026-09-25): đang trốn boss, sửa đồ (đang chạy hoặc đang chờ),
+			// tự lên bãi hay di chuyển bãi thì KHÔNG heal Đệ. Heal Đệ giữ quyền điều khiển độc quyền nên nhánh bên dưới sẽ huỷ
+			// đúng các luồng đó và dừng Đánh. Heal Chủ không bị ảnh hưởng.
+			bool petHealAllowed = !eliteRetreatActive
+				&& !game.WeaponRepairAutomation.IsBusy && !(game.WeaponRepairMonitor.HasPendingRepairRequest && layout.RepairReady)
+				&& !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy;
 			if (eliteRetreatActive && !eliteRetreatStuck) {
 				game.SupportEngine.ReleaseForHigherPriority();
-			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), accountLog)) {
+			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), petHealAllowed, accountLog)) {
 				// Buff không cần giữ quyền (heal xong hoặc máu còn đủ): trả luồng trốn thêm một lượt 3 giây để thử đi
 				// tiếp, thay vì nhịp sau lại coi là kẹt ngay vì mốc vị trí đã cũ.
 				if (eliteRetreatStuck) eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, DateTime.UtcNow);

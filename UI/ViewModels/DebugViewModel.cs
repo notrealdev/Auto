@@ -27,7 +27,7 @@ public sealed class DebugViewModel : ViewModelBase {
 	// Dò ô nhớ số tiền vạn hiển thị trong túi đồ (chưa có offset), dùng lọc vi sai giữa hai lần chạy.
 	private const string ToolInventoryMoney = "Tiền vạn trong túi (dò ô nhớ)";
 	// Thử hàm mua của chức năng "Tự động mua thuốc" trong client. Dùng ô tick, loại thuốc và số bình ở khối "Mua item hồi phục" (tab Cơ bản).
-	private const string ToolQuickBuy = "Mua nhanh thuốc (GỬI LỆNH THẬT, TIÊU TIỀN)";
+	private const string ToolQuickBuy = "Mua nhanh HP + MP (GỬI LỆNH THẬT, TIÊU TIỀN)";
 
 	// Trên mức này thì báo cáo đối chiếu không đọc được. Lấy rộng hơn DoctorRouteArrivalDistance (1,5 ô) của luồng
 	// Sửa đồ để lượt bấm ngay sát NPC vẫn được coi là hợp lệ.
@@ -234,8 +234,7 @@ public sealed class DebugViewModel : ViewModelBase {
 		AccountInfoText = result;
 	}
 
-	// GỬI LỆNH THẬT: mua nhanh thuốc HP/MP theo ô tick, loại thuốc và số bình ở khối "Mua item hồi phục", rồi báo túi có tăng không.
-	// Chạy tuần tự HP rồi MP để hai lần đo túi không chồng lên nhau.
+	// GỬI LỆNH THẬT: mua 1 lần đúng loại và số lượng đã đặt ở tab Cơ bản, HP rồi MP.
 	private async void StartQuickBuy() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
@@ -243,23 +242,12 @@ public sealed class DebugViewModel : ViewModelBase {
 		}
 		GameWindow target = game;
 		BasicSettings settings = target.BasicSettings;
-		bool buyHp = settings.EnableQuickBuyHp;
-		bool buyMp = settings.EnableQuickBuyMp;
-		if (!buyHp && !buyMp) {
-			AccountInfoText = $"PID={target.ProcessId} | Chưa tick \"Mua máu nhanh\" hay \"Mua mana nhanh\" ở tab Cơ bản nên không có gì để mua.";
-			return;
-		}
 		int hpCode = settings.QuickBuyHpPotionCode;
-		int mpCode = settings.QuickBuyMpPotionCode;
 		int hpQuantity = settings.QuickBuyHpQuantity;
+		int mpCode = settings.QuickBuyMpPotionCode;
 		int mpQuantity = settings.QuickBuyMpQuantity;
 		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh mua nhanh...";
-		string result = await Task.Run(() => {
-			StringBuilder output = new();
-			if (buyHp) output.AppendLine(QuickBuyProbe.Run(target, "máu", hpCode, hpQuantity));
-			if (buyMp) output.AppendLine(QuickBuyProbe.Run(target, "mana", mpCode, mpQuantity));
-			return output.ToString();
-		});
+		string result = await Task.Run(() => QuickBuyProbe.Run(target, "máu", hpCode, hpQuantity) + QuickBuyProbe.Run(target, "mana", mpCode, mpQuantity));
 		DebugLog.AddDebugForProcess(target.ProcessId, result);
 		AccountInfoText = result;
 	}

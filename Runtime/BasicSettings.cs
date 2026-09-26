@@ -21,6 +21,16 @@ public sealed class BasicSettings {
 
 	public int ReturnToTownDelayMilliseconds { get; set; } = 2000;
 
+	// Khối "Hồi phục" (dựa AutoFS): dùng thuốc đã chọn ở khối mua nhanh khi HP/MP dưới ngưỡng. AutoFS tính ngưỡng theo phần
+	// trăm; chủ dự án chốt 2026-09-26 Auto tính theo ĐIỂM. Giá trị mặc định là giả định, chưa được chủ dự án chốt.
+	public bool EnableRecoverHp { get; set; } = true;
+
+	public int RecoverHpThreshold { get; set; } = 300;
+
+	public bool EnableRecoverMp { get; set; } = true;
+
+	public int RecoverMpThreshold { get; set; } = 150;
+
 	// Khối "Mua item hồi phục" (dựa AutoFS): số bình mỗi lần mua nhanh, mặc định 1 để thử trước khi tăng.
 	public bool EnableQuickBuyHp { get; set; } = true;
 

@@ -111,6 +111,20 @@ namespace GameClientAddresses {
 	constexpr uintptr_t QuickBuyFunctionRva = 0x00346010;
 	constexpr uintptr_t QuickBuyThisOffset = 0x00035F60;
 	constexpr int QuickBuyMaximumQuantity = 100;
+	// Gói mua tự dựng (lệnh 328), đọc từ disassembly 0x746010 (chưa chạy): bảng thuốc VA 0xE98FFC, hàm tra 0x755D20 (thiscall, ret 0x10),
+	// đối tượng mạng [VA 0x918718] (gửi qua vtable[0x20]), loại tiền [root+0x6B764], cờ chờ phản hồi [root+0x4B79C] (= root+0x41D44+0x9A58, đúng cờ mà hàm 0x746010 kiểm ở 0x74607B và 0x7D2430 đặt sau khi gửi).
+	constexpr uintptr_t QuickBuyLookupFunctionRva = 0x00355D20;
+	// Hàm dùng vật phẩm của client (thiscall, ret 4): this = InventoryRoot + 0x41D44 (trình quản lý vật phẩm), tham số = id
+	// vật phẩm trong bảng item (đúng giá trị nằm trong mảng ô túi). Gửi gói 0x4D gồm (room, x, y) của món và id server [item+0xA9C].
+	// Chính tính năng tự dùng thuốc của game gọi hàm này ở 0x7D364F (hàm 0x7D3160, được gọi với ecx = root+0x41D44 tại
+	// 0x76018D và 0x77274A). Dò từ dump Game.exe ngày 2026-09-26.
+	constexpr uintptr_t UseItemFunctionRva = 0x003D5550;
+	constexpr uintptr_t UseItemThisOffset = 0x00041D44;
+	constexpr int UseItemMaximumItemId = 0x001FFFFF;
+	constexpr uintptr_t QuickBuyPotionTableRva = 0x00A98FFC;
+	constexpr uintptr_t QuickBuyNetworkObjectRva = 0x00518718;
+	constexpr uintptr_t QuickBuyCurrencyTypeOffset = 0x0006B764;
+	constexpr uintptr_t QuickBuyPendingFlagOffset = 0x0004B79C;
 	constexpr uintptr_t PickupFunctionRva = 0x003AC300;
 	// Cập nhật 2026-09-06 sau khi client dời object popup Về thành. Nguồn: ModalVtableProbe chạy lúc popup chết đang mở
 	// (ModuleBase=0x00400000, Modal=0x008FED58), đối chiếu death.log ghi cùng giá trị ở cả 5 tiến trình lúc chết.

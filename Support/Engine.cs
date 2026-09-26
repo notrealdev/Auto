@@ -10,27 +10,14 @@ internal sealed class Engine {
 	private const int MaximumCastRejectionsBeforeRelease = 3;
 	// Dùng chung cho cả nhánh Chủ và nhánh Đệ: đọc nguồn HP hỏng bao nhiêu nhịp liên tiếp thì nhả quyền điều khiển.
 	private const int MaximumReadFailuresBeforeRelease = 3;
-	// Xác nhận KHÔNG có Đệ thì nghỉ hẳn quãng này rồi mới dò lại, thay vì quét lại bảng entity mỗi nhịp 100ms.
-	// PetHealthReader.Read quét index 2..511 tìm entity type 6 mang mã chủ; bật "Buff Đệ" mà tài khoản không nuôi Đệ
-	// thì toàn bộ số lượt đọc đó là vô ích, nhân với 6 tài khoản và 10 nhịp mỗi giây. Dải quét vừa nâng 256 -> 511
-	// (2026-09-11) nên chi phí này vừa gấp đôi. 5 giây đủ nhanh để Đệ vừa gọi ra được nhận trong vòng một nhịp buff.
-	private const int PetAbsentRecheckMilliseconds = 5000;
-	// Phải KHÔNG THẤY ĐỆ bấy nhiêu nhịp LIÊN TIẾP mới được khoá 5 giây ở trên.
-	//
-	// Vì sao cần (đo trên Release/Diagnostics/buff.log, phiên 10 tiếng 2026-09-15): có 450 lần Đệ "biến mất" rồi
-	// quay lại, và 416 lần trong số đó (92%) quay lại trong vòng ~5,2 giây — tức khớp đúng bằng chính khoá 5 giây
-	// này, không phải Đệ chết thật. Một nhịp đọc hụt bị khuếch đại thành 5 giây mù hoàn toàn về máu Đệ, cộng dồn
-	// khoảng 35 phút trong 10 tiếng. Đúng hiện tượng chủ dự án báo: máu đã dưới ngưỡng mà vẫn đánh quái, không buff.
-	//
-	// 3 nhịp ở nhịp gọi 100ms chỉ là 0,3 giây, nhưng vẫn giữ nguyên mục đích tiết kiệm CPU ban đầu: tài khoản không
-	// nuôi Đệ thì sau 3 nhịp là vào khoá, tức vẫn chỉ tốn 3 lượt quét cho mỗi 5 giây thay vì 50 lượt.
-	private const int MinimumPetAbsentReadsBeforeSkip = 3;
-	// Trần số lần cast cho MỘT đợt heal Đệ, và thời gian nghỉ sau khi chạm trần (chủ dự án chốt 2026-09-09).
-	// Đệ máu thấp mà cast mãi không lên (hết mana, ngoài tầm, Đệ đang bị khoá) thì khối heal giữ quyền điều khiển
-	// độc quyền, Đánh và Nhặt bị dừng theo. Chạm trần thì bỏ qua đợt này và 5 giây sau mới xét lại.
-	private const int MaximumPetHealCasts = 10;
-	private const int PetHealGiveUpCooldownMilliseconds = 5000;
-	// Cùng khuôn với trần của nhánh Đệ, thiếu ở nhánh Chủ nên bổ sung 2026-09-10.
+	// Không có Đệ thì dừng hẳn luồng Buff Đệ NGAY, không khoá, không chờ, không đếm nhịp (chủ dự án chốt 2026-09-25): Đệ mới sinh ra
+	// luôn đầy máu 100% nên không có gì để heal, và mọi trạng thái heal cũ (đếm cast, nghỉ, chuỗi bỏ cuộc) bị xoá theo con Đệ cũ.
+	// Đánh đổi đã biết: mỗi nhịp 100ms lại quét bảng entity tìm Đệ khi tài khoản không có Đệ (trước đây khoá 5 giây để tiết kiệm CPU).
+	// Nhánh Đệ KHÔNG có trần cast hay thời gian nghỉ (chủ dự án chốt 2026-09-26): Đệ còn tồn tại và dưới ngưỡng thì heal liên tục
+	// theo nhịp HealRepeatDelayMilliseconds tới khi đầy máu, giống AutoFS. Trần 4 cast + nghỉ 5->60 giây thêm ngày 2026-09-25 đã
+	// bị bỏ vì làm Buff Đệ gần như tắt: buff.log 2026-09-26 11:10-16:09 có 754 lần bỏ cuộc, tổng 11-40 phút mỗi account Đệ
+	// dưới ngưỡng mà không được heal.
+	// Trần cast của nhánh Chủ, bổ sung 2026-09-10.
 	// Bằng chứng từ Release/Diagnostics/buff.log: PID=34032 cast 395 lần liên tiếp 18:49:23 -> 18:53:00, HP đứng yên ở
 	// 277/518 (53%) dù ThresholdPercent=45. Lối thoát duy nhất của nhánh Chủ là currentHp >= maximumHp, mà HP không
 	// bao giờ đầy nên vòng lặp không kết thúc. Trong lúc đó back-to-training.log ghi 4 lần "Tự lên bãi AutoFS dừng |
@@ -44,11 +31,6 @@ internal sealed class Engine {
 	private bool ownerHealingActive;
 	private bool petHealingActive;
 	private bool petHealthUnavailableLogged;
-	private DateTime petAbsentRecheckUtc;
-	private int petAbsentStreak;
-	private int petHealCastCount;
-	private int petBestHp;
-	private DateTime petHealCooldownUntilUtc;
 	private int ownerHealCastCount;
 	// Máu cao nhất đạt được trong đợt heal hiện tại. Trần cast chỉ đếm những lần KHÔNG làm máu nhích lên.
 	private int ownerBestHp;
@@ -79,7 +61,10 @@ internal sealed class Engine {
 	//   PID=34032  18:49:23->18:53:10  HP đứng yên 277/518  395 lần cast vô ích
 	//   PID=16428  19:03:20->19:04:39  HP đứng yên 245/478  145 lần cast vô ích
 	// Đây cũng là đính chính: giả thuyết "hết mana" đưa ra trước đó là SAI.
-	public bool Tick(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool attackEnabled, bool skillsAllowedHere, Action<string> log) {
+	// petHealAllowed: nơi gọi báo có đang trong luồng di chuyển (tránh boss, sửa đồ, tự lên bãi, di chuyển bãi) hay không.
+	// Đang trong các luồng đó thì KHÔNG heal Đệ: heal Đệ giữ quyền điều khiển độc quyền nên coordinator sẽ huỷ luồng di chuyển
+	// và dừng Đánh, nhân vật đứng im.
+	public bool Tick(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool attackEnabled, bool skillsAllowedHere, bool petHealAllowed, Action<string> log) {
 		if (!attackEnabled || (!settings.HealOwner && !settings.HealPet)) {
 			Reset();
 			return false;
@@ -95,7 +80,7 @@ internal sealed class Engine {
 		}
 		skillsBlockedLogged = false;
 		try {
-			bool held = TickCore(processId, gameWindow, ownerSnapshot, log);
+			bool held = TickCore(processId, gameWindow, ownerSnapshot, petHealAllowed, log);
 			// Chỉ một nhịp chạy trót lọt mới xoá chuỗi ngoại lệ; đặt ở đầu try thì streak không bao giờ đếm lên được.
 			exceptionStreak = 0;
 			return held;
@@ -115,7 +100,7 @@ internal sealed class Engine {
 		}
 	}
 
-	private bool TickCore(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, Action<string> log) {
+	private bool TickCore(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool petHealAllowed, Action<string> log) {
 		{
 			if (!settings.HealOwner) {
 				ownerHealingActive = false;
@@ -124,7 +109,7 @@ internal sealed class Engine {
 				ownerHealCooldownUntilUtc = DateTime.MinValue;
 			}
 			// Đang nghỉ sau khi chạm trần cast: bỏ hẳn nhánh Chủ, phải xét TRƯỚC khi đọc HP không thì ngưỡng bên dưới
-			// bật lại ownerHealingActive ngay. Cùng cách xử lý với petHealCooldownUntilUtc.
+			// bật lại ownerHealingActive ngay.
 			if (settings.HealOwner && DateTime.UtcNow >= ownerHealCooldownUntilUtc) {
 				// Cùng khuôn lỗi với nhánh Đệ bên dưới: trước đây đọc HP hỏng thì trả thẳng ownerHealingActive, mà cờ đó
 				// không có đường reset trong nhánh này — kẹt true là khối heal giữ quyền độc quyền vĩnh viễn, coordinator
@@ -198,22 +183,12 @@ internal sealed class Engine {
 				}
 			}
 
-			if (!settings.HealPet) {
+			if (!settings.HealPet || !petHealAllowed) {
 				petHealingActive = false;
 				nextPetHealUtc = DateTime.MinValue;
 				petHealthUnavailableLogged = false;
-				petAbsentRecheckUtc = DateTime.MinValue;
-				petAbsentStreak = 0;
-				petHealCastCount = 0;
-				petHealCooldownUntilUtc = DateTime.MinValue;
 				return false;
 			}
-
-			// Đang trong thời gian nghỉ sau khi chạm trần cast: bỏ qua hẳn nhánh Đệ và nhả quyền điều khiển.
-			// Phải xét TRƯỚC khi đọc HP Đệ, không thì ngưỡng bên dưới bật lại petHealingActive ngay lập tức.
-			if (DateTime.UtcNow < petHealCooldownUntilUtc) return false;
-			// Đã xác nhận không có Đệ ở lượt trước: bỏ qua hẳn nhánh này cho tới hạn dò lại, không đọc bộ nhớ lần nào.
-			if (DateTime.UtcNow < petAbsentRecheckUtc) return false;
 
 			PetHealthReading pet = PetHealthReader.Read(processId);
 			if (!pet.Success || !pet.Present) {
@@ -227,10 +202,6 @@ internal sealed class Engine {
 					petHealingActive = false;
 					nextPetHealUtc = DateTime.MinValue;
 					petReadFailureStreak = 0;
-					// Một nhịp không thấy Đệ CHƯA phải kết luận: bảng entity có lúc hụt Đệ đúng một nhịp rồi có lại.
-					// Chỉ khoá sau khi nhiều nhịp liên tiếp đều không thấy, xem MinimumPetAbsentReadsBeforeSkip.
-					petAbsentStreak++;
-					if (petAbsentStreak >= MinimumPetAbsentReadsBeforeSkip) petAbsentRecheckUtc = DateTime.UtcNow.AddMilliseconds(PetAbsentRecheckMilliseconds);
 					return false;
 				}
 				// Đọc LỖI (PetHealthReader.Fail) thì có thể chỉ thoáng qua, giữ quyền thêm vài nhịp rồi nhả — cùng cách
@@ -246,8 +217,6 @@ internal sealed class Engine {
 				return false;
 			}
 			petReadFailureStreak = 0;
-			petAbsentStreak = 0;
-			petAbsentRecheckUtc = DateTime.MinValue;
 			if (petHealthUnavailableLogged) log($"BUFF_PET_HEALTH_SOURCE_RECOVERED | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | HealingActive={petHealingActive} | Detail={pet.Detail}");
 			petHealthUnavailableLogged = false;
 			if (pet.CurrentHp <= 0) {
@@ -258,21 +227,9 @@ internal sealed class Engine {
 			if (pet.CurrentHp >= pet.MaximumHp) {
 				petHealingActive = false;
 				nextPetHealUtc = DateTime.MinValue;
-				petHealCastCount = 0;
 				return false;
 			}
-			// Mỗi đợt heal mới đếm lại từ 0; trần 10 lần là của một đợt, không phải của cả phiên.
-			if (!petHealingActive && (long)pet.CurrentHp * 100 <= (long)pet.MaximumHp * settings.HealPetHpPercent) {
-				petHealingActive = true;
-				petHealCastCount = 0;
-				petBestHp = pet.CurrentHp;
-			}
-			// Cùng cách xử lý với nhánh Chủ: máu Đệ nhích lên là heal đang ăn, xoá bộ đếm để không bỏ cuộc giữa chừng.
-			// buff.log ngày 2026-09-10 có 176 dòng BUFF_PET_HEAL_GIVE_UP, phần lớn chưa chắc là kẹt thật.
-			if (petHealingActive && pet.CurrentHp > petBestHp) {
-				petBestHp = pet.CurrentHp;
-				petHealCastCount = 0;
-			}
+			if (!petHealingActive && (long)pet.CurrentHp * 100 <= (long)pet.MaximumHp * settings.HealPetHpPercent) petHealingActive = true;
 			if (!petHealingActive) return false;
 			if (DateTime.UtcNow < nextPetHealUtc) return true;
 
@@ -282,18 +239,7 @@ internal sealed class Engine {
 			}
 			lastCastRejectionLine = "";
 			castRejectionStreak = 0;
-			petHealCastCount++;
-			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Cast={petHealCastCount}/{MaximumPetHealCasts} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
-			// Chạm trần: lần cast thứ 10 vẫn được gửi, sau đó mới bỏ đợt này và nghỉ. Nhả quyền điều khiển ngay để
-			// Đánh và Nhặt chạy tiếp trong lúc nghỉ.
-			if (petHealCastCount >= MaximumPetHealCasts) {
-				petHealingActive = false;
-				petHealCastCount = 0;
-				nextPetHealUtc = DateTime.MinValue;
-				petHealCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(PetHealGiveUpCooldownMilliseconds);
-				log($"BUFF_PET_HEAL_GIVE_UP | Casts={MaximumPetHealCasts} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | CooldownMs={PetHealGiveUpCooldownMilliseconds} | Action=Bỏ qua đợt heal Đệ này và nhả quyền điều khiển");
-				return false;
-			}
+			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
 			return true;
 		}
 	}
@@ -333,11 +279,8 @@ internal sealed class Engine {
 		nextPetHealUtc = DateTime.MinValue;
 		petHealthUnavailableLogged = false;
 		petReadFailureStreak = 0;
-		petAbsentStreak = 0;
 		ownerReadFailureStreak = 0;
 		exceptionStreak = 0;
-		petHealCastCount = 0;
-		petHealCooldownUntilUtc = DateTime.MinValue;
 		ownerHealCastCount = 0;
 		ownerHealCooldownUntilUtc = DateTime.MinValue;
 	}

@@ -13,6 +13,9 @@ public sealed class BasicViewModel : ViewModelBase {
 	// Khớp giới hạn 1..100 của AutoFS cho số bình mua nhanh và QuickBuyMaximumQuantity bên native.
 	private const int MinQuickBuyQuantity = 1;
 	private const int MaxQuickBuyQuantity = 100;
+	// Ngưỡng hồi phục tính theo điểm HP/MP.
+	private const int MinRecoverThreshold = 1;
+	private const int MaxRecoverThreshold = 1000000;
 
 	private readonly BasicSettings settings;
 
@@ -20,6 +23,44 @@ public sealed class BasicViewModel : ViewModelBase {
 
 	public BasicViewModel(BasicSettings settings) {
 		this.settings = settings;
+	}
+
+	public bool EnableRecoverHp {
+		get => settings.EnableRecoverHp;
+		set {
+			if (settings.EnableRecoverHp == value) return;
+			settings.EnableRecoverHp = value;
+			OnPropertyChanged();
+		}
+	}
+
+	public int RecoverHpThreshold {
+		get => settings.RecoverHpThreshold;
+		set {
+			int clamped = Math.Clamp(value, MinRecoverThreshold, MaxRecoverThreshold);
+			if (settings.RecoverHpThreshold == clamped) return;
+			settings.RecoverHpThreshold = clamped;
+			OnPropertyChanged();
+		}
+	}
+
+	public bool EnableRecoverMp {
+		get => settings.EnableRecoverMp;
+		set {
+			if (settings.EnableRecoverMp == value) return;
+			settings.EnableRecoverMp = value;
+			OnPropertyChanged();
+		}
+	}
+
+	public int RecoverMpThreshold {
+		get => settings.RecoverMpThreshold;
+		set {
+			int clamped = Math.Clamp(value, MinRecoverThreshold, MaxRecoverThreshold);
+			if (settings.RecoverMpThreshold == clamped) return;
+			settings.RecoverMpThreshold = clamped;
+			OnPropertyChanged();
+		}
 	}
 
 	public bool EnableQuickBuyHp {

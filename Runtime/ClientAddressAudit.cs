@@ -50,7 +50,9 @@ public static class ClientAddressAudit {
 		("LOGIN_NOTICE_DIALOG", "LoginNoticeDialogRva"),
 		("LOGIN_SERVER_DIALOG", "LoginServerDialogRva"),
 		("LOGIN_SUBMIT_FUNCTIONS", "LoginSubmitFunctionRva+LoginAfterSubmitFunctionA/B/C+LoginSubmitContextRva"),
-		("QUICK_BUY_FUNCTION", "QuickBuyFunctionRva")
+		("QUICK_BUY_FUNCTION", "QuickBuyFunctionRva"),
+		("QUICK_BUY_LOOKUP_FUNCTION", "QuickBuyLookupFunctionRva"),
+		("USE_ITEM_FUNCTION", "UseItemFunctionRva")
 	];
 
 	// Hằng số thật sự không còn nơi nào tham chiếu. Trước 2026-09-08 danh sách này còn chứa 5 hằng số ĐANG được dùng

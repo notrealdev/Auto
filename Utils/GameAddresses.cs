@@ -120,6 +120,10 @@ public static class GameAddresses {
 	}
 
 	public static class Inventory {
+		// Bộ đếm số bình đã mua nhanh trong ngày (u16) tại InventoryRoot + offset này. Hàm mua của client (RVA 0x346010) so nó
+		// với giới hạn 1000 (VA 0xE99004) và thoát không mua khi counter >= giới hạn; đọc từ disassembly 2026-09-25, và đo trên
+		// 6 client cùng lúc đó thấy 34..413 (đều dưới 1000). Trùng ô nhớ [F4+205692] < 1000 của AutoFS.
+		public const int QuickBuyDailyCount = 0x39CCC;
 		// Gốc MẢNG container, không phải một đối tượng đơn lẻ.
 		//
 		// Dịch ngược hàm điều phối của client tại RVA 0x3714D0 (PID 22056, 2026-09-09): container là mảng phần
@@ -137,6 +141,10 @@ public static class GameAddresses {
 		public const int Object = 0x4B7BC;
 		public const int SaleSlotListPointer = 0x0000;
 		public const int SaleSlotCount = 35;
+		// Túi chính trong gói mạng: room 0x21, lưới 5 cột, ô thứ c <-> (x = c % 5, y = c / 5). Đối chiếu 22/22 món trong túi
+		// PID 21740 (2026-09-26) giữa mảng ô ở trên và toạ độ (+0xD0 room, +0xD4 x, +0xD8 y) trong danh sách vật phẩm của client.
+		public const int MainBagRoom = 0x21;
+		public const int MainBagColumns = 5;
 		// Sửa 0x0140 -> 0x0230 ngày 2026-09-07. Bằng chứng: tool Debug "Probe dò container túi"
 		// (BuildStamp INVENTORY-CONTAINER-20260907-01, PID 21184) cho thấy +0x0140 trỏ tới mảng Ids=[0,0,0,0]
 		// trong khi +0x0230 ra đúng 4 ô: "Thanh Lộ" x1, "Trung Hồng đơn" x2, "Tiểu Hoàn đơn" x6,
