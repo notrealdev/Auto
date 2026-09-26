@@ -176,6 +176,14 @@ public static class GameAddresses {
 		// (SALE_COMPLETE Sold=12) ô này 1.351.038 -> 1.356.312 (+5.274), rồi sửa đồ ngay sau đó 1.356.312 -> 1.355.782 (-530).
 		// Chủ dự án đối chiếu số hiển thị trong game với 6 account và xác nhận chính xác (đổi ra vạn = chia 10.000).
 		public const int Money = 0x05F0;
+		// The strength maximum and money Auto reads (InventoryStrengthReader / InventoryMoneyReader), offsets from the
+		// Globals.InventoryRoot POINTER (not Inventory.Object). They replace StrengthRoot+0x278/+0x5F0, which stay 0 after a
+		// fresh login until the bag/shop UI opens (2026-09-26 logs: 5 accounts read UNAVAILABLE for 20-40 minutes, MaiAnhNhe
+		// looted to 33/35 slots meanwhile) and then freeze until it opens again. On XinLỗiEm right after relogin
+		// (StrengthRoot = 0) these read 343 and 333.484, confirmed in game (221/343, 33v3484); on 3 more freshly logged
+		// accounts the owner confirmed money and strength exact (2026-09-27).
+		public const int LoginMaximumStrength = 0x5DE54;
+		public const int LoginMoney = 0x4B7C0;
 		public const int ReceiptDecrement = 0x0FE2C;
 		public const int ReceiptFirstIncrement = 0x0FE38;
 		public const int ReceiptSecondIncrement = 0x0FE7C;

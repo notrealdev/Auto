@@ -7,26 +7,41 @@ namespace Auto.Utils;
 // chết hẳn — chỉ còn nhánh "số ô > ngưỡng" chạy được, và log REPAIR_SALE_TRIGGER luôn ghi
 // RemainingStrength=UNAVAILABLE. Bản DEV cũng là stub y hệt nên đây không phải thụt lùi, mà là chưa từng làm.
 //
-// Đường đọc và bằng chứng dò ra: xem GameAddresses.Globals.StrengthRoot.
+// Đường đọc và bằng chứng dò ra: xem GameAddresses.Inventory.LoginMaximumStrength.
 public static class InventoryStrengthReader {
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	private const int MaximumTypeLength = 16;
 
-	// Số Auto dùng để QUYẾT ĐỊNH (đi bán, dừng nhặt): đã bù phần game cập nhật trễ, xem chú thích ở nhánh compensate.
-	public static InventoryStrengthReading Read(int processId) => Read(processId, compensate: true);
+	// The number Auto shows and DECIDES on (sale, stop looting): maximum from Inventory.LoginMaximumStrength, current =
+	// carried weight. Globals.StrengthRoot is no longer used here (owner decision 2026-09-27): it stays 0 after login until
+	// the bag/shop UI opens, and once set it is a snapshot that stays frozen until the UI opens again (2026-09-27: on 3
+	// accounts still training, StrengthRoot read 115/335, 93/515, 221/343 for hours while carried weight rose to 213, 104,
+	// 277). The login-time path matched the in-game bag exactly on 3 freshly logged accounts (owner confirmed 2026-09-27).
+	public static InventoryStrengthReading Read(int processId) {
+		try {
+			using MemoryReader reader = new(processId);
+			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
+			if (moduleBase == IntPtr.Zero) return InventoryStrengthReading.Fail("Game.exe không tồn tại.");
+			IntPtr inventoryRoot = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Globals.InventoryRoot));
+			if (inventoryRoot == IntPtr.Zero) return InventoryStrengthReading.Fail("Con trỏ túi đồ bằng 0 (chưa vào game?).");
+			int maximum = reader.ReadInt32(IntPtr.Add(inventoryRoot, GameAddresses.Inventory.LoginMaximumStrength));
+			if (maximum <= 0) return InventoryStrengthReading.Fail($"Sức lực tối đa không hợp lệ: {maximum}.");
+			if (! TryReadCarriedWeight(reader, moduleBase, out long carriedWeight)) return InventoryStrengthReading.Fail("Không đọc được trọng lượng túi đồ.");
+			return new InventoryStrengthReading(true, (int)carriedWeight, maximum, inventoryRoot, IntPtr.Zero, 0, 0, 0, 0, 0, 0, 0, "");
+		} catch (Exception ex) {
+			return InventoryStrengthReading.Fail($"{ex.GetType().Name}: {ex.Message}");
+		}
+	}
 
-	// Số GỐC trong ô nhớ của game, không bù. Chỉ còn probe dùng để đối chiếu; ô này TRỄ so với số túi đồ game hiển
-	// thị (chủ dự án quan sát 2026-09-25) nên dòng account đã chuyển sang Read.
-	public static InventoryStrengthReading ReadRaw(int processId) => Read(processId, compensate: false);
-
-	private static InventoryStrengthReading Read(int processId, bool compensate) {
+	// Số GỐC trong ô nhớ StrengthRoot, không bù. Chỉ còn probe dùng để đối chiếu.
+	public static InventoryStrengthReading ReadRaw(int processId) {
 		try {
 			using MemoryReader reader = new(processId);
 			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
 			if (moduleBase == IntPtr.Zero) return InventoryStrengthReading.Fail("Game.exe không tồn tại.");
 			IntPtr root = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Globals.StrengthRoot));
-			// Con trỏ bằng 0 là chuyện BÌNH THƯỜNG lúc chưa vào game hẳn (client chỉ gán khi cần), không phải RVA sai.
-			if (root == IntPtr.Zero) return InventoryStrengthReading.Fail("Con trỏ sức lực bằng 0 (chưa vào game?).");
+			// Con trỏ bằng 0 cho tới khi mở túi đồ / cửa hàng lần đầu sau login.
+			if (root == IntPtr.Zero) return InventoryStrengthReading.Fail("Con trỏ sức lực bằng 0 (chưa mở túi đồ?).");
 			int current = reader.ReadInt32(IntPtr.Add(root, GameAddresses.Inventory.CurrentStrength));
 			int maximum = reader.ReadInt32(IntPtr.Add(root, GameAddresses.Inventory.MaximumStrength));
 			// current > maximum KHÔNG phải cặp đọc hỏng — đó chính là trạng thái quá tải thật của game (chủ dự án
@@ -38,16 +53,6 @@ public static class InventoryStrengthReader {
 			// Ô StrengthRoot+0x27C KHÔNG cập nhật theo từng lần nhặt — game dồn lại rồi cộng một cục sau đó vài giây
 			// tới gần 2 phút. Đo trên repair.log PID=22612 ngày 2026-09-24: Free giữ nguyên 57 qua 7 lần nhặt liên tiếp
 			// rồi tụt thẳng xuống -15; giữ nguyên 186 qua 8 lần nhặt rồi tụt xuống 88.
-			//
-			// Dùng số LỚN HƠN giữa ô game và tổng Số lượng × Item.Weight của 3 container (đổi NGAY khi nhặt).
-			// Cách bù cũ (mốc lúc ô game đổi + phần túi nặng thêm sau mốc) bị hụt: ô game hay chỉ cập nhật MỘT PHẦN, lấy
-			// mốc ngay lúc đó là mất luôn phần còn treo. Đo 2026-09-25 00:37 trên 6 client, ô game / tổng túi: 227/268,
-			// 171/242, 109/128, 74/89 (tổng túi tăng 86->89 trong khi ô game đứng yên), 120/119; client đứng im không nhặt
-			// (PID=22612) thì khớp đúng 290/290. Cũng PID=22612 lúc 00:28:55 cách cũ tính 264/277 trong khi nhân vật đã
-			// không đi nổi ô nào (repair.log: gửi lại tuyến 10 lần, HiệnTại=62815/89809 không đổi).
-			if (compensate && TryReadCarriedWeight(reader, moduleBase, out long carriedWeight)) {
-				current = (int)Math.Max(current, carriedWeight);
-			}
 			return new InventoryStrengthReading(true, current, maximum, root, IntPtr.Zero, 0, 0, 0, 0, 0, 0, 0, "");
 		} catch (Exception ex) {
 			return InventoryStrengthReading.Fail($"{ex.GetType().Name}: {ex.Message}");
@@ -55,7 +60,6 @@ public static class InventoryStrengthReader {
 	}
 
 	// Cùng đường đọc với DebugTools/InventoryInfoProbe (Item.Weight đã đối chiếu game, chủ dự án xác nhận 2026-09-24).
-	// Hỏng thì trả false để nơi gọi dùng nguyên số của game, không làm hỏng cả phép đọc sức lực.
 	private static bool TryReadCarriedWeight(MemoryReader reader, IntPtr moduleBase, out long weight) {
 		weight = 0;
 		try {
