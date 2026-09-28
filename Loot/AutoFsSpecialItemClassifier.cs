@@ -79,8 +79,9 @@ public static class AutoFsSpecialItemClassifier {
 
 	// Nhóm "Vũ khí xanh". Chủ dự án cung cấp 2026-09-12: rìu (phủ) từ level 40 tới 100.
 	//
-	// Nhóm này KHÁC mọi nhóm còn lại ở chỗ nó CHỈ THÊM, không bao giờ bớt: nó nhận thêm bản XANH LỤC
-	// (QualityCodeA & 0xFF == 2) của các tên dưới đây, còn màu khác vẫn theo nguyên ô tick màu. Các ô Đồ Lục/Vàng/Cam
+	// Nhóm này KHÁC mọi nhóm còn lại ở chỗ nó CHỈ THÊM, không bao giờ bớt: nó nhận thêm bản XANH DƯƠNG
+	// (QualityCodeA & 0xFF == 1; sửa 2026-09-27, trước ghi nhầm xanh lục == 2 mà vũ khí không có màu lục) của các tên
+	// dưới đây, còn màu khác vẫn theo nguyên ô tick màu. Các ô Đồ Lục/Vàng/Cam
 	// giữ quyền ưu tiên số 1 (chủ dự án chốt 2026-09-12). Điều kiện màu nằm ở Finder.ShouldPick chứ không ở đây,
 	// vì lớp này chỉ nhìn thấy tên.
 	//

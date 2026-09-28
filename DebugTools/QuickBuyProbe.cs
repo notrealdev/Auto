@@ -15,7 +15,7 @@ using Auto.Utils;
 public static class QuickBuyProbe {
 	public const string BuildStamp = "QUICK-BUY-20260926-01";
 	// Phải khớp NativeBuildStamp trong SystemUint.cpp. Lệch nghĩa là tiến trình game còn giữ DLL cũ, chưa có lệnh 328.
-	private const ulong ExpectedNativeBuildStamp = 99990013;
+	private const ulong ExpectedNativeBuildStamp = 99990014;
 	private const int PollIntervalMilliseconds = 400;
 	private const int PollTimeoutMilliseconds = 6000;
 

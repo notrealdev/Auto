@@ -33,6 +33,12 @@ public static class GameAddresses {
 		public const int ModalState = 0x4EEF88;
 		public const int DialogPointer = 0x500BE0;
 		public const int ShopState = 0x4EF6D8;
+		// Client shop catalog (BuySell object, VA 0xE99014): +0 pointer to rows (one int* per shop id), +4 item records
+		// (stride Item.InventoryRecordStride, name at Item.InventoryName, weight at Item.Weight), +8 max positions per row,
+		// +0xC row count, +0x10 record count. Read on PhâyKer 2026-09-27: 61 rows, 46 positions, 1026 records; shop 14
+		// (Đại Phu map 32) = Tiểu Hồng đơn, Tiểu Hoàn đơn, Trung Hồng đơn, Trung Hoàn đơn. Id of the open shop:
+		// Inventory.OpenShopId.
+		public const int ShopCatalog = 0xA99014;
 		// Bản client 2026-09-06 dời object popup Về thành +0x2020 (cũ 0x4FCD38). Đo từ runtime: death.log ghi
 		// Modal=0x008FED58 với ModuleBase=0x00400000 ở cả 5 tiến trình lúc chết, xác nhận lại bằng ModalVtableProbe
 		// (MODAL_VTABLE_OBJECT | InModule=True | ObjectRva=0x4FED58).
@@ -183,6 +189,9 @@ public static class GameAddresses {
 		// (StrengthRoot = 0) these read 343 and 333.484, confirmed in game (221/343, 33v3484); on 3 more freshly logged
 		// accounts the owner confirmed money and strength exact (2026-09-27).
 		public const int LoginMaximumStrength = 0x5DE54;
+		// Id of the last opened NPC shop, from the Globals.InventoryRoot pointer; -1 until a shop was opened this session.
+		// The buy case of the operation dispatcher (VA 0x6C0C44) reads it to resolve a shop position.
+		public const int OpenShopId = 0x4C600;
 		public const int LoginMoney = 0x4B7C0;
 		public const int ReceiptDecrement = 0x0FE2C;
 		public const int ReceiptFirstIncrement = 0x0FE38;

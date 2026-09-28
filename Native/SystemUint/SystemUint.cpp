@@ -51,6 +51,8 @@ namespace {
 	constexpr WPARAM QuickBuyRawCommand = 328;
 	// Lệnh 329: dùng một vật phẩm theo id bảng item (uống thuốc hồi phục).
 	constexpr WPARAM UseItemByIdCommand = 329;
+	// Buy from the open NPC shop: lParam = shop position | count << 8. See GameClientAddresses::ShopBuyFunctionRva.
+	constexpr WPARAM ShopBuyCommand = 330;
 	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
 	constexpr WPARAM LoginNoticeCommand = 280;
 	constexpr WPARAM LoginVersionCommand = 281;
@@ -116,8 +118,8 @@ namespace {
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990013;
-	constexpr int AuditEntryCount = 34;
+	constexpr int NativeBuildStamp = 99990014;
+	constexpr int AuditEntryCount = 35;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
 
@@ -156,6 +158,7 @@ namespace {
 	using UseItemFunction = void(__thiscall*)(void*, int);
 	using QuickBuyLookupFunction = int(__thiscall*)(void*, int, int, int, int*);
 	using QuickBuySendFunction = void(__thiscall*)(void*, void*, void*, void*);
+	using ShopBuyFunction = void(__cdecl*)(int, int);
 	using PickupFunction = void(__cdecl*)(int, int);
 	using ReturnToTownFunction = void(__thiscall*)(void*, int);
 	using ListSetSelectionFunction = int(__thiscall*)(void*, int);
@@ -189,6 +192,10 @@ namespace {
 	constexpr uint8_t UseItemFunctionSignature[] = {
 		0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14, 0xA1, 0x00, 0xD0, 0x8D, 0x00, 0x33, 0xC5, 0x89, 0x45, 0xFC,
 		0x56, 0x57, 0x8B, 0x7D, 0x08, 0x8B, 0xF1, 0x57
+	};
+	// First 20 bytes of the shop buy function (RVA 0x3ABF90): prologue, load InventoryRoot, test the item lock flag.
+	constexpr uint8_t ShopBuyFunctionSignature[] = {
+		0x55, 0x8B, 0xEC, 0x8B, 0x0D, 0x24, 0xFE, 0xE7, 0x00, 0x83, 0xEC, 0x08, 0x83, 0xB9, 0x9C, 0xB7, 0x04, 0x00, 0x00, 0x75
 	};
 	// Đầu hàm tra bảng thuốc (RVA 0x355D20): prologue, nạp tham số cuối, test null.
 	constexpr uint8_t QuickBuyLookupFunctionSignature[] = {
@@ -855,6 +862,38 @@ namespace {
 		return 1;
 	}
 
+	// Buy count units of the item at a position of the open NPC shop (see ShopBuyFunctionRva). The client function itself
+	// returns without sending while the item lock flag is set, so this reports that case separately.
+	// Returns 1 sent, 50 bad position/count, 51 unknown image, 52 not executable, 53 signature mismatch,
+	// 54 InventoryRoot null, 55 item lock flag set (previous item packet not answered yet).
+	int TryDispatchShopBuy(uint32_t packed) {
+		int position = static_cast<int>(packed & 0xFF);
+		int count = static_cast<int>((packed >> 8) & 0xFF);
+		if (count < 1 || count > GameClientAddresses::ShopBuyMaximumCount) {
+			return 50;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 51;
+		}
+		auto buy = reinterpret_cast<ShopBuyFunction>(gameBase + GameClientAddresses::ShopBuyFunctionRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(buy))) {
+			return 52;
+		}
+		if (memcmp(reinterpret_cast<void*>(buy), ShopBuyFunctionSignature, sizeof(ShopBuyFunctionSignature)) != 0) {
+			return 53;
+		}
+		auto inventoryRoot = *reinterpret_cast<uint8_t**>(gameBase + GameClientAddresses::InventoryRootRva);
+		if (inventoryRoot == nullptr) {
+			return 54;
+		}
+		if (*reinterpret_cast<int*>(inventoryRoot + GameClientAddresses::QuickBuyPendingFlagOffset) != 0) {
+			return 55;
+		}
+		buy(position, count);
+		return 1;
+	}
+
 	// Chuyển lựa chọn xử lý khi chết của AutoFS vào cùng handler popup của game.
 	bool TryDispatchReturnToTown(int option) {
 		if (option < 0 || option > 2) {
@@ -1262,6 +1301,7 @@ namespace {
 			case 31: return AuditCodeSignature(gameBase, GameClientAddresses::QuickBuyFunctionRva, 0, QuickBuyFunctionSignature, sizeof(QuickBuyFunctionSignature));
 			case 32: return AuditCodeSignature(gameBase, GameClientAddresses::QuickBuyLookupFunctionRva, 0, QuickBuyLookupFunctionSignature, sizeof(QuickBuyLookupFunctionSignature));
 			case 33: return AuditCodeSignature(gameBase, GameClientAddresses::UseItemFunctionRva, 0, UseItemFunctionSignature, sizeof(UseItemFunctionSignature));
+			case 34: return AuditCodeSignature(gameBase, GameClientAddresses::ShopBuyFunctionRva, 0, ShopBuyFunctionSignature, sizeof(ShopBuyFunctionSignature));
 			default: return 0;
 		}
 	}
@@ -1847,6 +1887,9 @@ namespace {
 			}
 			if (wParam == QuickBuyRawCommand) {
 				return TryDispatchQuickBuyRaw(static_cast<uint32_t>(lParam));
+			}
+			if (wParam == ShopBuyCommand) {
+				return TryDispatchShopBuy(static_cast<uint32_t>(lParam));
 			}
 			if (wParam == UseItemByIdCommand) {
 				return TryDispatchUseItemById(static_cast<int>(lParam));

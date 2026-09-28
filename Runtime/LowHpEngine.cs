@@ -11,6 +11,7 @@ internal sealed class LowHpEngine {
 	// Về tới thành thì đợi đúng khoảng này rồi cho lên bãi, KHÔNG chờ thuốc hay HP (chủ dự án chốt 2026-09-26: 1000 bình mua nhanh/ngày
 	// dùng rất lâu mới hết, không có thuốc trong túi cũng không sao vì lên bãi là mua nhanh được; trong thành thì không mua được).
 	private const int ReturnToTrainingDelayMilliseconds = 2000;
+	private const int RearmDelayMilliseconds = 5000;
 	private const int HoldReminderIntervalMilliseconds = 60000;
 	private const string ReturnTalismanNameFragment = "Hồi thành phù";
 	private readonly BasicSettings settings;
@@ -22,6 +23,7 @@ internal sealed class LowHpEngine {
 	private int dispatchAttempts;
 	private DateTime arrivedInTownUtc;
 	private DateTime nextHoldReminderUtc;
+	private DateTime trainingSinceUtc;
 	private bool returnToTrainingRequested;
 	private string lastFailure = "";
 
@@ -48,36 +50,25 @@ internal sealed class LowHpEngine {
 		int hpPercent = Math.Clamp(snapshot.Hp * 100 / snapshot.MaxHp, 0, 100);
 		bool belowThreshold = snapshot.Hp * 100 <= settings.LowHpReturnTalismanThreshold * snapshot.MaxHp;
 		DateTime now = DateTime.UtcNow;
-		if (state == TalismanState.Stopped) {
-			// Chỉ thoát trạng thái dừng khi HP đã đầy trở lại, tránh bắn bùa tiếp trong lúc không hồi được máu.
-			if (snapshot.Hp >= snapshot.MaxHp) {
-				log?.Invoke($"LOW_HP_STOP_CLEARED | Hp={snapshot.Hp}/{snapshot.MaxHp} | CurrentMapId={mapId}");
-				Reset();
-				return false;
-			}
-			// Nhắc lại định kỳ để log không im hoàn toàn khi tài khoản đang bị giữ đứng im.
-			if (now >= nextHoldReminderUtc) {
-				nextHoldReminderUtc = now.AddMilliseconds(HoldReminderIntervalMilliseconds);
-				log?.Invoke($"LOW_HP_STOPPED_HOLDING | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | CurrentMapId={mapId} | TownMapId={townMapId} | Reason=Đang giữ đứng im, chỉ thoát khi HP đầy");
-			}
-			return true;
-		}
 		if (state == TalismanState.ArmingAfterReturn) {
 			// Về thành là TẮT Hồi thành phù ngay, chỉ bật lại khi nhân vật đã lên lại bãi và đang train (chủ dự án chốt 2026-09-26).
 			// Thay cho cơ chế cũ "chờ HP vượt ngưỡng một lần": giờ nhân vật lên bãi ngay khi HP còn thấp, nên chờ HP sẽ khoá
 			// bùa suốt thời gian HP dưới ngưỡng ngay tại bãi. Kiểm thêm map khác thành vì isTraining có thể đúng ở thành khi
 			// cấu hình bãi không đủ để xác định vùng bãi.
 			if (! isTraining || (townMapId > 0 && mapId == townMapId)) {
+				trainingSinceUtc = DateTime.MinValue;
 				if (now >= nextHoldReminderUtc) {
 					nextHoldReminderUtc = now.AddMilliseconds(HoldReminderIntervalMilliseconds);
 					log?.Invoke($"LOW_HP_DISABLED_UNTIL_TRAINING | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | CurrentMapId={mapId} | TownMapId={townMapId} | Reason=Hồi thành phù tắt cho tới khi nhân vật lên lại bãi và đang train");
 				}
 				return false;
 			}
-			log?.Invoke($"LOW_HP_REARMED | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | Threshold={settings.LowHpReturnTalismanThreshold} | CurrentMapId={mapId} | Reason=Đã lên lại bãi và đang train");
-			int rememberedTownMapId = townMapId;
-			Reset();
-			townMapId = rememberedTownMapId;
+			// Stay disabled for RearmDelayMilliseconds of continuous training (owner 2026-09-27: 5 s) so quick-buy and recovery
+			// can refill HP first. Without it PhâyKer re-armed at 78/537 and cast the talisman 0.1 s later, straight back to town.
+			if (trainingSinceUtc == DateTime.MinValue) trainingSinceUtc = now;
+			if ((now - trainingSinceUtc).TotalMilliseconds < RearmDelayMilliseconds) return false;
+			log?.Invoke($"LOW_HP_REARMED | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | Threshold={settings.LowHpReturnTalismanThreshold} | CurrentMapId={mapId} | DelayMs={RearmDelayMilliseconds} | Reason=Đã lên lại bãi và đang train");
+			ResetKeepingTown();
 			return false;
 		}
 		if (state == TalismanState.WaitingInTown) return TickWaitingInTown(snapshot, mapId, now, log);
@@ -91,14 +82,19 @@ internal sealed class LowHpEngine {
 			}
 			if (! belowThreshold) {
 				log?.Invoke($"LOW_HP_ABORTED_HP_RECOVERED | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | Threshold={settings.LowHpReturnTalismanThreshold} | SourceMapId={sourceMapId} | CurrentMapId={mapId} | Attempts={dispatchAttempts} | Reason=HP vượt ngưỡng trước khi map đổi");
-				Reset();
+				// Keep townMapId: a plain Reset() here erased it and let the talisman fire inside town
+				// (PhâyKer 2026-09-27 08:14:19: 5 casts in map 20, then stuck).
+				ResetKeepingTown();
 				return false;
 			}
 			if (now < nextDispatchUtc) return true;
 			if (dispatchAttempts >= MaximumDispatchAttempts) {
-				log?.Invoke($"LOW_HP_GIVE_UP | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | SourceMapId={sourceMapId} | CurrentMapId={mapId} | Attempts={dispatchAttempts} | Action=STOP_AND_HOLD");
-				state = TalismanState.Stopped;
-				return true;
+				// No more "stand still until HP is full" (owner 2026-09-27): in town HP never regenerates and potions cannot be
+				// bought, so PhâyKer stood at 78/537 for ~2 hours. Hand over to return-to-training instead, same as a normal
+				// town arrival; the talisman stays disabled until the character is training again.
+				log?.Invoke($"LOW_HP_GIVE_UP | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | SourceMapId={sourceMapId} | CurrentMapId={mapId} | Attempts={dispatchAttempts} | Action=REQUEST_RETURN_TO_TRAINING");
+				RequestReturnToTraining();
+				return false;
 			}
 			log?.Invoke($"LOW_HP_MAP_CHANGE_TIMEOUT | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | SourceMapId={sourceMapId} | CurrentMapId={mapId} | WaitMilliseconds={DispatchRetryMilliseconds} | Attempts={dispatchAttempts}/{MaximumDispatchAttempts} | Action=RETRY_COMMAND_SEQUENCE");
 		}
@@ -150,11 +146,15 @@ internal sealed class LowHpEngine {
 	}
 
 	private void RequestReturnToTraining() {
+		ResetKeepingTown();
+		state = TalismanState.ArmingAfterReturn;
+		returnToTrainingRequested = true;
+	}
+
+	private void ResetKeepingTown() {
 		int rememberedTownMapId = townMapId;
 		Reset();
 		townMapId = rememberedTownMapId;
-		state = TalismanState.ArmingAfterReturn;
-		returnToTrainingRequested = true;
 	}
 
 	public void Reset() {
@@ -165,6 +165,7 @@ internal sealed class LowHpEngine {
 		dispatchAttempts = 0;
 		arrivedInTownUtc = DateTime.MinValue;
 		nextHoldReminderUtc = DateTime.MinValue;
+		trainingSinceUtc = DateTime.MinValue;
 		returnToTrainingRequested = false;
 		lastFailure = "";
 	}
@@ -173,8 +174,7 @@ internal sealed class LowHpEngine {
 		Idle,
 		WaitingMapChange,
 		WaitingInTown,
-		ArmingAfterReturn,
-		Stopped
+		ArmingAfterReturn
 	}
 
 	private readonly record struct TalismanCandidate(int Slot, int Container, int ItemId, string Name);

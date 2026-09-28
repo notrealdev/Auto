@@ -4,7 +4,7 @@ using Auto.Attack;
 using Auto.Runtime;
 using Auto.Utils;
 
-internal sealed record PetHealthReading(bool Success, bool Present, int EntityIndex, int CurrentHp, int MaximumHp, string Detail) {
+internal sealed record PetHealthReading(bool Success, bool Present, int EntityIndex, int CurrentHp, int MaximumHp, string Detail, int RawX = 0, int RawY = 0) {
 	public static PetHealthReading Missing(string detail = "") => new(true, false, 0, 0, 0, detail);
 	public static PetHealthReading Fail(string detail = "") => new(false, false, 0, 0, 0, detail);
 }
@@ -146,6 +146,10 @@ internal static class PetHealthReader {
 		}
 		if (currentHp <= 0 || maximumHp <= 0 || currentHp > maximumHp) return PetHealthReading.Missing();
 		if (reader.ReadInt32(IntPtr.Add(entity, PetOwnerCharacterId)) != ownerId) return new PetHealthReading(true, false, ForeignPetMarker, 0, 0, "");
-		return new PetHealthReading(true, true, index, currentHp, maximumHp, $"EntityType={PetEntityType}; EntityIndex={index}; OwnerId={ownerId}; Source=OWNER_ID_MATCH.");
+		// Pet position, for walking closer when heals do not land. Same entity offsets as monsters; read on 6 clients
+		// 2026-09-27 each pet sat 92-855 raw units from its owner.
+		int rawX = reader.ReadInt32(IntPtr.Add(entity, layout.RawXOffset));
+		int rawY = reader.ReadInt32(IntPtr.Add(entity, layout.RawYOffset));
+		return new PetHealthReading(true, true, index, currentHp, maximumHp, $"EntityType={PetEntityType}; EntityIndex={index}; OwnerId={ownerId}; Source=OWNER_ID_MATCH.", rawX, rawY);
 	}
 }

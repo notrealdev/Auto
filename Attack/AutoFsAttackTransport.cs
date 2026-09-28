@@ -32,6 +32,9 @@ internal sealed class AutoFsAttackTransport {
 	private const int QuickBuyCommand = 327;
 	private const int QuickBuyRawCommand = 328;
 	private const int UseItemByIdCommand = 329;
+	// Must match SystemUint.cpp (ShopBuyCommand, ShopBuyMaximumCount).
+	private const int ShopBuyCommand = 330;
+	private const int MaximumShopBuyCount = 100;
 	private const int MaximumUseItemId = 0x001FFFFF;
 	private const int MaximumQuickBuyQuantity = 100;
 	private const uint SendMessageTimeoutMilliseconds = 500;
@@ -196,6 +199,26 @@ internal sealed class AutoFsAttackTransport {
 		}
 		string currentError = "";
 		bool sent = actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, UseItemByIdCommand, itemId, out currentError));
+		error = currentError;
+		return sent;
+	}
+
+	// Buy count units of the item at shopPosition in the NPC shop that is open on screen (native command 330).
+	// bypassMasterSwitch is for the Debug probe only, same as the other debug sends.
+	public bool TryBuyFromShop(IntPtr gameWindow, int shopPosition, int count, bool bypassMasterSwitch, out string error) {
+		if (! bypassMasterSwitch && ! actionGate.AutomationEnabled) {
+			error = "Master automation switch is disabled.";
+			return false;
+		}
+		if (shopPosition < 0 || shopPosition > 0xFF || count < 1 || count > MaximumShopBuyCount) {
+			error = $"Invalid shop buy. Position={shopPosition}, Count={count}.";
+			return false;
+		}
+		int payload = shopPosition | count << 8;
+		string currentError = "";
+		bool sent = bypassMasterSwitch
+			? actionGate.RunDebugCommand(() => TrySendConfirmedCommandCore(gameWindow, ShopBuyCommand, payload, out currentError))
+			: actionGate.RunCommand(() => TrySendConfirmedCommandCore(gameWindow, ShopBuyCommand, payload, out currentError));
 		error = currentError;
 		return sent;
 	}

@@ -121,6 +121,15 @@ namespace GameClientAddresses {
 	constexpr uintptr_t UseItemFunctionRva = 0x003D5550;
 	constexpr uintptr_t UseItemThisOffset = 0x00041D44;
 	constexpr int UseItemMaximumItemId = 0x001FFFFF;
+	// Buy from the open NPC shop (AutoFS command 14 called old client 0x652EF0(index, count)). Found 2026-09-27 in the
+	// Game.exe dump of PID 2228: operation dispatcher 0x6C07B0 (UI manager vtable+0x10) case 0x18 accepts
+	// {genre 0xB, shop position} plus count at +0x1C, checks bag room, strength and money, then calls this cdecl
+	// function (position, count). It returns early while the item lock flag [root+0x4B79C] is set, sends packet
+	// {0xA3, position, count} through vtable[0x20] of [0x918718] and sets the lock. Position = index inside the open
+	// shop row: BuySell object VA 0xE99014 (+0 rows, +4 item records stride 0x1800, +8 max per row, +0xC row count),
+	// open shop id [root+0x4C600]. Signature unique in the image. Not called at runtime yet.
+	constexpr uintptr_t ShopBuyFunctionRva = 0x003ABF90;
+	constexpr int ShopBuyMaximumCount = 100;
 	constexpr uintptr_t QuickBuyPotionTableRva = 0x00A98FFC;
 	constexpr uintptr_t QuickBuyNetworkObjectRva = 0x00518718;
 	constexpr uintptr_t QuickBuyCurrencyTypeOffset = 0x0006B764;

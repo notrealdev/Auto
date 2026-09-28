@@ -139,8 +139,13 @@ public static class AccountEngineCoordinator {
 			// thứ mà công cụ chẩn đoán phải tránh. Mở cổng ở đây an toàn vì khi Auto tổng tắt thì không engine nào
 			// khác được tick, chỉ luồng sửa đồ chạy tay là gửi lệnh.
 			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
-			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun);
-			DebugLog.SetProcessLoggingEnabled(game.ProcessId, masterEnabled);
+			// Gồm cả lối tự động (LowHpEngine kích khi về thành hết thuốc), không chỉ nút bấm tay tab Debug.
+			bool doctorPurchaseActive = game.DoctorPurchaseAutomation.IsDebugRun || game.DoctorPurchaseAutomation.IsAutomaticRun;
+			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive);
+			// doctorPurchaseActive riêng: repair debug run VỐN ĐÃ không bật cờ này khi Auto tổng tắt (hành vi cũ, không đụng
+			// vào), nhưng thiếu nó thì DoctorPurchaseAutomation chạy thật (đã sửa 3 cổng phía dưới) mà mọi dòng log từng
+			// bước đều bị accountLog/CanLogProcess nuốt mất, không có gì để đối chiếu khi test.
+			DebugLog.SetProcessLoggingEnabled(game.ProcessId, masterEnabled || doctorPurchaseActive);
 			// Auto tổng tắt (và không có chuyến sửa/bán chạy tay) thì account này KHÔNG chạy luồng nào (chủ dự án chốt
 			// 2026-09-24): chỉ dọn đúng những gì cổng tắt bên dưới vẫn dọn rồi thoát, không đọc bộ nhớ game. Trước đây
 			// account tắt vẫn đi qua ReadSnapshot/RefreshMapState/ClientFreezeWatch/WeaponRepairMonitor mỗi 100ms.
@@ -149,7 +154,7 @@ public static class AccountEngineCoordinator {
 			// Dòng account trên UI vẫn có HP/MP/tên vì AccountListViewModel.ScanTick tự đọc riêng mỗi giây.
 			// Giữ lại DUY NHẤT RefreshMapState (tự giới hạn 1 lần/giây): công cụ Debug chạy khi Auto tổng tắt đọc
 			// LastObservedMapId (ReturnTalismanProbe), và để map cũ thì lúc bật lại Auto bị tính nhầm là đổi map.
-			if (! masterEnabled && ! debugRepairRun && ! game.InventorySaleEngine.IsDebugRun) {
+			if (! masterEnabled && ! debugRepairRun && ! doctorPurchaseActive && ! game.InventorySaleEngine.IsDebugRun) {
 				RefreshMapState(game, null);
 				LogAutoGate(game, masterEnabled, game.AttackSettings.Enabled, game.LootSettings.Enabled, game.BasicSettings.EnableWeaponRepair, game.InventorySaleEngine.IsAutomaticSaleEnabled);
 				game.WeaponRepairMonitor.SetEnabled(false);
@@ -213,7 +218,7 @@ public static class AccountEngineCoordinator {
 			// dưới — nên kết quả Resolve() hoàn toàn không dùng tới khi Auto tổng tắt. Trước đây gọi vô điều kiện nên
 			// mỗi client mở sẵn nhưng CHƯA login/CHƯA bật Auto tổng vẫn tự dump+quét 33MB mỗi 2 giây, cộng dồn theo số
 			// client mở — đúng hiện tượng CPU/RAM tăng theo số client dù chưa bật gì (chủ dự án báo 2026-09-21).
-			RuntimeLayout layout = masterEnabled || debugRepairRun ? RuntimeLayoutResolver.Resolve(game.ProcessId) : game.RuntimeLayout;
+			RuntimeLayout layout = masterEnabled || debugRepairRun || doctorPurchaseActive ? RuntimeLayoutResolver.Resolve(game.ProcessId) : game.RuntimeLayout;
 			game.RuntimeLayout = layout;
 			LogRuntimeGate(game, layout, attackEnabled, lootEnabled, repairEnabled, saleEnabled, accountLog);
 			RunAddressAuditOnce(game);
@@ -254,7 +259,11 @@ public static class AccountEngineCoordinator {
 			SuperviseStuckAccount(game, snapshot, masterEnabled, accountLog);
 
 			// "Đang train" để Hồi thành phù bật lại sau khi về thành: đã tới bãi, không còn luồng di chuyển nào đang kéo nhân vật đi.
-			bool isTraining = game.LastObservedMapId > 0 && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && !IsOutsideTrainingArea(game, snapshot);
+			// PHẢI kể cả DoctorPurchaseAutomation: nó dùng tuyến di chuyển RIÊNG (không phải ReturnToTrainingAutomation/
+			// ConfiguredTrainingMovementAutomation), nên thiếu điều kiện này thì lúc nó đang đi ra Đại Phu hoặc đang mua,
+			// nếu IsOutsideTrainingArea tình cờ đọc false (ví dụ Đại Phu nằm gần tâm bãi), isTraining sẽ sai thành true và
+			// Hồi thành phù bật lại GIỮA CHUYẾN MUA — đúng xung đột chủ dự án cảnh báo 2026-09-28.
+			bool isTraining = game.LastObservedMapId > 0 && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && !game.DoctorPurchaseAutomation.IsBusy && !IsOutsideTrainingArea(game, snapshot);
 			if (masterEnabled && returnTalismanEnabled && game.LowHpEngine.Tick(game.ProcessId, game.Handle, snapshot, game.LastObservedMapId, isTraining, accountLog)) {
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Hồi thành phù giữ quyền điều khiển");
@@ -274,6 +283,14 @@ public static class AccountEngineCoordinator {
 					accountLog($"LOW_HP_RETURN_TO_TRAINING_SKIPPED | Reason=EnableReturnToTraining=False | Hp={snapshot.Hp}/{snapshot.MaxHp}");
 				} else if (game.ReturnToTrainingAutomation.IsBusy) {
 					accountLog($"LOW_HP_RETURN_TO_TRAINING_SKIPPED | Reason=ReturnToTrainingAutomation.IsBusy | Hp={snapshot.Hp}/{snapshot.MaxHp}");
+				} else if (game.BasicSettings.EnableQuickBuyAtDoctor && layout.RepairReady && !game.DoctorPurchaseAutomation.IsBusy && !game.DoctorPurchaseAutomation.IsOnFailureCooldown
+					&& !DoctorPurchaseAutomation.BagHasPotion(game.ProcessId, DoctorPurchaseAutomation.ResolveHpPotionName(game.BasicSettings))) {
+					// Kịch bản A (chủ dự án chốt 2026-09-28): về thành mà TÚI/Ô NHANH/RƯƠNG 2 không còn đúng loại HP đã
+					// chọn ở Hồi phục thì ghé Đại Phu mua trước khi lên bãi, thay vì lên bãi tay không rồi HP thấp lại kéo
+					// về thành ngay — đúng xung đột chủ dự án cảnh báo. DoctorPurchaseAutomation tự đưa nhân vật về bãi
+					// sau khi mua xong (hoặc sau khi hỏng), nên KHÔNG cần gọi thêm ReturnToTrainingAutomation.Prepare ở đây.
+					string doctorStatus = game.DoctorPurchaseAutomation.RequestAutomaticRun();
+					accountLog($"LOW_HP_DOCTOR_PURCHASE_REQUESTED | Hp={snapshot.Hp}/{snapshot.MaxHp} | {doctorStatus}");
 				} else {
 					accountLog($"LOW_HP_RETURN_TO_TRAINING_REQUESTED | Hp={snapshot.Hp}/{snapshot.MaxHp} | MapId={game.LastObservedMapId}");
 					game.ReturnToTrainingAutomation.Prepare(game, snapshot, accountLog);
@@ -325,6 +342,11 @@ public static class AccountEngineCoordinator {
 				// Đánh và Nhặt đã dừng ở trên nên không ai tranh quyền điều khiển — đúng điều kiện sạch để chẩn đoán.
 				if (debugRepairRun) {
 					game.WeaponRepairAutomation.Tick(game, snapshot, accountLog);
+					return;
+				}
+				// Chuyến mua ở Đại Phu chạy tay (tab Debug), cùng khuôn với chuyến sửa đồ chạy tay ngay trên.
+				if (doctorPurchaseActive) {
+					game.DoctorPurchaseAutomation.Tick(game, snapshot, accountLog);
 					return;
 				}
 				game.WeaponRepairAutomation.Cancel(game, accountLog, "Tắt Auto tổng hoặc tắt ô Sửa đồ");
@@ -423,7 +445,7 @@ public static class AccountEngineCoordinator {
 				&& !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy;
 			if (eliteRetreatActive && !eliteRetreatStuck) {
 				game.SupportEngine.ReleaseForHigherPriority();
-			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), petHealAllowed, accountLog)) {
+			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), petHealAllowed, (int rawX, int rawY, out string result) => AutoFsMovementCommand.TryWalkTo(game, rawX, rawY, out result), accountLog)) {
 				// Buff không cần giữ quyền (heal xong hoặc máu còn đủ): trả luồng trốn thêm một lượt 3 giây để thử đi
 				// tiếp, thay vì nhịp sau lại coi là kẹt ngay vì mốc vị trí đã cũ.
 				if (eliteRetreatStuck) eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, DateTime.UtcNow);
@@ -439,6 +461,22 @@ public static class AccountEngineCoordinator {
 				return;
 			}
 			game.ChatEngine.Tick(game.ProcessId, game.Handle, accountLog);
+
+			// Chuyến mua ở Đại Phu (chạy tay HOẶC tự động từ LowHpEngine) giữ quyền độc quyền: huỷ mọi luồng di chuyển/sửa
+			// đồ khác rồi tick riêng nó, cùng lý do với "chuyến sửa đồ chạy tay" ở cổng Auto tổng TẮT phía trên — khác ở
+			// chỗ Auto tổng đang BẬT ở đây nên các luồng kia có thể đang bận, phải chủ động Cancel trước khi Tick.
+			if (doctorPurchaseActive) {
+				game.ReturnToTrainingAutomation.Cancel(accountLog, "Mua ở Đại Phu giữ quyền điều khiển");
+				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Mua ở Đại Phu giữ quyền điều khiển");
+				game.WeaponRepairAutomation.Cancel(game, accountLog, "Mua ở Đại Phu giữ quyền điều khiển");
+				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, true);
+				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.TrainingMovementOwner, true);
+				game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.SaleRepairOwner, false);
+				game.AttackEngine.Stop();
+				game.LootEngine.Stop();
+				game.DoctorPurchaseAutomation.Tick(game, snapshot, accountLog);
+				return;
+			}
 
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.ReturnMovementOwner, game.ReturnToTrainingAutomation.IsBusy);
 			game.AutoFsActionGate.SetLootSuspended(AutoFsActionGate.TrainingMovementOwner, game.ConfiguredTrainingMovementAutomation.IsBusy);
@@ -870,8 +908,17 @@ public static class AccountEngineCoordinator {
 	//
 	// Không giải được đích bãi thì trả true (KHÔNG chặn). Chặn nhầm ở đây nghĩa là Buff không bao giờ chạy — hỏng
 	// nặng hơn hẳn so với việc thỉnh thoảng cast thừa, và trần cast theo tiến độ máu vẫn còn đó làm lưới an toàn.
+	//
+	// Falls back to the Attack center map (the same destination "Tự lên bãi" uses as "Tâm bãi") when no training mode is
+	// configured. Without it PhâyKer (2026-09-27, "Lên bãi chưa có đích", MapTâm=32) got true in town map 20: Buff kept
+	// casting the owner heal there (HP stayed 78/537 through 10 casts) and cancelled "Tự lên bãi" every ~5 s.
 	private static bool AreSkillsAllowedHere(GameWindow game) {
-		if (!ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out int trainingMapId, out _, out _)) return true;
+		int trainingMapId;
+		if (!ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out trainingMapId, out _, out _)) {
+			Settings settings = game.AttackSettings;
+			if (!settings.UseCenterPosition || settings.CenterMapId <= 0) return true;
+			trainingMapId = settings.CenterMapId;
+		}
 		if (trainingMapId <= 0 || game.LastObservedMapId <= 0) return true;
 		return game.LastObservedMapId == trainingMapId;
 	}

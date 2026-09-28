@@ -28,6 +28,12 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolInventoryMoney = "Tiền vạn trong túi (dò ô nhớ)";
 	// Thử hàm mua của chức năng "Tự động mua thuốc" trong client. Dùng ô tick, loại thuốc và số bình ở khối "Mua item hồi phục" (tab Cơ bản).
 	private const string ToolQuickBuy = "Mua nhanh HP + MP (GỬI LỆNH THẬT, TIÊU TIỀN)";
+	// Buy the HP and MP potions selected in "Hồi phục" from the NPC shop already open on screen (native command 330).
+	private const string ToolDoctorShopBuy = "Mua ở Đại Phu 10 HP + 10 MP (mở sẵn cửa hàng, GỬI LỆNH THẬT, TIÊU TIỀN)";
+	// Owner 2026-09-27: buy 10 of each kind at the Đại Phu for now; a setting may come later.
+	private const int DoctorShopBuyCount = 10;
+	// Test the WHOLE low-hp doctor flow: walk to NPC -> open shop -> buy -> return. Runtime.DoctorPurchaseAutomation.
+	private const string ToolDoctorPurchaseFlow = "Đi tới Đại Phu, mở shop, mua đủ HP+MP rồi quay lại (GỬI LỆNH THẬT, TIÊU TIỀN)";
 
 	// Trên mức này thì báo cáo đối chiếu không đọc được. Lấy rộng hơn DoctorRouteArrivalDistance (1,5 ô) của luồng
 	// Sửa đồ để lượt bấm ngay sát NPC vẫn được coi là hợp lệ.
@@ -68,7 +74,9 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolInventoryStrength,
 		ToolInventoryInfo,
 		ToolInventoryMoney,
-		ToolQuickBuy
+		ToolQuickBuy,
+		ToolDoctorShopBuy,
+		ToolDoctorPurchaseFlow
 	];
 
 	// Số lệnh và tham số khi thử điểm đến. Chỉ tool ToolTransitGateSelect đọc hai giá trị này.
@@ -134,6 +142,12 @@ public sealed class DebugViewModel : ViewModelBase {
 				return;
 			case ToolQuickBuy:
 				StartQuickBuy();
+				return;
+			case ToolDoctorShopBuy:
+				StartDoctorShopBuy();
+				return;
+			case ToolDoctorPurchaseFlow:
+				StartDoctorPurchaseFlow();
 				return;
 			default:
 				AccountInfoText = $"Không nhận diện được công cụ: {selectedTool}";
@@ -250,6 +264,38 @@ public sealed class DebugViewModel : ViewModelBase {
 		string result = await Task.Run(() => QuickBuyProbe.Run(target, "máu", hpCode, hpQuantity) + QuickBuyProbe.Run(target, "mana", mpCode, mpQuantity));
 		DebugLog.AddDebugForProcess(target.ProcessId, result);
 		AccountInfoText = result;
+	}
+
+	// SENDS REAL COMMANDS: buy DoctorShopBuyCount of the HP then MP potion selected in "Hồi phục" from the open shop.
+	private async void StartDoctorShopBuy() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		GameWindow target = game;
+		BasicSettings settings = target.BasicSettings;
+		int hpCode = settings.QuickBuyHpPotionCode;
+		int mpCode = settings.QuickBuyMpPotionCode;
+		AccountInfoText = $"PID={target.ProcessId} | Đang mua ở cửa hàng đang mở...";
+		string result = await Task.Run(() => DoctorShopBuyProbe.Run(target, "máu", QuickBuyPotions.Hp, hpCode, DoctorShopBuyCount) + DoctorShopBuyProbe.Run(target, "mana", QuickBuyPotions.Mp, mpCode, DoctorShopBuyCount));
+		DebugLog.AddDebugForProcess(target.ProcessId, result);
+		AccountInfoText = result;
+	}
+
+	// Chạy toàn bộ chuỗi Runtime.DoctorPurchaseAutomation: tự đi tới Đại Phu của map hiện tại, mở cửa hàng, mua cho đủ
+	// 10 bình mỗi loại HP/MP đã chọn ở "Hồi phục" (chỉ mua phần còn thiếu), rồi tự quay lại bãi. Chạy được kể cả khi
+	// Auto tổng đang tắt (giống nút "Đi sửa đồ").
+	private void StartDoctorPurchaseFlow() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		string status;
+		lock (game.AutoSync) status = game.DoctorPurchaseAutomation.RequestDebugRun();
+		DebugLog.AddForProcess(game.ProcessId, status);
+		AccountInfoText = $"PID={game.ProcessId} | {status}\r\n\r\n" +
+			"KHÔNG cần bật Auto tổng. Nhân vật tự đi tới Đại Phu của map hiện tại, mở cửa hàng, mua cho đủ 10 bình mỗi loại (chỉ mua phần còn thiếu), rồi tự quay lại chỗ cũ.\r\n" +
+			"Xem log để theo từng bước: \"Mua ở Đại Phu | ...\".";
 	}
 
 	// Bán ngay số đồ đã tick ở mục "Bán" (tab Nhặt), bỏ qua hai ngưỡng số lượng/sức lực.

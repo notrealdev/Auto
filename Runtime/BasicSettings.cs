@@ -45,5 +45,6 @@ public sealed class BasicSettings {
 
 	public int QuickBuyMpPotionCode { get; set; } = 3;
 
-	public bool EnableQuickBuyAtDoctor { get; set; }
+	// Mặc định BẬT (chủ dự án chốt 2026-09-27).
+	public bool EnableQuickBuyAtDoctor { get; set; } = true;
 }

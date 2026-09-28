@@ -485,6 +485,13 @@ public sealed class AttackViewModel : ViewModelBase {
 		settings.CenterX = rawX;
 		settings.CenterY = rawY;
 		settings.CenterMapId = map.MapId;
+		// PHẢI ghi cùng cặp này vào SavedTrainingMapId + TrainingPositionsByMap, giống ApplyTrainingPoint — thiếu thì
+		// ConfiguredTrainingMovementAutomation.TryResolveDestination (SavedTrainingMapId>0 mới có đích) không có gì để
+		// đọc, và Profiles.json lưu CenterMapId đúng nhưng SavedTrainingMapId lệch. Chủ dự án phát hiện 2026-09-28: đặt
+		// tâm qua nút "Tâm" (đường này) rồi Áp dụng cấu hình sau đó khiến nhân vật đi nhầm map.
+		game.SavedTrainingMapId = map.MapId;
+		game.TrainingPositionsByMap.Clear();
+		game.TrainingPositionsByMap[map.MapId] = (rawX, rawY);
 		DebugLog.AddForProcess(game.ProcessId, $"Đặt tâm bãi | PID={game.ProcessId} | Tâm={rawX}/{rawY} | MapTâm={map.MapId}");
 		return true;
 	}

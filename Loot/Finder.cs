@@ -154,11 +154,14 @@ public sealed class Finder {
 		// "Vũ khí xanh" là nhóm CHỈ THÊM, không bao giờ bớt — khác mọi nhóm còn lại.
 		//
 		// Chủ dự án chốt 2026-09-12: các ô tick màu (Đồ Lục / Đồ Vàng / Đồ Cam) giữ quyền ƯU TIÊN SỐ 1. Nên ở đây
-		// chỉ nhận thẳng khi tên nằm trong danh sách VÀ màu là xanh lục; mọi trường hợp còn lại rơi xuống nguyên
+		// chỉ nhận thẳng khi tên nằm trong danh sách VÀ màu là xanh dương; mọi trường hợp còn lại rơi xuống nguyên
 		// luật cũ bên dưới thay vì return false. Nhờ vậy rìu vàng/cam vẫn được nhặt qua ô tick màu của chúng, và
 		// nhóm này không thể làm mất món nào so với trước khi có nó.
+		//
+		// Corrected 2026-09-27 (owner): "xanh" here means BLUE (QualityCodeA 1), not green. Weapons have no green variant
+		// in this game, so the old ItemColor.Green check could never match and the option was dead.
 		if (specialCategory == AutoFsSpecialItemCategory.GreenWeapon) {
-			if (IsSelected(settings, GreenWeaponSelectionName) && item.Color == ItemColor.Green) return true;
+			if (IsSelected(settings, GreenWeaponSelectionName) && item.Color == ItemColor.Blue) return true;
 		} else if (specialCategory != AutoFsSpecialItemCategory.None) {
 			return IsSelected(settings, GetSelectionName(specialCategory));
 		}

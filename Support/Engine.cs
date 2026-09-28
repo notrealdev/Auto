@@ -3,6 +3,8 @@
 using Auto.Attack;
 using Auto.Utils;
 
+internal delegate bool WalkToHandler(int rawX, int rawY, out string result);
+
 internal sealed class Engine {
 	private const int CastSkillCommand = 85;
 	private const int HealSkillId = 45;
@@ -24,6 +26,11 @@ internal sealed class Engine {
 	// Buff hỗ trợ giữ quyền điều khiển" -> nhân vật không lên lại được bãi.
 	private const int MaximumOwnerHealCasts = 10;
 	private const int OwnerHealGiveUpCooldownMilliseconds = 5000;
+	// Two pet heals in a row without the pet's HP rising means the heal is not landing (owner 2026-09-27: pet far away while
+	// the character kept casting in place). Then walk to the pet before the next cast. The settle time gives the walk a
+	// moment before casting again; it is an assumption, not measured.
+	private const int PetNoGainCastsBeforeApproach = 2;
+	private const int PetApproachSettleMilliseconds = 1000;
 	private readonly Settings settings;
 	private readonly AutoFsAttackTransport transport;
 	private DateTime nextOwnerHealUtc;
@@ -36,6 +43,9 @@ internal sealed class Engine {
 	private int ownerBestHp;
 	private DateTime ownerHealCooldownUntilUtc;
 	private int petReadFailureStreak;
+	// Pet HP at the previous pet cast of this heal session (0 = no cast yet) and how many casts in a row did not raise it.
+	private int petLastCastHp;
+	private int petNoGainStreak;
 	private int ownerReadFailureStreak;
 	private int exceptionStreak;
 	private string lastCastRejectionLine = "";
@@ -64,7 +74,8 @@ internal sealed class Engine {
 	// petHealAllowed: nơi gọi báo có đang trong luồng di chuyển (tránh boss, sửa đồ, tự lên bãi, di chuyển bãi) hay không.
 	// Đang trong các luồng đó thì KHÔNG heal Đệ: heal Đệ giữ quyền điều khiển độc quyền nên coordinator sẽ huỷ luồng di chuyển
 	// và dừng Đánh, nhân vật đứng im.
-	public bool Tick(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool attackEnabled, bool skillsAllowedHere, bool petHealAllowed, Action<string> log) {
+	// walkTo: unflagged walk (AutoFsMovementCommand.TryWalkTo) supplied by the caller, used to walk to the pet.
+	public bool Tick(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool attackEnabled, bool skillsAllowedHere, bool petHealAllowed, WalkToHandler walkTo, Action<string> log) {
 		if (!attackEnabled || (!settings.HealOwner && !settings.HealPet)) {
 			Reset();
 			return false;
@@ -80,7 +91,7 @@ internal sealed class Engine {
 		}
 		skillsBlockedLogged = false;
 		try {
-			bool held = TickCore(processId, gameWindow, ownerSnapshot, petHealAllowed, log);
+			bool held = TickCore(processId, gameWindow, ownerSnapshot, petHealAllowed, walkTo, log);
 			// Chỉ một nhịp chạy trót lọt mới xoá chuỗi ngoại lệ; đặt ở đầu try thì streak không bao giờ đếm lên được.
 			exceptionStreak = 0;
 			return held;
@@ -100,7 +111,7 @@ internal sealed class Engine {
 		}
 	}
 
-	private bool TickCore(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool petHealAllowed, Action<string> log) {
+	private bool TickCore(int processId, IntPtr gameWindow, GameSnapshot ownerSnapshot, bool petHealAllowed, WalkToHandler walkTo, Action<string> log) {
 		{
 			if (!settings.HealOwner) {
 				ownerHealingActive = false;
@@ -229,9 +240,24 @@ internal sealed class Engine {
 				nextPetHealUtc = DateTime.MinValue;
 				return false;
 			}
-			if (!petHealingActive && (long)pet.CurrentHp * 100 <= (long)pet.MaximumHp * settings.HealPetHpPercent) petHealingActive = true;
+			if (!petHealingActive && (long)pet.CurrentHp * 100 <= (long)pet.MaximumHp * settings.HealPetHpPercent) {
+				petHealingActive = true;
+				petLastCastHp = 0;
+				petNoGainStreak = 0;
+			}
 			if (!petHealingActive) return false;
 			if (DateTime.UtcNow < nextPetHealUtc) return true;
+
+			if (petLastCastHp > 0) petNoGainStreak = pet.CurrentHp > petLastCastHp ? 0 : petNoGainStreak + 1;
+			if (petNoGainStreak >= PetNoGainCastsBeforeApproach) {
+				petNoGainStreak = 0;
+				petLastCastHp = 0;
+				nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(PetApproachSettleMilliseconds);
+				bool walked = walkTo(pet.RawX, pet.RawY, out string walkResult);
+				int distance = (int)Math.Sqrt(Math.Pow((double)pet.RawX - ownerSnapshot.X, 2) + Math.Pow((double)pet.RawY - ownerSnapshot.Y, 2));
+				log($"BUFF_PET_APPROACH | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | NoGainCasts={PetNoGainCastsBeforeApproach} | Player={ownerSnapshot.X}/{ownerSnapshot.Y} | Pet={pet.RawX}/{pet.RawY} | Distance={distance} | Walked={walked} | {walkResult} | Action=Đi tới gần Đệ rồi heal tiếp");
+				return true;
+			}
 
 			nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(HealRepeatDelayMilliseconds);
 			if (!transport.TrySendConfirmedCommand(gameWindow, CastSkillCommand, HealSkillId, out string petCastError)) {
@@ -239,6 +265,7 @@ internal sealed class Engine {
 			}
 			lastCastRejectionLine = "";
 			castRejectionStreak = 0;
+			petLastCastHp = pet.CurrentHp;
 			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
 			return true;
 		}

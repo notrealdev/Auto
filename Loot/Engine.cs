@@ -370,9 +370,15 @@ public sealed class Engine {
 					bool routinePickup = IsRoutinePickup(classification, category);
 					string marker = routinePickup ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
 					// Đẩy lên ô theo dõi trên giao diện ĐÚNG những lượt vào loot-drops.log, tức bỏ nhóm nhặt thường xuyên.
-					// Đồ Trắng/Đồ Xanh nhặt liên tục sau khi bật cả hai màu (chủ dự án chốt) nên bị bỏ khỏi ô hiển thị
-					// UI riêng — "Vũ khí xanh" nằm ở ItemColor.Green (Finder.cs:141), không phải Blue, nên không bị lọc.
-					bool suppressUiFeed = classification.Color is ItemColor.White or ItemColor.Blue;
+					// Owner rule 2026-09-27 for EQUIPMENT and WEAPONS: white is always hidden; blue is hidden unless the name
+					// is in the "Vũ khí xanh" list; green and above always show. Everything that is not equipment always
+					// shows. The old rule hid every white/blue item, which also hid the skill book "Tam Đầu Lục Thủ"
+					// (Color=White, PhâyKer 2026-09-27 01:11:27). Equipment is AttributeClass == 0: in loot-scan.log
+					// 2026-09-27 every AttributeClass=0 item had GroundType 9-18 (weapons, armor, jewelry), while
+					// books/potions/Tứ Tượng had 7/1/3 on GroundType 38-39.
+					bool equipment = category is AutoFsSpecialItemCategory.None or AutoFsSpecialItemCategory.GreenWeapon && classification.AttributeClass == 0;
+					bool listedBlueWeapon = category == AutoFsSpecialItemCategory.GreenWeapon && classification.Color == ItemColor.Blue;
+					bool suppressUiFeed = equipment && classification.Color is ItemColor.White or ItemColor.Blue && ! listedBlueWeapon;
 					if (! routinePickup && ! suppressUiFeed) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
 					context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={pendingPickupAttempts} | Raw={coordinate.X}/{coordinate.Y}");
 				} else if (! inventoryCountReadable || ! afterReadable) {

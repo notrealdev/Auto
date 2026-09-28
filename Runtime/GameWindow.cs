@@ -90,6 +90,8 @@ public class GameWindow {
 
 	public WeaponRepairAutomation WeaponRepairAutomation { get; } = new();
 
+	internal DoctorPurchaseAutomation DoctorPurchaseAutomation { get; } = new();
+
 	public ReturnToTrainingAutomation ReturnToTrainingAutomation { get; } = new();
 
 	public ConfiguredTrainingMovementAutomation ConfiguredTrainingMovementAutomation { get; } = new();
