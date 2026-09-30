@@ -27,9 +27,18 @@ public static class FullMouseHandlerPickupCommand {
 	// Cập nhật sau bản game 2026-08-28: xác nhận bằng BSim (similarity=1.0, hàm handler+constructor khớp duy nhất) + byte thật
 	// (đối tượng tại VA mới 0x8FE850 chứa đúng con trỏ vtable 0x00867F20 do constructor mới ghi; slot thứ 5 trong vtable mới
 	// trỏ đúng 0x005836D0, khớp vị trí slot thứ 5 = 0x005833A0 trong vtable cũ). Chưa build/test runtime.
-	private const int HandlerRva = 0x1836D0;
-	private const int InputObjectRva = 0x4FE850;
-	private const int ExpectedVtableRva = 0x467F20;
+	// Cập nhật lại sau bản update 2026-09-29: đây là nguyên nhân "không mở được shop NPC để bán/sửa đồ" — cả 2 tính
+	// năng dùng chung cơ chế giả lập click này. ExpectedVtableRva tìm bằng quét context-byte quanh literal vtable cũ
+	// (0x00867F20) trong hàm constructor tại VA 0x580D66 của bản cũ: 4 kích thước cửa sổ độc lập (6/6, 6/8, 6/10, 6/12
+	// byte) đều đồng thuận DUY NHẤT một vị trí mới -> RVA 0x489F20. InputObjectRva tìm bằng cùng kỹ thuật nhưng chỉ
+	// 3/30 lượt bỏ phiếu tĩnh đồng thuận (yếu) — bù lại bằng xác nhận SỐNG trên đúng PID 26680 mày báo lỗi: đọc trực
+	// tiếp RVA 0x5228B8 ra giá trị 0x00889F20, khớp TUYỆT ĐỐI với ExpectedVtableRva mới (0x400000+0x489F20) — không
+	// phải suy đoán. HandlerRva xác nhận bằng BSim (VA cũ 0x5836D0 khớp DUY NHẤT FUN_00584530@0x584530,
+	// Similarity=1.0, Significance=357.3) VÀ đối chứng chéo độc lập: đọc trực tiếp slot vtable mới tại +0x10 ra đúng
+	// 0x00584530 — khớp tuyệt đối với kết quả BSim.
+	private const int HandlerRva = 0x184530;
+	private const int InputObjectRva = 0x5228B8;
+	private const int ExpectedVtableRva = 0x489F20;
 	private const int InputClientXRva = 0x3BACA4;
 	private const int InputClientYRva = 0x3BACA8;
 	private const int InputLeftStateOffset = 0xFC;
@@ -46,16 +55,18 @@ public static class FullMouseHandlerPickupCommand {
 	private const int AttackClientXScale = 1;
 	private const int AttackClientYOffset = -70;
 	// Cập nhật sau bản game 2026-08-28: cùng hàm đã xác nhận qua BSim+byte thật cho RuntimeLayoutResolver.RepairConfirmationSignature. Chưa build/test runtime.
-	private const int RepairConfirmationFunctionRva = 0x2935A0;
+	// Cập nhật lại sau bản update 2026-09-29: cùng hàm, cùng bằng chứng BSim (Similarity=1.0) với RuntimeLayoutResolver.RepairConfirmationSignature (xem đó).
+	private const int RepairConfirmationFunctionRva = 0x297D60;
 	private const uint MinimumSystemModuleEip = 0x70000000;
 	private const int SafePointAttempts = 100;
 	private const int SafePointRetryMilliseconds = 2;
 	private const uint MemCommitState = 0x1000;
 	private const uint PageExecuteMask = 0xF0;
 	// Cập nhật sau bản game 2026-08-28: 2 byte thứ 7-8 là con trỏ SEH nội bộ đổi theo build, đã xác nhận bằng byte thật khớp cùng chữ ký RuntimeLayoutResolver.RepairConfirmationSignature. Chưa build/test runtime.
+	// Cập nhật lại sau bản update 2026-09-29: byte SEH nội bộ đổi từ B7 3B 84 -> D7 58 86 như dự kiến (xem RuntimeLayoutResolver.RepairConfirmationSignature).
 	private static readonly byte[] RepairConfirmationFunctionSignature = {
-		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xB7, 0x3B,
-		0x84, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xD7, 0x58,
+		0x86, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00
 	};
 
 	public static int VariantCount => 1;

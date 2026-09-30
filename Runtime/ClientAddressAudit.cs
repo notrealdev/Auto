@@ -52,7 +52,11 @@ public static class ClientAddressAudit {
 		("LOGIN_SUBMIT_FUNCTIONS", "LoginSubmitFunctionRva+LoginAfterSubmitFunctionA/B/C+LoginSubmitContextRva"),
 		("QUICK_BUY_FUNCTION", "QuickBuyFunctionRva"),
 		("QUICK_BUY_LOOKUP_FUNCTION", "QuickBuyLookupFunctionRva"),
-		("USE_ITEM_FUNCTION", "UseItemFunctionRva")
+		("USE_ITEM_FUNCTION", "UseItemFunctionRva"),
+		// Thiếu đúng dòng này là nguyên nhân ADDRESS_AUDIT_NATIVE_COUNT_MISMATCH (Native=35, Managed=34) ở cả hai lần
+		// audit trong bản update 2026-09-29: switch trong AuditAddress() có case 34 = ShopBuyFunctionRva nhưng bảng
+		// này dừng ở case 33, khiến toàn bộ phần audit native bị bỏ qua (Native=0/0) thay vì chạy 35 case như thiết kế.
+		("SHOP_BUY_FUNCTION", "ShopBuyFunctionRva")
 	];
 
 	// Hằng số thật sự không còn nơi nào tham chiếu. Trước 2026-09-08 danh sách này còn chứa 5 hằng số ĐANG được dùng

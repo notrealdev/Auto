@@ -476,6 +476,19 @@ public sealed class Engine {
 		}
 		// Chọn được con để đánh thì mở lại chuông báo, để đợt "cấm hết" lần sau vẫn được ghi đúng một dòng.
 		allCandidatesBlacklistedLogged = false;
+		// Chế độ "Chỉ đánh Boss": TẮT hẳn nhánh "kẹt -> đổi" bên dưới, theo yêu cầu chủ dự án 2026-09-29. Boss có kỹ
+		// năng né/lùi/dịch chuyển nên không rút ngắn khoảng cách kịp trong StuckTargetMilliseconds dù không hề bị vật
+		// cản — cơ chế này vốn thiết kế cho quái đứng sau tường lại hiểu nhầm thành "không tới được" và bỏ sang con
+		// khác. Bằng chứng (auto-runtime.log 2026-09-29 11:36-11:40): nhiều dòng TARGET_UNREACHABLE_SKIPPED liên tiếp
+		// cùng tên "Băng Linh" ở các Index khác nhau, TargetHp không đổi giữa các lần — chưa đánh trúng phát nào đã bị
+		// đổi. Bám đúng 1 boss tới khi nó rời candidates (chết/ra khỏi tầm quét) chứ không tự bỏ vì "kẹt" nữa.
+		if (settings.OnlyAttackBoss) {
+			stuckTargetIndex = target.Index;
+			stuckTargetHp = target.Hp;
+			stuckBestDistance = target.Distance;
+			stuckSinceUtc = now;
+			return target;
+		}
 		// Ba đường reset đồng hồ, mỗi đường ứng với một kiểu "vẫn ổn":
 		//   đổi con           -> đợt đuổi mới
 		//   máu con đó đổi    -> đang đánh được nó, đứng yên là bình thường

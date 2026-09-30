@@ -7,14 +7,19 @@ namespace GameClientAddresses {
 	// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698, SizeOfImage đo được 0x01F83000).
 	constexpr uint32_t MinimumSupportedImageSize = 0x01F83000;
 	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte-scan tĩnh 2 tầng (manager object nhúng tĩnh trong image, vtable pointer khớp cả 2 slot ATTACK/SELECT_GROUND đã đối chiếu decompile), chưa build/test runtime.
-	constexpr uintptr_t AttackManagerRva = 0x004E2660;
-	constexpr uintptr_t ExpectedManagerVtableRva = 0x00477804;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: vtable dò bằng quét byte 2 điều kiện
+	// đồng thời (slot +0x40 và +0x48 khớp 2 hàm ATTACK/SELECT_GROUND_ITEM mới tìm qua BSim, Similarity=1.0 cả hai),
+	// DUY NHẤT 1 vị trí trong 33MB. AttackManagerRva xác nhận sống trên PID 18996: [0x5066C8]=0x8F06A8, và
+	// [0x8F06A8+0]=0x899988=0x400000+ExpectedManagerVtableRva mới — khớp tuyệt đối.
+	constexpr uintptr_t AttackManagerRva = 0x005066C8;
+	constexpr uintptr_t ExpectedManagerVtableRva = 0x00499988;
 	constexpr int CoordinateOpcode = 0x9F;
 	constexpr size_t CoordinateDispatcherMethodVtableOffset = 0x10;
 	constexpr size_t DialogOptionMethodVtableOffset = 0x10;
 	constexpr int DialogOptionOpcode = 9;
-	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (ngữ cảnh khớp bản cũ), delta +0x2020. Chưa build/test runtime.
-	constexpr uintptr_t ModalStateRva = 0x004EEF88;
+	// Ứng viên sau bản update 2026-09-29 (delta +0x24068, cùng cụm với MapId managed) — CHƯA đối chứng lúc modal thật sự
+	// đang mở (đọc ra 0 ở mọi client hiện tại không loại được khả năng trúng ô hằng-số khác luôn 0). Xem GameAddresses.cs.
+	constexpr uintptr_t ModalStateRva = 0x00512FF0;
 	constexpr size_t ModalEventMethodVtableOffset = 0x10;
 	// Sửa 0x00469E34 -> 0x0046AF3C ngày 2026-09-08. Bản game 2026-08-28 dời hằng số này nhưng lượt rebase trước bỏ sót,
 	// nên address-audit.log ghi FAIL_VTABLE_MISMATCH (Code=14) — lỗi DUY NHẤT trên 34 địa chỉ. Hệ quả: popup xác nhận
@@ -22,10 +27,21 @@ namespace GameClientAddresses {
 	// Đo trực tiếp bằng ModalVtableProbe khi popup đang mở (PID 22056): MODAL_VTABLE_TABLE | VtableRva=0x46AF3C.
 	// Kiểm chứng chéo: delta +0x1108 trùng khít delta của RepairConfirmModalVtableRva (0x4721B4 -> 0x4732BC) — hai
 	// vtable cùng vùng .rdata dời cùng lượng, và hằng số kia đã PASS_VTABLE độc lập.
-	constexpr uintptr_t NpcConfirmModalVtableRva = 0x0046AF3C;
+	// Cập nhật lại sau bản update 2026-09-29 bằng quét context-byte quanh literal cũ trong 2 hàm constructor
+	// (VA 0x5D028A/0x5D033D trong bản cũ): 14/14 tổ hợp cửa sổ độc lập đồng thuận DUY NHẤT RVA mới 0x48CF3C. Đối
+	// chứng thêm bằng bắt sống object dialog thật đang mở (PID 17268/26680): vtable field đọc ra đúng 0x0088CF3C =
+	// 0x400000+0x48CF3C, khớp tuyệt đối. Đây là nguyên nhân thật của "không mở được shop NPC để bán/sửa đồ": code
+	// tưởng object là menu nhiều lựa chọn (do check vtable cũ luôn sai) trong khi nó vẫn là popup xác nhận 1 nút.
+	// PHẢI đồng bộ với Quest/ScoutQuestAutomation.cs::DoctorConfirmModalVtableRva, DebugTools/QuestProbe.cs::DoctorConfirmModalVtableRva,
+	// DebugTools/DoctorShopSemanticCommand.cs::ExpectedDialogVtableRva (đã sửa cùng lượt).
+	constexpr uintptr_t NpcConfirmModalVtableRva = 0x0048CF3C;
 	constexpr uintptr_t NpcConfirmControlOffset = 0x00000248;
 	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật đọc trực tiếp từ runtime (DEBUG_REPAIR_POPUP_REFERENCE_SUMMARY | Label=VTABLE | Target=0x008732BC, auto-runtime.log 19:36:59.014), chưa build/test runtime.
-	constexpr uintptr_t RepairConfirmModalVtableRva = 0x004732BC;
+	// Cập nhật lại sau bản update 2026-09-29 bằng cùng kỹ thuật context-byte (VA cũ 0x68F4FE): 14/14 tổ hợp cửa sổ
+	// đồng thuận DUY NHẤT RVA mới 0x4952BC. Delta +0x22000 khớp CHÍNH XÁC với NpcConfirmModalVtableRva ở trên — hai
+	// vtable cùng vùng .rdata dời cùng lượng, đúng như quy luật đã ghi nhận ở lần cập nhật trước. PHẢI đồng bộ với
+	// DebugTools/ModalVtableProbe.cs::CurrentRepairConfirmModalVtableRva (đã sửa cùng lượt).
+	constexpr uintptr_t RepairConfirmModalVtableRva = 0x004952BC;
 	constexpr uintptr_t RepairConfirmControlOffset = 0x00001174;
 	constexpr int ModalConfirmEvent = 0x565;
 	constexpr size_t PrepareMethodVtableOffset = 0x74;
@@ -42,11 +58,15 @@ namespace GameClientAddresses {
 	//     ret 4. Nhánh index > 0x1FF ghi -1 (bỏ chọn). Chữ ký khớp SelectGroundItemFunction: __thiscall(void*, int).
 	// CHƯA VERIFY runtime: mới chứng minh hàm này GHI biến mục tiêu, chưa chứng minh gọi nó là hội thoại NPC mở ra.
 	constexpr size_t SelectEntityMethodVtableOffset = 0x1C;
-	constexpr uintptr_t CurrentTargetIndexRva = 0x004CE688;
+	// Cập nhật sau bản update 2026-09-29, cùng delta +0x24068 với Globals.CurrentTargetIndex bên managed — xác nhận
+	// bằng ngữ nghĩa: PID 19040 (đang có mục tiêu) đọc ra 99, 5 client còn lại (chưa chọn ai) đọc ra -1.
+	constexpr uintptr_t CurrentTargetIndexRva = 0x004F2674;
 	constexpr size_t SaleMethodVtableOffset = 0x10;
 	constexpr int SaleOpcode = 0x19;
-	// Cập nhật sau bản game 2026-08-28: xác nhận qua symbol Ghidra DAT_00e7fe24 trong decompile hàm ATTACK mới, khớp delta +0x2020. Chưa build/test runtime.
-	constexpr uintptr_t InventoryRootRva = 0x00A7FE24;
+	// Cập nhật sau bản game update 2026-09-29 (server "toang", SizeOfImage 0x1FA7000). Cùng bằng chứng và cùng delta
+	// +0x24060 với Utils/GameAddresses.cs::Globals.InventoryRoot bên managed — xem chú thích ở đó (xác nhận bằng chuỗi
+	// InventoryRoot->[+0x41D3C]->EntityTable->HP/MaxHP hợp lý trên PID 19040 đang thật sự trong game).
+	constexpr uintptr_t InventoryRootRva = 0x00AA3E84;
 	constexpr uintptr_t InventoryObjectOffset = 0x0004B7BC;
 	constexpr uintptr_t InventorySlotListPointerOffset = 0x00000000;
 	constexpr int InventorySlotCount = 35;
@@ -66,25 +86,36 @@ namespace GameClientAddresses {
 	// đã lệch. Giá trị mới do BuffPacketSenderProbe đọc trực tiếp trên tiến trình game: chữ ký 34 byte khớp đúng
 	// một lần trong toàn ảnh, toán hạng global đọc ra 0x008EEF98 (bản cũ 0x008ECF78).
 	// Không còn dùng call site để xác thực vì đó chính là thứ vỡ sau mỗi lần client cập nhật.
-	constexpr uintptr_t InventoryCoordinateFunctionRva = 0x00045050;
-	// EntityTableRva, GroundRecordTablePointerRva, GroundCoordinateConverterRva, ResetPickupFunctionRva, PickupMovementFunctionRva, BuffActionFunctionRva, PickupFunctionRva:
-	// cập nhật sau bản game 2026-08-28, xác nhận bằng BSim + decompile đối chiếu chéo (control-flow, field offset, call-graph) với dump runtime mới; chưa build/test runtime.
-	constexpr uintptr_t EntityTableRva = 0x0095FF60;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x445050 khớp DUY NHẤT
+	// FUN_00446050@0x446050 (Similarity=1.0, Significance=24.0). Byte thật khớp tuyệt đối 28/28 byte, không cần sửa chữ ký.
+	constexpr uintptr_t InventoryCoordinateFunctionRva = 0x00046050;
+	// EntityTableRva, GroundRecordTablePointerRva: cập nhật sau bản update 2026-09-29, cùng delta +0x24060 và cùng bằng
+	// chứng với Globals.EntityTable/Item.GroundRecordTablePointer bên managed (xem GameAddresses.cs).
+	// GroundCoordinateConverterRva, ResetPickupFunctionRva, PickupMovementFunctionRva, BuffActionFunctionRva,
+	// PickupFunctionRva: cập nhật bằng Ghidra headless + BSim (dump PID 9848 import vào project Recovery0929, commit
+	// signature vào clientdiff.mv.db, đối chiếu BSim với baseline Recovery034-20260828 đã xác nhận). Mọi match đều
+	// Similarity>=0.999 và Significance vượt xa ngưỡng 10.0. GroundCoordinateConverterRva/PickupMovementFunctionRva
+	// đã xác nhận thêm bằng quét chữ ký byte trực tiếp (xem RuntimeLayoutResolver.cs). PickupFunctionRva đối chứng
+	// thêm bằng literal InventoryRoot nhúng trong thân hàm khớp đúng giá trị đã xác nhận sống (0x00EA3E84).
+	constexpr uintptr_t EntityTableRva = 0x0073A0C4;
 	constexpr uintptr_t PlayerEntityIndex = 1;
 	constexpr uintptr_t EntityStride = 0x0000D87C;
-	constexpr uintptr_t GroundRecordTablePointerRva = 0x0054DCC0;
+	constexpr uintptr_t GroundRecordTablePointerRva = 0x00571D20;
 	constexpr uintptr_t GroundRecordStride = 0x000003A4;
 	constexpr uintptr_t GroundRecordIdOffset = 0x00000014;
 	constexpr uintptr_t GroundRecordStateOffset = 0x0000001C;
-	constexpr uintptr_t GroundCoordinateConverterRva = 0x002FBC30;
-	constexpr uintptr_t ResetPickupFunctionRva = 0x00347380;
-	constexpr uintptr_t PickupMovementFunctionRva = 0x0031EF70;
-	constexpr uintptr_t BuffActionFunctionRva = 0x0031EF70;
+	constexpr uintptr_t GroundCoordinateConverterRva = 0x00300E10;
+	constexpr uintptr_t ResetPickupFunctionRva = 0x0034C6C0;
+	constexpr uintptr_t PickupMovementFunctionRva = 0x00324240;
+	constexpr uintptr_t BuffActionFunctionRva = 0x00324240;
 	// Cập nhật 2026-09-03: runtime bản 28/08 từ chối lệnh 85. Probe đọc trên tiến trình game cho thấy hàm dựng gói
 	// cast (opcode 0xB5, độ dài 11) nay ở RVA 0x3AC740, thunk JMP ở 0x3AC590, CALL builder ở 0x3AC5AE.
 	// Bản 24/08 có bộ ba tương ứng 0x3AA500 / 0x3AA360 / 0x3AA37E, khoảng cách thunk→CALL giữ nguyên 0x1E.
 	// DEV auto gọi thẳng builder vì thunk chỉ là một lệnh JMP, và xác thực bằng chữ ký byte trong chính hàm.
-	constexpr uintptr_t CastSkillFunctionRva = 0x003AC740;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x7AC740 khớp DUY NHẤT
+	// FUN_007b1950@0x7B1950 (Similarity=1.0, Significance=25.5). Byte tại CastSendSiteOffset khớp tuyệt đối với bản
+	// cũ ngoại trừ đích tương đối của 1 lệnh CALL (dịch chuyển bình thường theo hàm), không nằm trong vùng chữ ký.
+	constexpr uintptr_t CastSkillFunctionRva = 0x003B1950;
 	constexpr uintptr_t CastSendSiteOffset = 0x00000031;
 	// Cập nhật 2026-09-03: hàm gửi skill hỗ trợ bị động của hệ Dị Nhân (Kim Cang / Cường Công / Bồ Đề / Tật Phong).
 	// Chuỗi bằng chứng: thân thread _TBuffDịNhân của AutoFS (VectorFactory.SplitDisk, khôi phục từ IL vì ILSpy hỏng)
@@ -94,7 +125,10 @@ namespace GameClientAddresses {
 	// cả cách quét khuôn chung 175 hàm cũng chỉ ra đúng một hàm có opcode 0x72 kèm độ dài 5.
 	// Cả 5 caller của hàm này đều dựng this bằng entityTable + index * EntityStride, tức this là entity nhân vật.
 	// Chưa build/test runtime.
-	constexpr uintptr_t PassiveBuffFunctionRva = 0x0031F850;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x71F850 khớp DUY NHẤT
+	// FUN_00724b20@0x724B20 (Similarity=1.0, Significance=61.6 — chỉ 1 ứng viên). Byte tại PassiveBuffSendSiteOffset
+	// khớp TUYỆT ĐỐI 100% với bản cũ, không lệch dù chỉ 1 byte.
+	constexpr uintptr_t PassiveBuffFunctionRva = 0x00324B20;
 	constexpr uintptr_t PassiveBuffSendSiteOffset = 0x00000056;
 	constexpr int PassiveBuffMaximumSkillId = 0x7CF;
 	// Hàm mua vật phẩm của chức năng "Tự động mua thuốc" có sẵn trong client (tương ứng lệnh 95 của AutoFS, gọi hàm
@@ -108,17 +142,26 @@ namespace GameClientAddresses {
 	//     Bổ Tâm trung (1,20,0) — khớp mã 0/1/19/20 của AutoFS. Ba byte cuối do gói server opcode 0x32 mang tới, ý nghĩa
 	//     CHƯA biết nên Auto truyền 0.
 	// Chữ ký trùng khớp trên cả 6 client (cùng bản build 2026-09-18). Chưa gọi thử ở runtime.
-	constexpr uintptr_t QuickBuyFunctionRva = 0x00346010;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x746010 khớp DUY NHẤT
+	// FUN_0074b330@0x74B330 trong dump mới (Similarity=0.978, Significance=377.2 — cao nhất toàn bộ lượt dò lại này).
+	// Đối chứng byte thật: thân hàm giống hệt ngoài kích thước stack alloc (0x5C->0x60) và địa chỉ cookie bảo mật
+	// (__security_cookie, 0x8DD000->0x901000) — cả hai đều là khác biệt build bình thường, không phải sai hàm.
+	constexpr uintptr_t QuickBuyFunctionRva = 0x0034B330;
 	constexpr uintptr_t QuickBuyThisOffset = 0x00035F60;
 	constexpr int QuickBuyMaximumQuantity = 100;
 	// Gói mua tự dựng (lệnh 328), đọc từ disassembly 0x746010 (chưa chạy): bảng thuốc VA 0xE98FFC, hàm tra 0x755D20 (thiscall, ret 0x10),
 	// đối tượng mạng [VA 0x918718] (gửi qua vtable[0x20]), loại tiền [root+0x6B764], cờ chờ phản hồi [root+0x4B79C] (= root+0x41D44+0x9A58, đúng cờ mà hàm 0x746010 kiểm ở 0x74607B và 0x7D2430 đặt sau khi gửi).
-	constexpr uintptr_t QuickBuyLookupFunctionRva = 0x00355D20;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x755D20 khớp DUY NHẤT
+	// FUN_0075b390@0x75B390 (Similarity=1.0). Byte thật khớp tuyệt đối 13/13 byte đầu, không cần sửa chữ ký.
+	constexpr uintptr_t QuickBuyLookupFunctionRva = 0x0035B390;
 	// Hàm dùng vật phẩm của client (thiscall, ret 4): this = InventoryRoot + 0x41D44 (trình quản lý vật phẩm), tham số = id
 	// vật phẩm trong bảng item (đúng giá trị nằm trong mảng ô túi). Gửi gói 0x4D gồm (room, x, y) của món và id server [item+0xA9C].
 	// Chính tính năng tự dùng thuốc của game gọi hàm này ở 0x7D364F (hàm 0x7D3160, được gọi với ecx = root+0x41D44 tại
 	// 0x76018D và 0x77274A). Dò từ dump Game.exe ngày 2026-09-26.
-	constexpr uintptr_t UseItemFunctionRva = 0x003D5550;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x7D5550 khớp DUY NHẤT
+	// FUN_007da6e0@0x7DA6E0 (Similarity=1.0, Significance=49.3 — ứng viên gần nhất chỉ 0.57). Byte thật khớp tuyệt đối
+	// ngoài cùng địa chỉ cookie bảo mật đã đổi như QuickBuyFunctionRva ở trên.
+	constexpr uintptr_t UseItemFunctionRva = 0x003DA6E0;
 	constexpr uintptr_t UseItemThisOffset = 0x00041D44;
 	constexpr int UseItemMaximumItemId = 0x001FFFFF;
 	// Buy from the open NPC shop (AutoFS command 14 called old client 0x652EF0(index, count)). Found 2026-09-27 in the
@@ -128,13 +171,20 @@ namespace GameClientAddresses {
 	// {0xA3, position, count} through vtable[0x20] of [0x918718] and sets the lock. Position = index inside the open
 	// shop row: BuySell object VA 0xE99014 (+0 rows, +4 item records stride 0x1800, +8 max per row, +0xC row count),
 	// open shop id [root+0x4C600]. Signature unique in the image. Not called at runtime yet.
-	constexpr uintptr_t ShopBuyFunctionRva = 0x003ABF90;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x7ABF90 cho ra 2 ứng viên điểm BSim
+	// BẰNG NHAU (0x7B11A0 và 0x7B1680, Similarity=1.0/Significance=32.6 cả hai) — không tin điểm số một mình, đã so
+	// byte thật: 0x7B11A0 khớp TUYỆT ĐỐI với chữ ký cũ (kể cả stack alloc 0x08), 0x7B1680 lệch ở byte stack alloc
+	// (0x0C thay vì 0x08). Chọn 0x7B11A0 -> RVA mới 0x3B11A0.
+	constexpr uintptr_t ShopBuyFunctionRva = 0x003B11A0;
 	constexpr int ShopBuyMaximumCount = 100;
-	constexpr uintptr_t QuickBuyPotionTableRva = 0x00A98FFC;
-	constexpr uintptr_t QuickBuyNetworkObjectRva = 0x00518718;
+	// Cập nhật sau bản update 2026-09-29: QuickBuyPotionTableRva theo delta +0x24060 (cùng cụm ShopCatalog managed, đã
+	// đối chứng cấu trúc ShopCatalog khớp tuyệt đối trên PID 19040), chỉ đọc ra con trỏ hợp lệ, CHƯA đối chứng cấu
+	// trúc riêng. QuickBuyNetworkObjectRva theo delta +0x24078 (cụm khác, 239/350 hit đồng thuận khi quét context).
+	constexpr uintptr_t QuickBuyPotionTableRva = 0x00ABD05C;
+	constexpr uintptr_t QuickBuyNetworkObjectRva = 0x0053C790;
 	constexpr uintptr_t QuickBuyCurrencyTypeOffset = 0x0006B764;
 	constexpr uintptr_t QuickBuyPendingFlagOffset = 0x0004B79C;
-	constexpr uintptr_t PickupFunctionRva = 0x003AC300;
+	constexpr uintptr_t PickupFunctionRva = 0x003B1510;
 	// Cập nhật 2026-09-06 sau khi client dời object popup Về thành. Nguồn: ModalVtableProbe chạy lúc popup chết đang mở
 	// (ModuleBase=0x00400000, Modal=0x008FED58), đối chiếu death.log ghi cùng giá trị ở cả 5 tiến trình lúc chết.
 	//   Object  0x004FCD38 -> 0x004FED58  (MODAL_VTABLE_OBJECT | ObjectRva=0x4FED58)
@@ -161,9 +211,20 @@ namespace GameClientAddresses {
 	// 0x51150 nhận HAI đối số (this->[0x18] += [ebp+8] ; this->[0x1C] += [ebp+0Ch], hàm dời toạ độ UI) nên gọi bằng
 	// __thiscall một đối số làm lệch stack. Hàm Về thành thật KHÔNG nằm trong vtable của modal, đúng như manifest gốc
 	// AutoFS (MOV EAX,imm / CALL EAX = hàm không ảo); nó chỉ được gọi từ bộ điều phối sự kiện ở bước 2.
-	constexpr uintptr_t ReturnToTownObjectRva = 0x004FED58;
-	constexpr uintptr_t ReturnToTownObjectVtableRva = 0x004696E0;
-	constexpr uintptr_t ReturnToTownFunctionRva = 0x001A7810;
+	// Cập nhật sau bản update 2026-09-29: quét immediate 4-byte tĩnh thất bại (không có literal nào tham chiếu tới
+	// object này), nhưng bắt SỐNG được đúng lúc PID 26680 (MaiAnhNhe) đang chết thật (Hp=0, xác nhận lại được ở lần
+	// đọc thứ hai cách nhau một lúc — không phải giá trị thoáng qua): ModalState đọc ra con trỏ 0x00922DC0, RVA =
+	// 0x522DC0, đúng bằng 0x4FED58 + 0x24068 — TRÙNG KHÍT delta cụm B (cùng cụm ModalState/ShopState/MapId đã xác
+	// nhận nhiều lần trong bản update này). Vtable tại object đó đọc ra RVA 0x48B6E0 = 0x4696E0 + 0x22000, TRÙNG
+	// KHÍT delta của NpcConfirmModalVtableRva/RepairConfirmModalVtableRva (cùng +0x22000) — hai bằng chứng độc lập
+	// cùng hội tụ, không phải suy đoán delta đơn lẻ.
+	constexpr uintptr_t ReturnToTownObjectRva = 0x00522DC0;
+	constexpr uintptr_t ReturnToTownObjectVtableRva = 0x0048B6E0;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: VA cũ 0x5A7810 khớp DUY NHẤT
+	// FUN_005a8c90@0x5A8C90 (Similarity=1.0, Significance=25.7 — ứng viên kế chỉ 0.80). Byte thật khớp tuyệt đối
+	// ngoại trừ 2 đích CALL tương đối (dịch chuyển bình thường) và có thêm 1 byte NOP đệm (0x90) chèn ngay sau CALL
+	// thứ hai so với bản cũ — đã đưa NOP đó vào chữ ký mới cho khớp đúng vị trí byte.
+	constexpr uintptr_t ReturnToTownFunctionRva = 0x001A8C90;
 	// Cập nhật 2026-09-02 (PE TimeDateStamp 0x6A8DD698): toàn bộ chuỗi hàm dưới đây lấy từ decompile + disassembly thật
 	// của FUN_004637c0 trong dump đã phân tích bằng Ghidra. FUN_004637c0 chính là binding Chat(kênh, nội dung) mà
 	// script của client gọi, và nó tự thực hiện đủ các bước gửi chat; mọi lời gọi đều là __cdecl (mỗi CALL đều kèm
@@ -178,13 +239,32 @@ namespace GameClientAddresses {
 	// Ba hằng số ScriptExecuteFunctionRva/ScriptExecuteCallRva/ScriptContextRva đã bị gỡ: decompile FUN_00471480 cho
 	// thấy nó chỉ duyệt danh sách handler script đã đăng ký rồi trả -1 khi không handler nào chặn, nên nó KHÔNG gửi
 	// chat - đúng với bằng chứng runtime 2026-09-02 (Confirmed=True nhưng tin nhắn không xuất hiện).
-	constexpr uintptr_t ChannelCodeFromIndexRva = 0x000B0850;
-	constexpr uintptr_t ChannelTypeFromIndexRva = 0x000B02D0;
-	constexpr uintptr_t ChatGateFunctionRva = 0x000B3E40;
-	constexpr uintptr_t ChatPackFunctionRva = 0x0017C6C0;
-	constexpr uintptr_t ChatEncodeFunctionRva = 0x00417F5E;
-	constexpr uintptr_t ChannelActivateFunctionRva = 0x000AE3C0;
-	constexpr uintptr_t ChatSendFunctionRva = 0x000B8620;
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim (batch 1 lượt cho cả 7 hàm chat/kênh):
+	// - ChannelCodeFromIndexRva: VA cũ 0x4B0850 cho 2 ứng viên BSim ĐIỂM BẰNG NHAU (0x4B1190 và 0x4B1770,
+	//   Similarity=1.0/Significance=47.9 cả hai) — không tin điểm số, đã phân định bằng khoảng cách tương đối với
+	//   ChannelTypeFromIndex: bản cũ cách nhau đúng +0x580 (0xB0850-0xB02D0), chỉ 0x4B1770 giữ đúng khoảng cách này
+	//   với ChannelTypeFromIndex mới (0x4B11F0), 0x4B1190 thì không — chọn 0x4B1770.
+	// - ChannelTypeFromIndexRva: VA cũ 0x4B02D0 khớp DUY NHẤT FUN_004b11f0@0x4B11F0 (Similarity=1.0, Significance=32.8).
+	// - ChatGateFunctionRva: VA cũ 0x4B3E40 khớp DUY NHẤT FUN_004b4de0@0x4B4DE0 (Similarity=1.0, Significance=27.4).
+	// - ChatPackFunctionRva: VA cũ 0x57C6C0 khớp DUY NHẤT FUN_0057d430@0x57D430 (Similarity=1.0, Significance=112.7).
+	// - ChannelActivateFunctionRva: VA cũ 0x4AE3C0 khớp DUY NHẤT FUN_004af230@0x4AF230 (Similarity=1.0, Significance=141.7).
+	// - ChatEncodeFunctionRva: BSim không match được (MATCH_COUNT=0, hàm chỉ là JMP gián tiếp FF 25 imm32 kiểu thunk
+	//   /INCREMENTAL nên không đủ nội dung để so). Context-byte quanh literal cũng thất bại (0/8 tổ hợp) vì đây là
+	//   một trong hàng chục thunk GIỐNG HỆT NHAU liền kề nhau trong bảng — không có gì phân biệt được bằng byte lân cận.
+	//   Tìm được bằng kỹ thuật khác: dò ngược từ hàm gọi FUN_004637c0 (binding Chat của client) trong dump CŨ, xác
+	//   định đúng lệnh CALL nằm giữa lệnh gọi ChatPack và ChannelActivate (VA cũ 0x4638E8 -> đích 0x817F5E =
+	//   0x400000+0x417F5E, khớp RVA cũ). Sang dump MỚI: tìm mọi lệnh CALL nhắm tới ChatPackFunctionRva mới đã xác
+	//   nhận (0x57D430) — ra 16 vị trí gọi trên toàn ảnh — rồi lấy lệnh CALL kế tiếp ngay sau mỗi vị trí đó: 10/10 vị
+	//   trí hội tụ TUYỆT ĐỐI về cùng một đích 0x81D30E. Byte thật tại RVA 0x41D30E vẫn đúng khuôn thunk cũ
+	//   (FF 25 4C 51 87 00 = JMP DWORD PTR [0x0087514C], so với cũ FF 25 4C 31 85 00 = JMP DWORD PTR [0x0085314C]).
+	constexpr uintptr_t ChannelCodeFromIndexRva = 0x000B1770;
+	constexpr uintptr_t ChannelTypeFromIndexRva = 0x000B11F0;
+	constexpr uintptr_t ChatGateFunctionRva = 0x000B4DE0;
+	constexpr uintptr_t ChatPackFunctionRva = 0x0017D430;
+	constexpr uintptr_t ChatEncodeFunctionRva = 0x0041D30E;
+	constexpr uintptr_t ChannelActivateFunctionRva = 0x000AF230;
+	// ChatSendFunctionRva: VA cũ 0x4B8620 khớp DUY NHẤT FUN_004b95c0@0x4B95C0 (Similarity=1.0, Significance=115.1).
+	constexpr uintptr_t ChatSendFunctionRva = 0x000B95C0;
 	constexpr size_t ChatPacketBufferSize = 0x600;
 
 	// --- Đăng nhập ---

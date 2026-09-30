@@ -2,11 +2,27 @@ namespace Auto.Utils;
 
 public static class GameAddresses {
 	public const string ModuleName = "Game.exe";
-	public const int ModuleMaximumSize = 0x1F7D000;
+	// Không có nơi nào tham chiếu hằng số này trong code hiện tại (kiểm bằng grep 2026-09-29) — cập nhật cho đúng
+	// SizeOfImage thật đo được sau bản update 2026-09-29 (base=0x400000, size=0x1FA7000, PID 9848).
+	public const int ModuleMaximumSize = 0x1FA7000;
 
 	public static class Globals {
-		// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng BSim + decompile đối chiếu chéo với PICKUP/RESET_PICKUP mới, chưa build/test runtime.
-		public const int EntityTable = 0x95FF60;
+		// Cập nhật sau bản game update 2026-09-29 (server báo "toang", SizeOfImage đo được 0x1FA7000, cũ 0x1F83000/0x1F7D000).
+		// Xác nhận bằng đối chiếu byte-context giữa dump cũ (game2228.bin, 2026-09-25) và dump mới (PID 19040, đang thật sự
+		// trong game — 5/6 client khác vẫn ở màn chọn nhân vật nên đọc ra 0 là bình thường, KHÔNG phải bằng chứng RVA sai):
+		// EntityTable+ItemTable+GroundRecordTable+InventoryRoot+MapCoordinateRoot đều lệch cùng +0x24060; MapId+MapIdMirror
+		// lệch +0x24068; MapIdRuntimeMirror lệch +0x24060. Xác nhận CHẮC (không chỉ khớp offset) bằng cách đi trọn chuỗi
+		// InventoryRoot->[+0x41D3C]=chỉ số nhân vật->EntityTable+index*0xD87C: PID 19040 ra player_idx=1, entity đó có
+		// HP=511/MaxHP=667 (hợp lý), và cả 3 bản sao MapId cùng đồng thuận =35 (Đại Trạch). CurrentTargetIndex đối chiếu
+		// đúng ngữ nghĩa cũ: PID 19040 (đang có mục tiêu) đọc ra 99, 5 client còn lại đọc ra -1 (chưa chọn ai).
+		// CHƯA GIẢI QUYẾT (giữ nguyên RVA cũ, gần như chắc chắn cũng sai theo bản update này, cần thêm bằng chứng runtime
+		// trực tiếp lúc trạng thái đó xảy ra — mở shop / bật popup Về thành / có mục tiêu chiến đấu đang khoá):
+		// ShopState và ModalState đã có ứng viên (delta +0x24068, giống MapId) nhưng CHƯA có state ĐANG BẬT nào để đối
+		// chứng (đọc 0/1 giống nhau ở mọi client không loại được khả năng trúng ô hằng-số khác luôn 0). CombatTargetRoot,
+		// ReturnToTownModal, DialogPointer không tìm được bằng quét immediate 4-byte trong cả hai dump (có thể được nạp
+		// qua thanh ghi/offset nhỏ thay vì literal tuyệt đối) — RVA cũ bên dưới GIỮ NGUYÊN nhưng KHÔNG ĐƯỢC TIN, cần dò
+		// lại bằng phương pháp khác (ví dụ bắt đúng lúc popup mở / có mục tiêu combat).
+		public const int EntityTable = 0x73A0C4;
 		// Sửa 2026-09-17: giá trị cũ 0x4CB668 CHẾT trên client 1.28. Bằng chứng đo trực tiếp trên bản dump toàn
 		// module (0x400000 + 0x1F83000) của tiến trình đang chạy:
 		//   - 0x4CB668: KHÔNG có một lệnh nào đọc/ghi trong cả 33 MB (quét A3/890D/8915/891D/8935/893D/C705/A1/8B0D),
@@ -16,33 +32,38 @@ public static class GameAddresses {
 		//     đọc ra đúng tên TCVN3 A7B96920706875 ("Đại phu") tại 59162/93139 — khớp toạ độ trong repair.log.
 		//   - Hàm ghi vào nó nằm ở RVA 0x2CB070: cmp eax,0x1FF / mov [0x8CE688],eax / ret 4.
 		// CHƯA VERIFY runtime: mới chứng minh đọc ra đúng số, chưa chạy Auto để xem nhánh dùng nó đổi hành vi thế nào.
-		public const int CurrentTargetIndex = 0x4CE688;
-		// Cập nhật sau bản game 2026-08-28: xác nhận qua chính tên symbol Ghidra tự gán (DAT_00e7fe24) khi decompile hàm ATTACK mới đã đối chiếu xong (dòng *(int*)(DAT_00e7fe24+0x41d3c)), khớp delta +0x2020. Đọc byte thô tại đây có thể =0 do con trỏ chỉ được game gán khi cần, không phải bằng chứng RVA sai. Là nguyên nhân "Game root chưa sẵn sàng | SAFE_REJECT" trong repair.log. Chưa build/test runtime.
-		public const int InventoryRoot = 0xA7FE24;
-		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (bản cũ đọc được con trỏ hợp lệ 0x1798E020 tại RVA cũ; bản mới tại RVA cũ đọc ra 0, tại RVA lệch +0x2020 đọc được con trỏ hợp lệ khác 0x16DBC020). Chưa build/test runtime.
-		public const int ItemTable = 0x541068;
+		public const int CurrentTargetIndex = 0x4F2674;
+		public const int InventoryRoot = 0xAA3E84;
+		public const int ItemTable = 0x5650C8;
+		// UNUSED_NO_RULE từ trước bản update này (không có nơi nào tham chiếu) — giữ nguyên RVA cũ, KHÔNG xác nhận lại.
 		public const int AttackManager = 0x4E0640;
-		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật trong hàm CONVERTER mới (lệnh ADD ECX,[0x9FA080] tại RVA 0x2FBC30+0x21), lệch đúng +0x2020 so với giá trị cũ như ENTITY_TABLE/GROUND_TABLE/ATTACK_MANAGER. Chưa build/test runtime.
-		public const int MapCoordinateRoot = 0x9FA080;
+		public const int MapCoordinateRoot = 0xA1E0E0;
+		// CHƯA XÁC NHẬN LẠI sau bản update 2026-09-29 — xem ghi chú ở EntityTable. Quét immediate 4-byte không tìm
+		// được ứng viên nào trong cả hai dump; giữ nguyên RVA cũ dù gần như chắc chắn cũng sai.
 		public const int CombatTargetRoot = 0x3A95D8;
-		// Cập nhật sau bản game 2026-08-28: xác nhận bằng đọc byte thật (cả 3 giá trị cùng đồng thuận = 21 tại vị trí lệch +0x2020 so với bản cũ). Nguyên nhân "Map=0" xuyên suốt log và "Tự lên bãi" không chạy sau khi phù về (GameMapReader.Read luôn fail). Chưa build/test runtime.
-		public const int MapId = 0x503B1C;
-		public const int MapIdMirror = 0x503B20;
-		public const int MapIdRuntimeMirror = 0x518B68;
-		// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật (16 byte ngữ cảnh quanh RVA lệch +0x2020 khớp tuyệt đối với bản cũ), khớp lỗi "DEBUG_REPAIR_SHOP_FAIL | ShopState=0" khi test debug Sửa đồ. Chưa build/test runtime.
-		public const int ModalState = 0x4EEF88;
+		public const int MapId = 0x527B84;
+		public const int MapIdMirror = 0x527B88;
+		public const int MapIdRuntimeMirror = 0x53CBC8;
+		// Ứng viên delta +0x24068 (cùng cụm với MapId/MapIdMirror), nhưng CHƯA đối chứng được lúc modal thật sự đang mở —
+		// đọc ra 0 giống nhau ở mọi client không loại được khả năng trúng ô hằng-số khác luôn 0. Cần bắt đúng lúc có popup.
+		public const int ModalState = 0x512FF0;
+		// CHƯA XÁC NHẬN LẠI — xem ghi chú ở EntityTable.
 		public const int DialogPointer = 0x500BE0;
-		public const int ShopState = 0x4EF6D8;
-		// Client shop catalog (BuySell object, VA 0xE99014): +0 pointer to rows (one int* per shop id), +4 item records
+		// Ứng viên delta +0x24068, CHƯA đối chứng lúc shop thật sự đang mở (ShopState nên =2) — xem ghi chú ModalState.
+		public const int ShopState = 0x513740;
+		// Client shop catalog (BuySell object): +0 pointer to rows (one int* per shop id), +4 item records
 		// (stride Item.InventoryRecordStride, name at Item.InventoryName, weight at Item.Weight), +8 max positions per row,
-		// +0xC row count, +0x10 record count. Read on PhâyKer 2026-09-27: 61 rows, 46 positions, 1026 records; shop 14
-		// (Đại Phu map 32) = Tiểu Hồng đơn, Tiểu Hoàn đơn, Trung Hồng đơn, Trung Hoàn đơn. Id of the open shop:
-		// Inventory.OpenShopId.
-		public const int ShopCatalog = 0xA99014;
-		// Bản client 2026-09-06 dời object popup Về thành +0x2020 (cũ 0x4FCD38). Đo từ runtime: death.log ghi
-		// Modal=0x008FED58 với ModuleBase=0x00400000 ở cả 5 tiến trình lúc chết, xác nhận lại bằng ModalVtableProbe
-		// (MODAL_VTABLE_OBJECT | InModule=True | ObjectRva=0x4FED58).
-		public const int ReturnToTownModal = 0x4FED58;
+		// +0xC row count, +0x10 record count. Read on PhâyKer 2026-09-27 (pre-update): 61 rows, 46 positions, 1026
+		// records; shop 14 (Đại Phu map 32) = Tiểu Hồng đơn, Tiểu Hoàn đơn, Trung Hồng đơn, Trung Hoàn đơn. Id of the
+		// open shop: Inventory.OpenShopId.
+		// RVA re-verified after the 2026-09-29 server update (same +0x24060 delta as EntityTable/ItemTable): read live
+		// on PID 19040, structure content UNCHANGED — 61 rows, 46 positions, 1026 records match exactly.
+		public const int ShopCatalog = 0xABD074;
+		// Cập nhật sau bản update 2026-09-29: xem GameClientAddresses.h::ReturnToTownObjectRva cho đầy đủ bằng chứng
+		// (bắt sống lúc PID 26680 chết thật, delta +0x24068 khớp cụm B, đối chứng chéo bằng vtable +0x22000).
+		// Đây chính là nguyên nhân "Không tự về thành khi chết được" — deathModal không bao giờ khớp expectedModal
+		// (AccountEngineCoordinator.HandleDeathPopup dòng 960) nên playerDead luôn false dù Hp đã về 0.
+		public const int ReturnToTownModal = 0x522DC0;
 		// Con trỏ tới khối chứa sức lực mang đồ; cộng Inventory.CurrentStrength / Inventory.MaximumStrength để ra cặp.
 		//
 		// Tìm bằng cách quét ngược con trỏ tới ô 0x28079C9C đã lọc được: trong 65 con trỏ trỏ vào khối đó, chỉ 2 cái
@@ -199,8 +220,10 @@ public static class GameAddresses {
 	}
 
 	public static class Item {
-		// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng BSim + decompile, hàm command 78 mới cùng field offset và gọi đúng CONVERTER/MOVEMENT/PICKUP mới.
-		public const int GroundRecordTablePointer = 0x54DCC0;
+		// Cập nhật sau bản update 2026-09-29 (cùng delta +0x24060 với EntityTable/ItemTable). Xác nhận trực tiếp trên
+		// PID 18996 đang sống: RVA cũ đọc ra 0 (FAIL_NULL trong address-audit), RVA mới đọc ra con trỏ hợp lệ
+		// 0x19B65024, cùng khuôn với các con trỏ khác đã PASS (InventoryRoot=0x135D0048, ItemTable=0x16ED2020).
+		public const int GroundRecordTablePointer = 0x571D20;
 		public const int GroundRecordStride = 0x3A4;
 		public const int GroundRecordId = 0x14;
 		public const int GroundRecordType = 0x18;

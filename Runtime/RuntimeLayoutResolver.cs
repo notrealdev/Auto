@@ -12,7 +12,11 @@ public static class RuntimeLayoutResolver {
 	private static readonly byte[] GroundCoordinateConverterSignature = { 0x55, 0x8B, 0xEC, 0xFF, 0x75, 0x0C, 0xFF, 0x75, 0x08, 0xFF, 0x71, 0x3C };
 	private static readonly byte[] AttackWriterSignature = { 0xC7, 0x81, 0x94, 0xD7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x89, 0xB9, 0x98, 0xD7, 0x00, 0x00, 0xC6, 0x81, 0xA0, 0xD7, 0x00, 0x00, 0x01 };
 	// Cập nhật sau bản game 2026-08-28: 2 byte thứ 7-8 là con trỏ nội bộ SEH đổi theo từng lần build (xác nhận qua so byte thật cũ/mới), đổi cùng lúc với RVA tại nơi gọi MatchesAt.
-	private static readonly byte[] RepairConfirmationSignature = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xB7, 0x3B, 0x84, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00 };
+	// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim: hàm cũ VA 0x6935A0 khớp DUY NHẤT
+	// FUN_00697d60@0x697D60 (Similarity=1.0, Significance=245.2 — cao nhất trong toàn bộ lượt dò lại này). RVA mới =
+	// 0x297D60. Byte 7-9 (con trỏ SEH nội bộ) đổi từ B7 3B 84 -> D7 58 86 như dự kiến, phần còn lại của thân hàm giữ
+	// nguyên tuyệt đối.
+	private static readonly byte[] RepairConfirmationSignature = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xD7, 0x58, 0x86, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00 };
 	private static readonly ConcurrentDictionary<int, RuntimeLayout> confirmedByProcess = new();
 	private static readonly ConcurrentDictionary<string, RuntimeLayout> confirmedByFingerprint = new(StringComparer.Ordinal);
 	private static readonly ConcurrentDictionary<int, (DateTime RetryUtc, RuntimeLayout Layout)> unavailableByProcess = new();
@@ -74,8 +78,8 @@ public static class RuntimeLayoutResolver {
 			}
 			// Client cập nhật 2026-08-28: chữ ký cũ không còn khớp ở đâu trong toàn bộ image, EntityTable xác nhận bằng BSim + decompile chéo với PICKUP/RESET_PICKUP mới.
 			if (validated.Count == 0 && IsCurrentUpdateClient(image)) {
-				RuntimeLayout updateCandidate = CreatePlayerCandidate(fingerprint, states, 0x95FF60);
-				if (ValidatePlayer(processId, updateCandidate, out _)) validated.Add(0x95FF60);
+				RuntimeLayout updateCandidate = CreatePlayerCandidate(fingerprint, states, GameAddresses.Globals.EntityTable);
+				if (ValidatePlayer(processId, updateCandidate, out _)) validated.Add(GameAddresses.Globals.EntityTable);
 			}
 			if (validated.Count != 1) return CreateUnavailable(fingerprint, states, $"Player signature validation expected one candidate but found {validated.Count}.");
 			states[RuntimeSubsystem.Player] = RuntimeSubsystemState.Confirmed($"Validated HP/MP accessor signature and player fields | EntityTableRva=0x{validated[0]:X}");
@@ -93,8 +97,14 @@ public static class RuntimeLayoutResolver {
 		bool recoveryClient = IsCurrentRecoveryClient(image);
 		bool updateClient = IsCurrentUpdateClient(image);
 		// Client cập nhật 2026-08-28: manager/vtable xác nhận bằng byte-scan tĩnh (object nhúng trong image, không phải con trỏ heap), khớp cả 2 slot ATTACK (+0x40)/SELECT_GROUND (+0x48) đã đối chiếu decompile.
-		int managerRva = updateClient ? 0x4E2660 : recoveryClient ? 0x4E0640 : 0x4DF600;
-		int expectedManagerVtableRva = updateClient ? 0x477804 : recoveryClient ? 0x476618 : 0x4755F8;
+		// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim (đúng quy trình CLIENT-UPDATE-RECOVERY.md):
+		// BSim tìm hàm mới tương đương ATTACK (VA cũ 0x6CB900 -> VA mới 0x6D1220, Similarity=1.0) và SELECT_GROUND_ITEM
+		// (VA cũ 0x6CBB20 -> VA mới 0x6D1440, Similarity=1.0). Quét byte 2 điều kiện đồng thời ([V+0x40]==0x6D1220 VÀ
+		// [V+0x48]==0x6D1440) trong toàn ảnh 33MB new dump chỉ ra DUY NHẤT 1 vị trí: vtable RVA 0x499988. Xác nhận
+		// managerRva bằng cách đọc sống trên PID 18996: [0x5066C8]=0x8F06A8 (con trỏ manager), [0x8F06A8+0]=0x899988
+		// = ExpectedManagerVtableRva mới (0x400000+0x499988) — khớp tuyệt đối, không phải suy đoán.
+		int managerRva = updateClient ? 0x5066C8 : recoveryClient ? 0x4E0640 : 0x4DF600;
+		int expectedManagerVtableRva = updateClient ? 0x499988 : recoveryClient ? 0x476618 : 0x4755F8;
 		const int attackMethodVtableOffset = 0x40;
 		const int coordinateDispatcherMethodVtableOffset = 0x10;
 
@@ -141,7 +151,8 @@ public static class RuntimeLayoutResolver {
 			states[RuntimeSubsystem.Shop] = RuntimeSubsystemState.Unavailable($"Current-client modal/shop validation failed | Modal={modalState} | Shop={shopState} | ExpectedShop=0..2");
 		}
 		// Cập nhật sau bản game 2026-08-28: xác nhận bằng BSim (similarity 1.0) + byte thật khớp gần tuyệt đối với chữ ký cũ.
-		const int repairConfirmationRva = 0x2935A0;
+		// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim (xem RepairConfirmationSignature ở trên).
+		const int repairConfirmationRva = 0x297D60;
 		if (MatchesAt(image, repairConfirmationRva, RepairConfirmationSignature)) states[RuntimeSubsystem.RepairTransport] = RuntimeSubsystemState.Confirmed($"Validated current-client repair confirmation function and AutoFS-equivalent arguments | Rva=0x{repairConfirmationRva:X} | Arguments=0/0/2/0");
 		else states[RuntimeSubsystem.RepairTransport] = RuntimeSubsystemState.Unavailable($"Current-client repair confirmation signature did not match | ExpectedRva=0x{repairConfirmationRva:X}");
 		states[RuntimeSubsystem.ArrangeTransport] = RuntimeSubsystemState.Unavailable("Current-client native handler for AutoFS command 24 has not been confirmed or implemented.");
@@ -167,19 +178,29 @@ public static class RuntimeLayoutResolver {
 			if (recoveryTable != IntPtr.Zero) validatedGroundGlobals.Add(0x54BCA0);
 		}
 		// Client cập nhật 2026-08-28: GROUND_TABLE xác nhận bằng BSim + decompile, hàm command 78 mới gọi đúng CONVERTER/MOVEMENT/PICKUP mới với cùng field offset.
+		// Cập nhật lại sau bản update 2026-09-29: dùng thẳng GameAddresses.Item.GroundRecordTablePointer (đã sửa cùng
+		// delta +0x24060 với EntityTable, xác nhận trực tiếp trên PID 18996: con trỏ hợp lệ 0x19B65024) thay vì hardcode
+		// riêng một hằng số nữa ở đây — hai bên dễ lệch nhau như đã xảy ra lần này.
 		if (updateClient) {
-			IntPtr updateTable = reader.ReadPointer32(IntPtr.Add(moduleBase, 0x54DCC0));
-			if (updateTable != IntPtr.Zero) validatedGroundGlobals.Add(0x54DCC0);
+			IntPtr updateTable = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Item.GroundRecordTablePointer));
+			if (updateTable != IntPtr.Zero) validatedGroundGlobals.Add(GameAddresses.Item.GroundRecordTablePointer);
 		}
-		int expectedGroundRva = updateClient ? 0x54DCC0 : recoveryClient ? 0x54BCA0 : GameAddresses.Item.GroundRecordTablePointer;
+		int expectedGroundRva = updateClient ? GameAddresses.Item.GroundRecordTablePointer : recoveryClient ? 0x54BCA0 : GameAddresses.Item.GroundRecordTablePointer;
 		if (validatedGroundGlobals.Distinct().Count() == 1 && validatedGroundGlobals[0] == expectedGroundRva) {
 			states[RuntimeSubsystem.Ground] = RuntimeSubsystemState.Confirmed($"Validated ground-table signature and current-client record layout | PointerRva=0x{validatedGroundGlobals[0]:X} | Stride=0x{GameAddresses.Item.GroundRecordStride:X} | State=+0x{GameAddresses.Item.GroundRecordKind:X} | InternalCoordinate=+0x{GameAddresses.Item.GroundInternalX:X}/+0x{GameAddresses.Item.GroundInternalY:X}");
 		}
 		else states[RuntimeSubsystem.Ground] = RuntimeSubsystemState.Unavailable($"Current-client ground-table validation failed | SignatureMatches={groundMatches.Count} | ValidatedGlobals={validatedGroundGlobals.Count} | ValidatedRvas=[{string.Join(",", validatedGroundGlobals.Select(rva => $"0x{rva:X}"))}] | ExpectedRva=0x{expectedGroundRva:X}");
 
-		int coordinateConverterRva = updateClient ? 0x2FBC30 : recoveryClient ? 0x2F9E00 : 0x2F9DA0;
-		int movementRva = updateClient ? 0x31EF70 : recoveryClient ? 0x31CE80 : 0x31CDE0;
-		int pickupRva = updateClient ? 0x3AC300 : recoveryClient ? 0x3AA0F0 : 0x3A9C50;
+		// coordinateConverterRva/movementRva cập nhật sau bản update 2026-09-29: tìm bằng quét chữ ký byte trực tiếp
+		// (GroundCoordinateConverterSignature 12 byte và chữ ký movement 9 byte, cả hai DUY NHẤT trong toàn ảnh cũ lẫn
+		// mới) — 0x2FBC30->0x300E10, 0x31EF70->0x324240.
+		// pickupRva cập nhật bằng Ghidra headless + BSim: hàm cũ VA 0x7AC300 khớp DUY NHẤT FUN_007b1510@0x7B1510
+		// trong dump mới (Similarity=1.0, Significance=124). Đối chứng thêm bằng byte thật: cả hai hàm cùng nhúng
+		// literal InventoryRoot VA ở cùng vị trí lệnh (cũ 0x00E7FE24, mới 0x00EA3E84) — khớp đúng InventoryRoot đã
+		// xác nhận sống trước đó. RVA mới = 0x7B1510 - 0x400000 = 0x3B1510.
+		int coordinateConverterRva = updateClient ? 0x300E10 : recoveryClient ? 0x2F9E00 : 0x2F9DA0;
+		int movementRva = updateClient ? 0x324240 : recoveryClient ? 0x31CE80 : 0x31CDE0;
+		int pickupRva = updateClient ? 0x3B1510 : recoveryClient ? 0x3AA0F0 : 0x3A9C50;
 		bool coordinateConverterValid = MatchesAt(image, coordinateConverterRva, GroundCoordinateConverterSignature);
 		bool movementValid = MatchesAt(image, movementRva, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 		bool pickupValid = MatchesAt(image, pickupRva, new byte[] { 0x55, 0x8B, 0xEC, 0x8B, 0x0D });
@@ -193,9 +214,12 @@ public static class RuntimeLayoutResolver {
 		return image.Length >= 0x1FC0000 && MatchesAt(image, 0x2F9E00, GroundCoordinateConverterSignature) && MatchesAt(image, 0x31CE80, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 	}
 
-	// Nhận diện client sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698, SizeOfImage 0x01F83000): xác nhận bằng dump runtime thật ngày 2026-08-28, chưa test lại trong game.
+	// Nhận diện client sau bản update 2026-09-29 (server "toang", SizeOfImage đo được 0x1FA7000). Hai RVA chữ ký dưới
+	// đây tìm bằng quét trực tiếp byte trong ảnh: GroundCoordinateConverterSignature (12 byte, DUY NHẤT trong cả 33MB
+	// cũ lẫn mới) di chuyển 0x2FBC30 -> 0x300E10; chữ ký movement 9 byte cũng DUY NHẤT trong cả hai bản, di chuyển
+	// 0x31EF70 -> 0x324240. Bản trước bản update này (0x1F83000) đã đổi tên hằng số bên dưới, không còn dùng nữa.
 	private static bool IsCurrentUpdateClient(byte[] image) {
-		return image.Length == 0x1F83000 && MatchesAt(image, 0x2FBC30, GroundCoordinateConverterSignature) && MatchesAt(image, 0x31EF70, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
+		return image.Length == 0x1FA7000 && MatchesAt(image, 0x300E10, GroundCoordinateConverterSignature) && MatchesAt(image, 0x324240, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 	}
 
 	private static bool MatchesAt(byte[] image, int offset, byte[] signature) {

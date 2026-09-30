@@ -85,6 +85,18 @@ internal sealed class QuickBuyEngine {
 			return;
 		}
 		if (count > 0 || now < state.BlockedUntilUtc || anyPending) return;
+		// Chốt sức lực, thêm 2026-09-29: chủ dự án báo PID 27592 vẫn mua thêm thuốc dù đã quá sức lực. Log thật
+		// (auto-runtime.log 21:27:44) cho thấy QUICK_BUY_SENT bắn ra đúng lúc RemainingStrength=0 (repair.log
+		// 21:27:43.980), tức mua nhanh và Nhặt đồ cùng cộng thêm trọng lượng mà không bên nào biết trần sức lực —
+		// chỉ có REPAIR_SALE_TRIGGER (ngưỡng <20) dọn lại được, và dọn SAU khi đã chạm đáy chứ không ngăn từ đầu.
+		// Không cần biết trọng lượng chính xác của từng loại thuốc (mua nhanh không đứng ở Đại Phu nên không đọc
+		// được NpcShopReader): còn sức lực <= 0 thì chắc chắn không mua thêm được gì, chặn ở đây là đủ.
+		InventoryStrengthReading strength = InventoryStrengthReader.Read(processId);
+		if (strength.Success && strength.Free <= 0) {
+			if (!string.Equals(state.LastError, "OVER_STRENGTH", StringComparison.Ordinal)) log($"QUICK_BUY_OVER_STRENGTH | PID={processId} | Kind={state.Kind} | Potion={name} | Sức lực còn={strength.Free} | Action=Không gửi lệnh mua, chờ luồng Sửa đồ/Bán dọn bớt túi");
+			state.LastError = "OVER_STRENGTH";
+			return;
+		}
 		if (!TryFindFreeMainBagSlot(processId, out int slotX, out int slotY)) {
 			if (!string.Equals(state.LastError, "NO_FREE_SLOT", StringComparison.Ordinal)) log($"QUICK_BUY_NO_FREE_SLOT | PID={processId} | Kind={state.Kind} | Potion={name} | Action=Túi chính không còn ô trống, không gửi lệnh mua");
 			state.LastError = "NO_FREE_SLOT";

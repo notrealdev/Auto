@@ -33,7 +33,8 @@ public static class QuestProbe {
 	private const int MinimumDumpedTextLetters = 4;
 	private const int MaximumDumpedStrings = 150;
 	// Phải khớp DoctorShopSemanticCommand.ExpectedDialogVtableRva.
-	private const int DoctorConfirmModalVtableRva = 0x46AF3C;
+	// Cập nhật lại sau bản update 2026-09-29: 0x46AF3C -> 0x48CF3C, xem GameClientAddresses.h::NpcConfirmModalVtableRva.
+	private const int DoctorConfirmModalVtableRva = 0x48CF3C;
 	private const int RawWindowLeadBytes = 0x80;
 	private const int RawWindowLength = 0x300;
 	private const int RawWindowBytesPerLine = 32;

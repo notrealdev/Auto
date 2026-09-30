@@ -75,7 +75,8 @@ public sealed class ScoutQuestAutomation {
 	private const int EscapeRetryMilliseconds = 700;
 	// Phải khớp DoctorShopSemanticCommand.ExpectedDialogVtableRva — sửa một bên mà quên bên kia thì hai nơi nhận
 	// diện popup xác nhận khác nhau.
-	private const int DoctorConfirmModalVtableRva = 0x46AF3C;
+	// Cập nhật lại sau bản update 2026-09-29: 0x46AF3C -> 0x48CF3C, xem GameClientAddresses.h::NpcConfirmModalVtableRva.
+	private const int DoctorConfirmModalVtableRva = 0x48CF3C;
 	// ĐIỂM CHUYỂN TIẾP. Popup tự hiện khi nhân vật đứng lên điểm, chọn mục bằng cùng command 7 của menu NPC.
 	// Toạ độ điểm và bảng điểm đến nằm ở Utils/TransitGateDestinationCatalog.cs.
 	//

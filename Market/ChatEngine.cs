@@ -10,9 +10,13 @@ internal sealed class ChatEngine {
 	// Hạ 5000 -> 1000 ngày 2026-09-17 theo yêu cầu của chủ dự án.
 	private const int InterChannelDelayMilliseconds = 1000;
 	private const int MaximumMessageLength = 199;
-	// Cập nhật sau bản game 2026-08-28 (PE TimeDateStamp 0x6A8DD698): xác nhận bằng đọc byte thật qua ChannelManagerProbe (PID=26056) — delta +0x2020 khớp Count=7 hợp lệ và cả 4 mã kênh (Cận/Giao/Khu vực/Lãnh địa) khớp tuyệt đối với hằng số đã có sẵn bên dưới.
-	private const int ChannelManagerRva = 0x004F5174;
-	private const int ChannelCodeTableRva = 0x004F51B8;
+	// Cập nhật sau bản update 2026-09-29: hằng số này bị bỏ sót y hệt DebugTools/EquippedWeaponDurabilityProbe.cs
+	// (lần cuối cùng cập nhật là bản 2026-08-28). Delta cụm B (+0x24068, cùng cụm MapId/ModalState/ShopState) áp cho
+	// 0x4F5174 -> 0x5191DC cho Count=7 hợp lệ trên PID 17268/20872 (cụm A cho con trỏ rác 0x4E20, Count=0 — SAI).
+	// ChannelCodeTableRva cùng cụm B -> 0x519220, xác nhận sống trên PID 17268: cả 4 mã kênh (Cận/Giao/Khu vực/Lãnh
+	// địa) đọc ra khớp tuyệt đối byte-for-byte với 4 hằng số bên dưới (áẵẵỹ/ẵằềì/±ắàỉ/ạỳẳề).
+	private const int ChannelManagerRva = 0x005191DC;
+	private const int ChannelCodeTableRva = 0x00519220;
 	private const int ChannelCountOffset = 0x00008E4C;
 	private const int ChannelListOffset = 0x00008E50;
 	private const int ChannelEntryStride = 0x00002818;

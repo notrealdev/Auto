@@ -20,11 +20,15 @@ public static class ModalVtableProbe {
 	private const int VtableSlotCount = 64;
 	private const int FunctionPreviewBytes = 12;
 	// Các hằng số hiện hành để đối chiếu ngay trong báo cáo, lấy từ GameClientAddresses.h.
-	private const int CurrentReturnToTownObjectRva = 0x004FCD38;
-	private const int CurrentReturnToTownObjectVtableRva = 0x004685D8;
-	private const int CurrentReturnToTownFunctionRva = 0x001A74E0;
+	// Cập nhật sau bản update 2026-09-29: xem GameAddresses.cs::ReturnToTownModal / GameClientAddresses.h::ReturnToTownObjectRva.
+	private const int CurrentReturnToTownObjectRva = 0x00522DC0;
+	private const int CurrentReturnToTownObjectVtableRva = 0x0048B6E0;
+	// Đồng bộ lại theo GameClientAddresses.h::ReturnToTownFunctionRva (đã xác nhận bằng BSim Similarity=1.0,
+	// Significance=25.7 trong bản update 2026-09-29) — file này trước đó vẫn giữ giá trị cũ, chỉ copy lại, không suy đoán mới.
+	private const int CurrentReturnToTownFunctionRva = 0x001A8C90;
 	private const int CurrentNpcConfirmModalVtableRva = 0x00469E34;
-	private const int CurrentRepairConfirmModalVtableRva = 0x004732BC;
+	// Cập nhật lại sau bản update 2026-09-29: 0x4732BC -> 0x4952BC, xem GameClientAddresses.h::RepairConfirmModalVtableRva.
+	private const int CurrentRepairConfirmModalVtableRva = 0x004952BC;
 
 	public static string Run(int processId) {
 		StringBuilder output = new();

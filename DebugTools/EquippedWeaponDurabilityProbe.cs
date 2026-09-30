@@ -34,10 +34,17 @@ public static class EquippedWeaponDurabilityProbe {
 	private const int EquipmentSlotStride = 0x08;
 	private const int EquipmentSlotCount = 12;
 	private const uint CurrentClientItemRecordStride = 0x1800;
-	// Cập nhật sau bản game 2026-08-28: xác nhận qua symbol Ghidra DAT_00e7fe24 trong decompile hàm ATTACK mới đã đối chiếu, khớp delta +0x2020 như GameAddresses.Globals.InventoryRoot. Chưa build/test runtime.
-	private const int CurrentClientGameRootPointerRva = 0xA7FE24;
-	// Cập nhật sau bản game 2026-08-28: xác nhận bằng byte thật, khớp delta +0x2020 như GameAddresses.Globals.ItemTable. Chưa build/test runtime.
-	private const int CurrentClientItemTablePointerRva = 0x541068;
+	// Cập nhật sau bản update 2026-09-29 (đây chính là nguyên nhân "mắc kẹt không quay lại bãi sau khi bán/sửa" —
+	// hằng số 0xA7FE24 bị bỏ sót, không theo cùng đợt sửa GameClientAddresses.h/GameAddresses.cs trước đó).
+	// Bằng chứng: 0xA7FE24 + 0x24060 (delta cụm A, cùng cụm EntityTable/ItemTable/InventoryRoot đã xác nhận trong
+	// bản update này) = 0xAA3E84, TRÙNG KHÍT GameAddresses.Globals.InventoryRoot. Xác nhận sống trên PID 17268
+	// (2026-09-29): đọc ra con trỏ khác 0 (0x135B0048), và [root+0x41D44] (EquipmentManagerOffset) = 1, khớp đúng
+	// giá trị chỉ số nhân vật đọc từ chuỗi đã xác nhận [InventoryRoot+0x41D3C] = 1 trên cùng tiến trình — tức
+	// "game root" ở đây chính là InventoryRoot, chỉ đặt tên khác trong file debug cũ.
+	private const int CurrentClientGameRootPointerRva = 0xAA3E84;
+	// Cập nhật sau bản update 2026-09-29: 0x541068 + 0x24060 (delta cụm A) = 0x5650C8, TRÙNG KHÍT
+	// GameAddresses.Globals.ItemTable đã xác nhận trong bản update này — cùng bị bỏ sót như GameRootPointerRva.
+	private const int CurrentClientItemTablePointerRva = 0x5650C8;
 	private const int CurrentClientEquipmentManagerOffset = 0x41D44;
 	private const int CurrentClientEquipmentSlotArrayOffset = 0x0C;
 	private const int CurrentClientEquipmentSlotStride = 0x08;
@@ -46,12 +53,17 @@ public static class EquippedWeaponDurabilityProbe {
 	private const int CurrentClientCharacterStride = 0x35F60;
 	private const int CurrentClientCharacterClassRecordOffset = 0xBDDC;
 	private const int CurrentClientAlternateEquipmentStateOffset = 0x168E4;
-	// Cập nhật sau bản game 2026-08-28: cùng field với GameAddresses.Globals.EntityTable (stride 0xD87C khớp), đã xác nhận qua BSim+decompile trước đó. Chưa build/test runtime.
-	private const int CurrentClientClassRelationTableRva = 0x95FF60;
+	// Cập nhật sau bản update 2026-09-29: delta cụm A (+0x24060) áp cho 0x95FF60 đọc ra con trỏ NULL trên mọi PID
+	// (17268/20872/23128/27592) — cụm này KHÔNG áp dụng cho hằng số này. Bằng chứng thay thế: dùng thẳng
+	// GameAddresses.Globals.EntityTable (0x73A0C4, đã xác nhận trong bản update này) làm bảng, cho ClassStateIndex=0
+	// ỔN ĐỊNH và GIỐNG NHAU trên cả 4 tiến trình (4 nhân vật/class khác nhau) — khớp đúng ghi chú cũ "cùng field với
+	// EntityTable, stride 0xD87C khớp". Không phải suy đoán delta, là cùng bảng đã xác nhận ở nơi khác.
+	private const int CurrentClientClassRelationTableRva = 0x73A0C4;
 	private const int CurrentClientClassRelationStride = 0xD87C;
 	private const int CurrentClientClassRelationOffset = 0x27B8;
-	// Cập nhật sau bản game 2026-08-28: cùng field với GameAddresses.Globals.MapCoordinateRoot (stride 0x260 khớp MapObjectStride), đã xác nhận qua byte thật trong hàm CONVERTER trước đó. Chưa build/test runtime.
-	private const int CurrentClientClassStateTablePointerRva = 0x9FA080;
+	// Cập nhật sau bản update 2026-09-29: 0x9FA080 + 0x24060 (delta cụm A) = 0xA1E0E0, TRÙNG KHÍT
+	// GameAddresses.Globals.MapCoordinateRoot đã xác nhận trong bản update này (đúng như ghi chú cũ: cùng field).
+	private const int CurrentClientClassStateTablePointerRva = 0xA1E0E0;
 	private const int CurrentClientClassStateStride = 0x260;
 	private const int CurrentClientClassStateOffset = 0x08;
 	private const int CharacterStride = 0x2FF40;
