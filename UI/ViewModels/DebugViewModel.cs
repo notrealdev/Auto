@@ -8,12 +8,11 @@ using Auto.Utils;
 
 public sealed class DebugViewModel : ViewModelBase {
 	// Tab này chỉ còn công cụ GỬI LỆNH vào client. Chín mục chỉ-đọc đã chuyển sang tab Thông tin ngày 2026-09-12.
-	private const string ToolTransitGate = "Điểm chuyển tiếp: so sánh trước/sau";
-	private const string ToolTransitGateSelect = "Điểm chuyển tiếp: thử số thứ tự (DỊCH CHUYỂN THẬT)";
-	private const string ToolTransitGateTravel = "Điểm chuyển tiếp: tự đi rồi dịch chuyển (DỊCH CHUYỂN THẬT)";
+	// Start/stop toggle: records map changes while the owner walks by hand (Khổn Tiên cung entrance), read-only.
+	private const string ToolMapTransition = "Ghi chuyển map (bấm Chạy để bắt đầu / dừng)";
 	// Hai probe chẩn đoán popup NPC. Đã bị xoá nhầm lúc dọn probe 2026-09-07 rồi khôi phục 2026-09-08 khi luồng
 	// Sửa đồ với NPC dạng popup xác nhận hỏng mà không còn công cụ nào đọc được vtable thật của popup.
-	private const string ToolMonsterIndex = "Quái nằm ở ô nào (đo trần quét entity)";
+	private const string ToolKhonTienRoute = "Đi thử Diêu Trì -> Khổn Tiên Tầng 5 (GỬI LỆNH THẬT, bấm Chạy để bắt đầu / dừng)";
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
 	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
 	private const string ToolImmediateRepair = "Đi sửa đồ";
@@ -24,14 +23,6 @@ public sealed class DebugViewModel : ViewModelBase {
 	// 0x278 đọc sai địa chỉ. InventoryInfoProbe dùng offset Item.Weight (0x6EC) ĐÃ xác minh riêng (2026-09-07, đối
 	// chiếu game), độc lập hoàn toàn với cặp StrengthRoot — dùng để đối chiếu chéo, không phải để sửa mù.
 	private const string ToolInventoryInfo = "Trọng lượng từng món trong túi (đối chiếu với game)";
-	// Dò ô nhớ số tiền vạn hiển thị trong túi đồ (chưa có offset), dùng lọc vi sai giữa hai lần chạy.
-	private const string ToolInventoryMoney = "Tiền vạn trong túi (dò ô nhớ)";
-	// Thử hàm mua của chức năng "Tự động mua thuốc" trong client. Dùng ô tick, loại thuốc và số bình ở khối "Mua item hồi phục" (tab Cơ bản).
-	private const string ToolQuickBuy = "Mua nhanh HP + MP (GỬI LỆNH THẬT, TIÊU TIỀN)";
-	// Buy the HP and MP potions selected in "Hồi phục" from the NPC shop already open on screen (native command 330).
-	private const string ToolDoctorShopBuy = "Mua ở Đại Phu 10 HP + 10 MP (mở sẵn cửa hàng, GỬI LỆNH THẬT, TIÊU TIỀN)";
-	// Owner 2026-09-27: buy 10 of each kind at the Đại Phu for now; a setting may come later.
-	private const int DoctorShopBuyCount = 10;
 	// Test the WHOLE low-hp doctor flow: walk to NPC -> open shop -> buy -> return. Runtime.DoctorPurchaseAutomation.
 	private const string ToolDoctorPurchaseFlow = "Đi tới Đại Phu, mở shop, mua đủ HP+MP rồi quay lại (GỬI LỆNH THẬT, TIÊU TIỀN)";
 
@@ -42,14 +33,12 @@ public sealed class DebugViewModel : ViewModelBase {
 	private bool enableDebugLogging = true;
 	private string selectedTool;
 	private string accountInfoText = "";
-	private int transitGateCommand = 7;
-	private int transitGateOptionIndex;
 
 	public DebugViewModel() : this(null) { }
 
 	public DebugViewModel(GameWindow? game) {
 		this.game = game;
-		selectedTool = ToolTransitGate;
+		selectedTool = ToolKhonTienRoute;
 		RunToolCommand = new RelayCommand(_ => RunTool());
 		ClearOutputCommand = new RelayCommand(_ => AccountInfoText = "");
 	}
@@ -63,32 +52,16 @@ public sealed class DebugViewModel : ViewModelBase {
 	}
 
 	public ObservableCollection<string> Tools { get; } = [
-		ToolTransitGate,
-		ToolTransitGateSelect,
-		ToolTransitGateTravel,
-		ToolMonsterIndex,
+		ToolKhonTienRoute,
+		ToolMapTransition,
 		ToolModalVtable,
 		ToolNpcMenuCapture,
 		ToolImmediateRepair,
 		ToolImmediateSale,
 		ToolInventoryStrength,
 		ToolInventoryInfo,
-		ToolInventoryMoney,
-		ToolQuickBuy,
-		ToolDoctorShopBuy,
 		ToolDoctorPurchaseFlow
 	];
-
-	// Số lệnh và tham số khi thử điểm đến. Chỉ tool ToolTransitGateSelect đọc hai giá trị này.
-	public int TransitGateCommand {
-		get => transitGateCommand;
-		set => SetField(ref transitGateCommand, value);
-	}
-
-	public int TransitGateOptionIndex {
-		get => transitGateOptionIndex;
-		set => SetField(ref transitGateOptionIndex, value);
-	}
 
 	public string SelectedTool {
 		get => selectedTool;
@@ -107,17 +80,11 @@ public sealed class DebugViewModel : ViewModelBase {
 	// Khớp DEV\UI\Debug.cs.RunTool: chọn công cụ theo dropdown rồi chạy đúng 1 nút "Chạy" chung.
 	private void RunTool() {
 		switch (selectedTool) {
-			case ToolTransitGate:
-				StartTransitGate();
+			case ToolKhonTienRoute:
+				ToggleKhonTienRoute();
 				return;
-			case ToolTransitGateSelect:
-				StartTransitGateSelect();
-				return;
-			case ToolTransitGateTravel:
-				StartTransitGateTravel();
-				return;
-			case ToolMonsterIndex:
-				StartMonsterIndexProbe();
+			case ToolMapTransition:
+				ToggleMapTransitionRecorder();
 				return;
 			case ToolModalVtable:
 				StartModalVtableProbe();
@@ -137,15 +104,6 @@ public sealed class DebugViewModel : ViewModelBase {
 			case ToolInventoryInfo:
 				StartInventoryInfoProbe();
 				return;
-			case ToolInventoryMoney:
-				StartInventoryMoneyProbe();
-				return;
-			case ToolQuickBuy:
-				StartQuickBuy();
-				return;
-			case ToolDoctorShopBuy:
-				StartDoctorShopBuy();
-				return;
 			case ToolDoctorPurchaseFlow:
 				StartDoctorPurchaseFlow();
 				return;
@@ -155,21 +113,40 @@ public sealed class DebugViewModel : ViewModelBase {
 		}
 	}
 
-	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.
-	// Đo dải chỉ số ô mà QUÁI thật sự chiếm, để biết có hạ được trần quét của vòng Đánh không.
-	// Giữ mốc cao nhất qua các lần bấm nên phải chạy ở nhiều bãi rồi mới đọc kết luận.
-	private async void StartMonsterIndexProbe() {
+	// Walks the recorded Khổn Tiên portal chain with the quest's movement queue; run again to stop.
+	private void ToggleKhonTienRoute() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
 			return;
 		}
-		int processId = game.ProcessId;
-		AccountInfoText = $"PID={processId} | Đang đo dải ô của quái...";
-		string result = await Task.Run(() => MonsterIndexProbe.Run(processId));
-		DebugLog.AddDebugForProcess(processId, result);
-		AccountInfoText = $"PID={processId} | {result}";
+		if (KhonTienRouteProbe.IsWalking(game.ProcessId)) {
+			AccountInfoText = KhonTienRouteProbe.Stop(game.ProcessId);
+			return;
+		}
+		AccountInfoText = KhonTienRouteProbe.Start(game) + "\r\n\r\n"
+			+ "Auto tổng phải TẮT. Nhân vật tự đi qua từng cổng tới Đại Phu Tầng 5, dùng đúng hàng đợi di chuyển của Thám quân.\r\n"
+			+ "Dừng khi tới nơi, hết 6 phút, bật Auto tổng, hoặc bấm Chạy lần nữa.\r\n"
+			+ "Kết quả từng bước ghi vào map-transition.log (KHONTIEN_ROUTE_*).";
 	}
 
+	// Read-only recorder for the Khổn Tiên cung entrance: start, walk there by hand, then run again to stop.
+	private void ToggleMapTransitionRecorder() {
+		if (MapTransitionRecorder.IsRunning) {
+			AccountInfoText = MapTransitionRecorder.Stop();
+			return;
+		}
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		AccountInfoText = MapTransitionRecorder.Start(game) + "\r\n\r\n"
+			+ "Công cụ CHỈ ĐỌC, không gửi lệnh nào. Không cần bật Auto tổng.\r\n"
+			+ "Tự đi tay từ map đang đứng vào Khổn Tiên cung (và lên các tầng nếu được). Mỗi lần đổi map ghi một dòng MAP_CHANGE.\r\n"
+			+ "Nếu phải nói chuyện với NPC để vào, cứ mở menu và chọn bình thường: popup được ghi lại tự động (MAP_POPUP).\r\n"
+			+ "Xong thì bấm Chạy lần nữa để dừng.";
+	}
+
+	// Đọc vtable thật của popup đang mở và đối chiếu với các hằng số đang dùng. Phải mở sẵn popup NPC trước khi chạy.
 	private async void StartModalVtableProbe() {
 		if (game == null) {
 			AccountInfoText = "Không có account game đang được chọn.";
@@ -237,51 +214,6 @@ public sealed class DebugViewModel : ViewModelBase {
 		AccountInfoText = result;
 	}
 
-	// Dò ô số tiền vạn bằng lọc vi sai: chạy, làm một giao dịch có số tiền biết trước, chạy lại. Chỉ đọc.
-	private void StartInventoryMoneyProbe() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		string result = InventoryMoneyProbe.Read(game);
-		DebugLog.AddDebugForProcess(game.ProcessId, result);
-		AccountInfoText = result;
-	}
-
-	// GỬI LỆNH THẬT: mua 1 lần đúng loại và số lượng đã đặt ở tab Cơ bản, HP rồi MP.
-	private async void StartQuickBuy() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		BasicSettings settings = target.BasicSettings;
-		int hpCode = settings.QuickBuyHpPotionCode;
-		int hpQuantity = settings.QuickBuyHpQuantity;
-		int mpCode = settings.QuickBuyMpPotionCode;
-		int mpQuantity = settings.QuickBuyMpQuantity;
-		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh mua nhanh...";
-		string result = await Task.Run(() => QuickBuyProbe.Run(target, "máu", hpCode, hpQuantity) + QuickBuyProbe.Run(target, "mana", mpCode, mpQuantity));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = result;
-	}
-
-	// SENDS REAL COMMANDS: buy DoctorShopBuyCount of the HP then MP potion selected in "Hồi phục" from the open shop.
-	private async void StartDoctorShopBuy() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		BasicSettings settings = target.BasicSettings;
-		int hpCode = settings.QuickBuyHpPotionCode;
-		int mpCode = settings.QuickBuyMpPotionCode;
-		AccountInfoText = $"PID={target.ProcessId} | Đang mua ở cửa hàng đang mở...";
-		string result = await Task.Run(() => DoctorShopBuyProbe.Run(target, "máu", QuickBuyPotions.Hp, hpCode, DoctorShopBuyCount) + DoctorShopBuyProbe.Run(target, "mana", QuickBuyPotions.Mp, mpCode, DoctorShopBuyCount));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = result;
-	}
-
 	// Chạy toàn bộ chuỗi Runtime.DoctorPurchaseAutomation: tự đi tới Đại Phu của map hiện tại, mở cửa hàng, mua cho đủ
 	// 10 bình mỗi loại HP/MP đã chọn ở "Hồi phục" (chỉ mua phần còn thiếu), rồi tự quay lại bãi. Chạy được kể cả khi
 	// Auto tổng đang tắt (giống nút "Đi sửa đồ").
@@ -326,55 +258,6 @@ public sealed class DebugViewModel : ViewModelBase {
 			"Cửa hàng Đại Phu PHẢI đang mở sẵn — nút này không tự đi tới NPC.\r\n" +
 			"Xem auto-runtime.log để đối chiếu: SALE_START -> SALE_FILTER từng ô -> SALE_COMMAND_POSTED -> SALE_CONFIRMED -> SALE_COMPLETE.\r\n" +
 			"Đồ Lục và Đồ Vàng bị chặn cứng, sẽ hiện GREEN_POPUP_BLOCKED / YELLOW_VALUABLE_BLOCKED ở dòng SALE_FILTER.";
-	}
-
-	// Đổ danh sách điểm đến trong popup Điểm chuyển tiếp ĐANG hiện. Không đi bộ, không click, không chọn mục nào.
-	private async void StartTransitGate() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		// Quét 512MB nên phải chạy nền, để trên luồng UI thì cửa sổ đứng hình suốt lượt quét.
-		AccountInfoText = $"PID={target.ProcessId} | Đang quét toàn bộ bộ nhớ game...";
-		string status = await Task.Run(() => TransitGatePopupProbe.Read(target));
-		DebugLog.AddDebugForProcess(target.ProcessId, status);
-		AccountInfoText = $"PID={target.ProcessId}\r\n{status}\r\n\r\n"
-			+ "Bấm HAI lần: lần 1 lúc popup ĐÓNG để chụp nền, lần 2 lúc popup ĐANG MỞ để lấy phần chữ mới.\r\n"
-			+ "Công cụ chỉ ĐỌC, không chọn điểm đến nào, không cần bật Auto tổng.";
-	}
-
-	// GỬI LỆNH THẬT vào game: bấm thử một số thứ tự trong popup Điểm chuyển tiếp rồi báo map thật sự tới.
-	private async void StartTransitGateSelect() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		int command = transitGateCommand;
-		int index = transitGateOptionIndex;
-		AccountInfoText = $"PID={target.ProcessId} | Đang gửi lệnh {command} với số {index}...";
-		string result = await Task.Run(() => TransitGateSelectProbe.Run(target, command, index));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = $"PID={target.ProcessId}\r\n{result}\r\n\r\n"
-			+ "Phải đứng lên Điểm chuyển tiếp cho popup hiện ra TRƯỚC khi bấm. Mỗi lần bấm thử ĐÚNG MỘT số.\r\n"
-			+ "DỊCH CHUYỂN THẬT: nếu số đó là điểm đến thì nhân vật đi luôn.";
-	}
-
-	// GỬI LỆNH THẬT: nhân vật tự đi ra Điểm chuyển tiếp ở Triều Ca rồi chọn số thứ tự đang nhập.
-	private async void StartTransitGateTravel() {
-		if (game == null) {
-			AccountInfoText = "Không có account game đang được chọn.";
-			return;
-		}
-		GameWindow target = game;
-		int index = transitGateOptionIndex;
-		AccountInfoText = $"PID={target.ProcessId} | Đang đi ra Điểm chuyển tiếp rồi chọn số {index}...";
-		string result = await Task.Run(() => TransitGateTravelProbe.Run(target, index));
-		DebugLog.AddDebugForProcess(target.ProcessId, result);
-		AccountInfoText = $"PID={target.ProcessId}\r\n{result}\r\n\r\n"
-			+ "Nhân vật phải đang ở Triều Ca (Map 21). Không cần bật Auto tổng.\r\n"
-			+ "DỊCH CHUYỂN THẬT: nhân vật tự đi ra điểm rồi đi tới map tương ứng với số đã nhập.";
 	}
 
 	// Quy đổi raw sang ô đúng tỉ lệ của game: X chia 256, Y chia 512.

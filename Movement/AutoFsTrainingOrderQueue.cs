@@ -28,6 +28,8 @@ internal sealed class AutoFsTrainingOrderQueue {
 	private DateTime lastProgressUtc;
 	private DateTime portalTransitionStartedUtc;
 	private int portalTransitionMapId;
+	// Map on which the current transition's waypoint was reached; 0 = not yet. Cleared on every map change.
+	private int waypointReachedMapId;
 
 	public bool Tick(GameWindow game, GameSnapshot snapshot, int destinationMapId, int destinationRawX, int destinationRawY, out string detail) {
 		detail = "";
@@ -40,6 +42,7 @@ internal sealed class AutoFsTrainingOrderQueue {
 			observedMapId = map.MapId;
 		} else if (observedMapId != map.MapId) {
 			observedMapId = map.MapId;
+			waypointReachedMapId = 0;
 			mapReadyUtc = DateTime.UtcNow.AddMilliseconds(MapReadyDelayMilliseconds);
 			InvalidateActiveCommand();
 		}
@@ -66,6 +69,14 @@ internal sealed class AutoFsTrainingOrderQueue {
 		if (transition.Points.Count < 2) {
 			detail = $"Invalid portal data {transition.FromMapId}->{transition.ToMapId}";
 			return false;
+		}
+		// Waypoint first, once per visit of this map (AutoFS port). Used to steer around danger, e.g. Khổn Tiên Tầng 3
+		// must pass the doctor before heading to the Tầng 4 gate, the direct path crosses a strong boss (owner 2026-10-09).
+		if (transition.HasWaypoint && waypointReachedMapId != map.MapId) {
+			if (GetDistance(snapshot.X, snapshot.Y, transition.Waypoint.RawX, transition.Waypoint.RawY) > ArrivalDistance) {
+				return SendWhenNeeded(game, map.MapId, transition.Waypoint.RawX, transition.Waypoint.RawY, $"Waypoint={transition.FromMapId}->{transition.ToMapId}", out detail);
+			}
+			waypointReachedMapId = map.MapId;
 		}
 		double approachDistance = GetDistance(snapshot.X, snapshot.Y, transition.Approach.RawX, transition.Approach.RawY);
 		// Khởi động lại toàn bộ bước tiếp cận nếu đã thử qua cổng 20 giây mà map vẫn không đổi.
@@ -105,6 +116,7 @@ internal sealed class AutoFsTrainingOrderQueue {
 		observedRawX = 0;
 		observedRawY = 0;
 		observedMapId = 0;
+		waypointReachedMapId = 0;
 		mapReadyUtc = DateTime.MinValue;
 		lastCommandUtc = DateTime.MinValue;
 		lastProgressUtc = DateTime.MinValue;

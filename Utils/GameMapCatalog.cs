@@ -79,22 +79,59 @@ public static class GameMapCatalog {
 		["Nam Kha Quận"] = 99
 	};
 
-	// Tên client 2026-08 dùng trong popup nhiệm vụ, KHÁC tên trong bảng AutoFS ở trên.
-	//
-	// VERIFIED (quest.log 2026-09-10 00:52:58, PID 22056): popup ghi "đoạn tô màu trong popup | [Tầng 1 Hiên Viên
-	// động | Lực Nguyên]" trong khi bảng trên ghi "Hiên Viên T1", nên tra không ra và Auto tưởng hết nhiệm vụ.
-	//
-	// CHƯA VERIFY: bốn dòng tầng 2-5 là suy ra theo mẫu của tầng 1, chưa thấy popup nào ghi chúng. Sai thì chỉ
-	// tra không ra rồi báo lỗi to, KHÔNG dẫn tới đi nhầm map — mỗi chuỗi chỉ ánh xạ về đúng một số.
-	//
-	// Các mê cung khác (Bích Dung Cung, Khổn Tiên Cung, Vạn Tiên Trận...) chưa biết client gọi là gì; gặp lần đầu
-	// sẽ báo "ĐÍCH KHÔNG ĐỌC ĐƯỢC" kèm nguyên chữ trong popup, cứ thế bổ sung vào đây.
+	// Every Thám quân destination name exactly as the pick-up popup prints it, copied from the client's own string
+	// table: D:\G\FS\data\2008settings.pak (and settings.pak), entries 11327-11372
+	// "Lần này ta cần ngươi đi <c=g>NAME<c> tìm Đại phu thu thập tin tức." (unpacked 2026-10-09, UCL NRV2B, TCVN3).
+	// Map ids checked against the same pak's "<id>_name=" table. The AutoFS names above differ for most maze maps,
+	// which made the pick-up leg fail: quest.log 2026-10-09 08:47:56-08:48:03 "Sa mạc Thổ Thành", "Ngọc Tuyền Băng
+	// Xuyên", "Đại Trạch Băng Xuyên" -> "ĐÍCH KHÔNG ĐỌC ĐƯỢC".
 	private static readonly Dictionary<string, int> ClientAliasMapIdByName = new(StringComparer.OrdinalIgnoreCase) {
+		["Sùng Thành"] = 5,
+		["Bắc Hải"] = 6,
+		["Yến sơn"] = 7,
+		["Chân núi Côn Lôn"] = 8,
+		["Tây Côn Lôn"] = 9,
+		["Thủ Dương Sơn"] = 10,
+		["Du Hồn"] = 11,
+		["Miêu Cương"] = 12,
+		["Cự Lộc"] = 13,
+		["Đồng Quan"] = 14,
+		["Mạnh Tân"] = 15,
+		["Tam Sơn"] = 16,
+		["Kỳ Sơn"] = 17,
+		["Mục Dã"] = 18,
+		["Tuyệt Long Lĩnh"] = 19,
+		["Hoang mạc"] = 22,
+		["Sa mạc Thổ Thành"] = 23,
+		["Sa mạc Phong Thần"] = 24,
+		["Sa mạc Lục Châu"] = 25,
+		["Sa mạc chết"] = 26,
 		["Tầng 1 Hiên Viên động"] = 27,
 		["Tầng 2 Hiên Viên động"] = 28,
 		["Tầng 3 Hiên Viên động"] = 29,
 		["Tầng 4 Hiên Viên động"] = 30,
-		["Tầng 5 Hiên Viên động"] = 31
+		["Tầng 5 Hiên Viên động"] = 31,
+		["Ngọc Tuyền Băng Xuyên"] = 32,
+		["Băng Xuyên Tuyết Cốc"] = 33,
+		["Đại Phong Băng Xuyên"] = 34,
+		["Đại Trạch Băng Xuyên"] = 35,
+		["Băng Xuyên Cực"] = 36,
+		["Đông Hải Thủy Vực"] = 37,
+		["Đông Hải Long Cung"] = 38,
+		["Đông Hải Hải Câu"] = 39,
+		["Đông Hải Long Vực"] = 40,
+		["Đông Hải Long Uyên"] = 41,
+		["Tầng 1 Bích Du cung"] = 42,
+		["Tầng 2 Bích Du cung"] = 43,
+		["Tầng 3 Bích Du cung"] = 44,
+		["Tầng 4 Bích Du cung"] = 45,
+		["Tầng 5 Bích Du cung"] = 46,
+		["Tầng 1 Khổn Tiên cung"] = 47,
+		["Tầng 2 Khổn Tiên cung"] = 48,
+		["Tầng 3 Khổn Tiên cung"] = 49,
+		["Tầng 4 Khổn Tiên cung"] = 50,
+		["Tầng 5 Khổn Tiên cung"] = 51,
+		["Trần Đường"] = 65
 	};
 
 	public static bool TryGetName(int mapId, out string name) {

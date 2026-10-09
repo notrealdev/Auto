@@ -48,6 +48,10 @@ public static class GameMapRoutePlanner {
 }
 
 public sealed record GameMapTransition(int FromMapId, int ToMapId, IReadOnlyList<GameMapPoint> Points) {
+	// A line with 6 values starts with a waypoint that must be reached before the approach point, same as AutoFS
+	// (WindowQueue.cs ~23773: "Split(',').Length > 5" -> walk to values 0,1 first, then 2,3, then 4,5).
+	public bool HasWaypoint => Points.Count >= 3;
+	public GameMapPoint Waypoint => Points[0];
 	public GameMapPoint Approach => Points[^2];
 	public GameMapPoint Far => Points[^1];
 }

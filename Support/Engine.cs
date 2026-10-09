@@ -31,6 +31,11 @@ internal sealed class Engine {
 	// moment before casting again; it is an assumption, not measured.
 	private const int PetNoGainCastsBeforeApproach = 2;
 	private const int PetApproachSettleMilliseconds = 1000;
+	// Only walk to the pet when it is farther than this; closer, keep casting until full HP. The pet's HP reading lags the
+	// heal by about a second, so "2 casts without gain" fired next to the pet too: buff.log 2026-10-08 15:55:07-15:55:18
+	// TiểuHồngĐơn walked at Distance 45, 112, 1, 80, 31, each walk pausing the heal ~1 s (owner: "buff 1 lần là lại dừng").
+	// 300 raw is an assumption, not a measured skill range.
+	private const int PetApproachDistanceRaw = 300;
 	private readonly Settings settings;
 	private readonly AutoFsAttackTransport transport;
 	private DateTime nextOwnerHealUtc;
@@ -249,12 +254,12 @@ internal sealed class Engine {
 			if (DateTime.UtcNow < nextPetHealUtc) return true;
 
 			if (petLastCastHp > 0) petNoGainStreak = pet.CurrentHp > petLastCastHp ? 0 : petNoGainStreak + 1;
-			if (petNoGainStreak >= PetNoGainCastsBeforeApproach) {
+			int distance = (int)Math.Sqrt(Math.Pow((double)pet.RawX - ownerSnapshot.X, 2) + Math.Pow((double)pet.RawY - ownerSnapshot.Y, 2));
+			if (petNoGainStreak >= PetNoGainCastsBeforeApproach && distance > PetApproachDistanceRaw) {
 				petNoGainStreak = 0;
 				petLastCastHp = 0;
 				nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(PetApproachSettleMilliseconds);
 				bool walked = walkTo(pet.RawX, pet.RawY, out string walkResult);
-				int distance = (int)Math.Sqrt(Math.Pow((double)pet.RawX - ownerSnapshot.X, 2) + Math.Pow((double)pet.RawY - ownerSnapshot.Y, 2));
 				log($"BUFF_PET_APPROACH | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | NoGainCasts={PetNoGainCastsBeforeApproach} | Player={ownerSnapshot.X}/{ownerSnapshot.Y} | Pet={pet.RawX}/{pet.RawY} | Distance={distance} | Walked={walked} | {walkResult} | Action=Đi tới gần Đệ rồi heal tiếp");
 				return true;
 			}

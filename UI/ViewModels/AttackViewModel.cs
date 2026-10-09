@@ -132,28 +132,31 @@ public sealed class AttackViewModel : ViewModelBase {
 
 	// Hai ô Boss loại trừ nhau: bật ô này thì ô kia tự tắt. Bỏ tick cả hai là hợp lệ — nghĩa là không lọc gì,
 	// đánh cả quái thường lẫn thủ lĩnh.
+	// Both setters always re-raise both properties, even when the stored value is unchanged: the attack engine can flip
+	// these two settings from its worker (boss patrol), and an early return left a stale tick on screen so both boxes
+	// could show checked at once.
 	public bool OnlyAttackBoss {
 		get => settings.OnlyAttackBoss;
 		set {
-			if (settings.OnlyAttackBoss == value) return;
 			settings.OnlyAttackBoss = value;
-			OnPropertyChanged();
-			if (!value) return;
-			settings.DoNotAttackBoss = false;
-			OnPropertyChanged(nameof(DoNotAttackBoss));
+			if (value) settings.DoNotAttackBoss = false;
+			RefreshBossMode();
 		}
 	}
 
 	public bool DoNotAttackBoss {
 		get => settings.DoNotAttackBoss;
 		set {
-			if (settings.DoNotAttackBoss == value) return;
 			settings.DoNotAttackBoss = value;
-			OnPropertyChanged();
-			if (!value) return;
-			settings.OnlyAttackBoss = false;
-			OnPropertyChanged(nameof(OnlyAttackBoss));
+			if (value) settings.OnlyAttackBoss = false;
+			RefreshBossMode();
 		}
+	}
+
+	// Re-syncs both boss checkboxes when the engine switched the mode itself (4-corner patrol found no boss).
+	public void RefreshBossMode() {
+		OnPropertyChanged(nameof(OnlyAttackBoss));
+		OnPropertyChanged(nameof(DoNotAttackBoss));
 	}
 
 	public ObservableCollection<MonsterOption> Monsters { get; } = [MonsterOption.All];

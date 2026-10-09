@@ -16,7 +16,9 @@ public sealed class Settings {
 	public bool EnableSaleQuantityThreshold { get; set; } = true;
 	public int SaleQuantityThreshold { get; set; } = 32;
 	public bool EnableSaleRemainingStrengthThreshold { get; set; } = true;
-	public int SaleRemainingStrengthThreshold { get; set; } = 20;
+	// 25, not 20 (owner 2026-10-03): the heaviest item seen in bags weighs 21 (Tử Dương kiếm), so at 20 left one pickup
+	// overloaded PID 21232 (20 -> -1) and the game froze movement before the sale trip could start.
+	public int SaleRemainingStrengthThreshold { get; set; } = 25;
 	// Ngưỡng số lượng cho từng loại dược phẩm: đủ ngần này rồi thì ngừng nhặt riêng loại đó. <= 0 nghĩa là tắt giới hạn.
 	public int PotionQuantityLimit { get; set; } = 10;
 	public bool PickWhite { get; set; }

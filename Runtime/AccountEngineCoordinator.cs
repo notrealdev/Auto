@@ -141,7 +141,8 @@ public static class AccountEngineCoordinator {
 			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
 			// Gồm cả lối tự động (LowHpEngine kích khi về thành hết thuốc), không chỉ nút bấm tay tab Debug.
 			bool doctorPurchaseActive = game.DoctorPurchaseAutomation.IsDebugRun || game.DoctorPurchaseAutomation.IsAutomaticRun;
-			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive);
+			// KhonTienRouteProbe walks only while the master switch is off; the early return below keeps every other engine idle.
+			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive || KhonTienRouteProbe.IsWalking(game.ProcessId));
 			// doctorPurchaseActive riêng: repair debug run VỐN ĐÃ không bật cờ này khi Auto tổng tắt (hành vi cũ, không đụng
 			// vào), nhưng thiếu nó thì DoctorPurchaseAutomation chạy thật (đã sửa 3 cổng phía dưới) mà mọi dòng log từng
 			// bước đều bị accountLog/CanLogProcess nuốt mất, không có gì để đối chiếu khi test.
@@ -190,7 +191,7 @@ public static class AccountEngineCoordinator {
 			// Chỉ khoá thực thi, không sửa cấu hình — bỏ tick nhiệm vụ thì hai chức năng kia trở lại đúng ô đã đặt.
 			// Phải khoá cả attackConfigured chứ không riêng attackEnabled, vì attackConfigured mới là thứ cho phép
 			// WeaponRepairAutomation chạy tiếp (repairAllowed bên dưới) và cho WeaponRepairMonitor xếp yêu cầu sửa.
-			// Nhặt KHÔNG bị khoá: nó không tự phát sinh di chuyển.
+			// Loot is locked too (owner rule 2026-10-09): it walks to items and pulls the player off the quest route.
 			// Chưa có engine nhiệm vụ nên hiện tại bật ô này chỉ dừng Đánh/Sửa đồ chứ chưa có gì chạy thay.
 			// Bào thương đã bị gỡ khỏi UI (2026-09-11) nên KHÔNG được đưa CaravanEnabled vào cổng này: file cấu hình cũ
 			// có thể còn lưu true, mà không còn ô nào để bỏ tick — Đánh và Sửa đồ sẽ bị khoá vĩnh viễn.
@@ -207,6 +208,7 @@ public static class AccountEngineCoordinator {
 				attackConfigured = false;
 				repairConfigured = false;
 				repairEnabled = false;
+				lootEnabled = false;
 			}
 
 			// CHỈ resolve khi có lý do dùng tới kết quả. RuntimeLayoutResolver.Resolve tự cache VĨNH VIỄN một khi
@@ -535,7 +537,10 @@ public static class AccountEngineCoordinator {
 
 			// Ngoài bãi liên tục quá OutsideAreaReturnSeconds thì kéo về bãi, không phụ thuộc đứng im — xem chú thích ở hằng số.
 			// Bỏ qua khi có luồng nào đang giữ quyền di chuyển (đồng hồ cũng về 0 để lần sau đếm lại từ đầu).
-			if (attackEnabled && !manualInputActive && !repairPriority && !eliteRetreatHoldingControl && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && IsOutsideTrainingArea(game, snapshot)) {
+			// Boss hunt chases bosses outside the training area on purpose and one fight outlasts the 20 s limit, so it is
+			// exempt; its corner patrol brings the player back to the area edge once no boss is left.
+			bool bossHunt = game.AttackSettings.OnlyAttackBoss;
+			if (attackEnabled && !manualInputActive && !repairPriority && !eliteRetreatHoldingControl && !bossHunt && !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy && IsOutsideTrainingArea(game, snapshot)) {
 				DateTime outsideSinceUtc = outsideAreaSinceByWindow.GetOrAdd(game.Handle, DateTime.UtcNow);
 				double outsideSeconds = (DateTime.UtcNow - outsideSinceUtc).TotalSeconds;
 				if (outsideSeconds >= OutsideAreaReturnSeconds) {
@@ -593,6 +598,16 @@ public static class AccountEngineCoordinator {
 
 			if (lootEnabled) game.LootEngine.Tick(snapshot, game, manualInputActive, accountLog, accountDropLog);
 			else game.LootEngine.Stop();
+
+			// A valuable item was chased out of the loot radius and is gone (picked, taken by someone, or cleared): go back to
+			// the training area now instead of waiting for the 20 s outside-area rule (owner rule 2026-10-08). Still inside
+			// the area: nothing to do, the attack loop carries on training.
+			if (game.LootEngine.TakeReturnToTrainingRequest() && attackEnabled && !manualInputActive && IsOutsideTrainingArea(game, snapshot)) {
+				accountLog($"LOOT_CHASE_RETURN | PID={game.ProcessId} | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | Tâm={game.AttackSettings.CenterX}/{game.AttackSettings.CenterY} | Range={game.AttackSettings.Range} | Action=Món đồ đã không còn, quay lại bãi ngay");
+				RequestReturnToTrainingCenter(game, snapshot, accountLog, "Đuổi theo đồ có giá trị đã xong");
+				game.AttackEngine.Stop();
+				return;
+			}
 
 			if (attackEnabled) {
 				game.AttackEngine.Tick(snapshot, game, manualInputActive, accountLog, accountTargetLifecycleLog, accountTargetViolationLog, accountTargetMovementLog);
@@ -1003,7 +1018,7 @@ public static class AccountEngineCoordinator {
 			return true;
 		}
 		deathSendFailureByWindow.TryRemove(game.Handle, out _);
-		log($"Xử lý khi chết | PID={game.ProcessId} | Command=38 | Payload={deathActionPayload} | Action={game.BasicSettings.DeathAction} | Delay={returnDelayMilliseconds}ms");
+		log($"Xử lý khi chết | PID={game.ProcessId} | CáchXửLý={DeathActionNames.ToDisplay(game.BasicSettings.DeathAction)} | Command=38 | Payload={deathActionPayload} | Action={game.BasicSettings.DeathAction} | Delay={returnDelayMilliseconds}ms");
 		return true;
 	}
 

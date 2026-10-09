@@ -5,6 +5,8 @@ using Auto.Utils;
 
 internal sealed class AutoFsEntityScanner {
 	private const int AutoFsMaximumPlayerDistance = 9999;
+	// "Chỉ đánh Boss": scan radius around the player, not the training center (owner rule 2026-10-08).
+	private const int BossHuntRadius = 3500;
 
 	// Khối đầu bản ghi entity, gom ba trường mà vòng lọc cần đọc cho MỌI entity: Level (0x0024), EntityType (0x0028)
 	// và LifecycleStatus (0x01E8). Suy ra từ chính AutoFsClientProfile nên đổi offset bên đó là ở đây tự theo.
@@ -173,12 +175,19 @@ internal sealed class AutoFsEntityScanner {
 			}
 
 			double distanceToCenter = GetMapDistance(centerX, centerY, x, y);
-			if ((configuredTrainingMode || settings.UseCenterPosition) && distanceToCenter > Math.Max(settings.Range, 1)) continue;
 			double distanceToPlayer = GetMapDistance(playerX, playerY, x, y);
-			// AutoFS chặn trên khoảng cách tới nhân vật trước khi nạp vào danh sách ứng viên (VectorFactory.cs, cả hai
-			// nhánh lọc tên đều là "if (num28 >= 0) { if (num28 <= 9999) { ... list.Add ... } }").
-			// Khi tắt Quanh điểm thì đây là chặn duy nhất, không có nó thì auto bám cả quái ở đầu kia bản đồ.
-			if (distanceToPlayer > AutoFsMaximumPlayerDistance) continue;
+			if (settings.OnlyAttackBoss && isElite) {
+				// Boss hunt (owner rule 2026-10-08): one account clears every boss near the player, inside the training
+				// area or not. movement.log 22:38:35 MaiAnhNhe: Trư Tinh(Lôi) 813 from the player but 3032 from the center
+				// (Range=3000) was skipped and the account patrolled away from it.
+				if (distanceToPlayer > BossHuntRadius) continue;
+			} else {
+				if ((configuredTrainingMode || settings.UseCenterPosition) && distanceToCenter > Math.Max(settings.Range, 1)) continue;
+				// AutoFS chặn trên khoảng cách tới nhân vật trước khi nạp vào danh sách ứng viên (VectorFactory.cs, cả hai
+				// nhánh lọc tên đều là "if (num28 >= 0) { if (num28 <= 9999) { ... list.Add ... } }").
+				// Khi tắt Quanh điểm thì đây là chặn duy nhất, không có nó thì auto bám cả quái ở đầu kia bản đồ.
+				if (distanceToPlayer > AutoFsMaximumPlayerDistance) continue;
+			}
 
 			int hp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
 			// Xác quái: máu đã về 0 nhưng client chưa kịp lật LifecycleStatus sang FinishedStatus. Trước đây không có

@@ -46,6 +46,8 @@ public sealed class Settings {
 
 	// Trạng thái lượt Thám quân gần nhất, do ScoutQuestAutomation ghi khi kết thúc (xong/lỗi/dừng) — chỉ để hiển thị
 	// trên UI, không ảnh hưởng máy trạng thái. Rỗng nghĩa là chưa chạy lượt nào từ lúc mở Auto.
+	// Not saved to Profiles.json: "(Đã hoàn thành)" must reset every time Auto starts (owner rule 2026-10-09).
+	[System.Text.Json.Serialization.JsonIgnore]
 	public string ScoutStatus { get; set; } = "";
 
 	// ===== Bào Thương =====

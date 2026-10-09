@@ -23,7 +23,11 @@ using Auto.Utils;
 // Không tự đếm/chặn theo giới hạn 1000 bình/ngày (chủ dự án chốt 2026-09-25: đếm rất thiếu chính xác): cứ hết thuốc là gửi lệnh,
 // server từ chối thì thôi. Bộ đếm ngày chỉ dùng làm bằng chứng xác nhận đã mua.
 internal sealed class QuickBuyEngine {
-	private const int CheckIntervalMilliseconds = 2000;
+	// 500 ms, same cadence as the AutoFS recovery loop (IL FormLoader.SaveDevice: Stopwatch > 500). Was 2000 ms, which left
+	// 2-4 s without potions after each bottle: the server sells exactly 1 bottle per packet on the current client (client
+	// function 0x74B330 clamps the quantity with "mov ecx,1 / cmovle"; a raw packet with quantity 2 was refused, with
+	// quantity 1 accepted, PID 4452 2026-10-09 11:50:28-11:50:33), so the bag is refilled one bottle at a time.
+	private const int CheckIntervalMilliseconds = 500;
 	// Client giật thì phản hồi mua có thể tới trễ hơn 6 giây (PID=20260 18:43).
 	private const int VerifyTimeoutMilliseconds = 15000;
 	private static readonly TimeSpan NoIncreaseBackoff = TimeSpan.FromSeconds(30);

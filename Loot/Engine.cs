@@ -36,6 +36,10 @@ public sealed class Engine {
 	private int pendingPickupAttempts;
 	private int pendingNearPickupAttempts;
 	private bool approachPrepared;
+	// True while the last scan had a valuable item to pick; the sale trip waits for it (WeaponRepairAutomation).
+	private bool valuablePending;
+	// Set when a chase beyond PlayerScanRadius ended; the coordinator takes it and returns the character to the training area.
+	private bool returnToTrainingRequested;
 	private bool startedLogged;
 	private string lastError = "";
 	private string lastScanSummary = "";
@@ -80,7 +84,12 @@ public sealed class Engine {
 		lock (syncRoot) loggedFilterDecisions.Clear();
 	}
 
+	public bool HasValuablePending => Volatile.Read(ref valuablePending);
+
+	public bool TakeReturnToTrainingRequest() => Interlocked.Exchange(ref returnToTrainingRequested, false);
+
 	public void Stop() {
+		Volatile.Write(ref valuablePending, false);
 		CancellationTokenSource? cancellation;
 		lock (syncRoot) {
 			cancellation = workerCancellation;
@@ -171,9 +180,11 @@ public sealed class Engine {
 				}
 				SelectNearbyGroundItems(result.Candidates, snapshot, context.GameWindow, context.Log, context.DropLog);
 				LootSnapshot[] candidates = result.Candidates
-					.OrderBy(item => GetScanDistance(snapshot, item))
+					.OrderByDescending(Finder.GetPickPriority)
+					.ThenBy(item => GetScanDistance(snapshot, item))
 					.ThenBy(item => item.Index)
 					.ToArray();
+				Volatile.Write(ref valuablePending, candidates.Any(Finder.IsValuable));
 				if (candidates.Length > 0 && ! token.IsCancellationRequested) {
 					try {
 						actionGate.RunLoot(() => ProcessCandidateBatch(context, candidates, token));
@@ -222,7 +233,13 @@ public sealed class Engine {
 				}
 				// Kiểm lại GIỮA CHỪNG batch, không chỉ một lần lúc Find() dựng danh sách — một batch có thể gom nhiều
 				// món, nhặt hết cả loạt rồi mới quay lại Find() để kiểm tiếp là đã trễ (chủ dự án chỉ ra 2026-09-24).
-				if (finder.IsCarryingCapacityExhausted(context.ProcessId)) {
+				CarryingLimit limit = finder.GetCarryingLimit(context.ProcessId);
+				if (limit == CarryingLimit.Full && ! Finder.IsSkillBook(candidate)) {
+					exitReason = "CARRYING_CAPACITY_FULL";
+					break;
+				}
+				// Below the sale threshold only valuable items may still be picked (the batch is sorted valuables first).
+				if (! Finder.IsPickAllowed(limit, candidate)) {
 					exitReason = "CARRYING_CAPACITY_EXHAUSTED";
 					break;
 				}
@@ -278,6 +295,8 @@ public sealed class Engine {
 		// còn các lý do khác nghĩa là ô đã bị món khác chiếm — đúng kịch bản đua tranh nghi ngờ ở SelectNearbyGroundItems.
 		string lastSlotReason = "KHÔNG_CÓ";
 		string lastSlotCurrentName = "";
+		// True once this item was chased beyond PlayerScanRadius (valuable items only).
+		bool farChase = false;
 
 		try {
 			while (! token.IsCancellationRequested && settings.Enabled && ! IsManualInputActive()) {
@@ -296,20 +315,16 @@ public sealed class Engine {
 					break;
 				}
 				int rawDistance = GetRawDistance(snapshot, candidate);
-				// Chốt chặn sống: item là vật tĩnh nên nhân vật đi tới thì khoảng cách phải GIẢM. Vượt bán kính quét
-				// nghĩa là đang bị kéo đi sai chỗ, phải bỏ ngay. Bộ lọc trong AutoFsGroundItemScanner chỉ chặn lúc
-				// quét, còn chỗ này chặn đúng lúc lệnh 78 đang được gửi lại mỗi RetryIntervalMilliseconds.
-				// Cần thiết vì pendingNearPickupAttempts bên dưới chỉ tăng khi rawDistance < NearRawDistance, nên
-				// giới hạn NearPickupAttemptLimit không bao giờ áp được cho item ở xa: vòng lặp sẽ chạy vô hạn.
-				if (rawDistance > Finder.PlayerScanRadius) {
-					LogLootDiagnostic(context.DropLog, $"LOOT_OUT_OF_SCAN_RADIUS | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Distance={rawDistance} | ScanRadius={Finder.PlayerScanRadius} | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={coordinate.X}/{coordinate.Y}");
+				if (GetScanDistance(snapshot, candidate) > Finder.PlayerScanRadius) farChase = true;
+				// Same radius and same straight-line distance as the scan: an ordinary item that drifted out of it (the
+				// character is being pulled elsewhere) is dropped. A valuable item is chased until its slot empties (above).
+				if (! Finder.IsWithinPickRadius(candidate, GetScanDistance(snapshot, candidate))) {
+					LogLootDiagnostic(context.DropLog, $"LOOT_OUT_OF_SCAN_RADIUS | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Distance={GetScanDistance(snapshot, candidate):F0} | ScanRadius={Finder.PlayerScanRadius} | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={coordinate.X}/{coordinate.Y}");
 					outcome = "OUT_OF_SCAN_RADIUS";
 					break;
 				}
-				// Nhánh dưới chỉ chạy khi rawDistance >= NearRawDistance (200), mà chốt chặn ngay trên đã cắt ở
-				// PlayerScanRadius (150) nên nó KHÔNG còn với tới được. Giữ nguyên vì đây là lệnh 32 thuộc luồng
-				// AutoFS đã xác nhận; xoá là đổi hành vi luồng gốc. Nếu sau này nới PlayerScanRadius vượt 200 thì
-				// nhánh này sống lại đúng như thiết kế cũ.
+				// AutoFS pickup loop (ToolbarSet.cs:1883-1989): far (>= 200, |dx| + |dy|): command 32 once, then command 78
+				// every 100 ms until the item is near; near (< 200): command 78 at most 3 times, then a 30 s cooldown.
 				if (rawDistance >= NearRawDistance && ! approachPrepared) {
 					if (! transport.TrySendCommand(context.GameWindow, AutoFsApproachCommand, 0, out string prepareError)) {
 						LogLootDiagnostic(context.DropLog, $"LOOT_COMMAND_FAILED | PID={context.ProcessId} | Command={AutoFsApproachCommand} | Payload=0 | Index={itemIndex} | Name={candidate.ItemNameRaw} | Reason={prepareError}");
@@ -331,11 +346,13 @@ public sealed class Engine {
 				LogLootDiagnostic(context.DropLog, $"LOOT_COMMAND_POSTED | PID={context.ProcessId} | Command={AutoFsPickupCommand} | Payload={itemIndex} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Attempt={pendingPickupAttempts} | NearAttempt={pendingNearPickupAttempts} | Delivery=POSTED | Acceptance=UNVERIFIED | Synchronization=SHARED_MONITOR | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={coordinate.X}/{coordinate.Y} | Distance={rawDistance}");
 				if (token.WaitHandle.WaitOne(RetryIntervalMilliseconds)) break;
 				bool persistentRetry = IsPersistentNearRetry(candidate);
-				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= NearPickupAttemptLimit && persistentRetry && ! retryPolicyLogged) {
+				// Tứ Tượng / Lục Đạo: give up after the first near attempt (owner rule 2026-10-09, see Finder.IsLowValueMaterial).
+				int nearAttemptLimit = Finder.IsLowValueMaterial(candidate) ? 1 : NearPickupAttemptLimit;
+				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= nearAttemptLimit && persistentRetry && ! retryPolicyLogged) {
 					retryPolicyLogged = true;
 					LogLootDiagnostic(context.DropLog, $"LOOT_RETRY_POLICY | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Persistent=True | Reason=VALUABLE_ITEM_EXCEPTION");
 				}
-				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= NearPickupAttemptLimit && ! persistentRetry) {
+				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= nearAttemptLimit && ! persistentRetry) {
 					AddFailedCoordinate(coordinate, DateTime.UtcNow.AddMilliseconds(FailedCoordinateCooldownMilliseconds));
 					outcome = "NEAR_RETRY_LIMIT_COOLDOWN";
 					break;
@@ -345,6 +362,12 @@ public sealed class Engine {
 			// Item rời khỏi ô dưới đất nghĩa là số lượng trong túi có thể đã đổi: xoá cache để lượt lọc sau đọc lại.
 			// Cố ý không cộng thẳng vào cache: SLOT_LEFT cũng xảy ra khi người khác nhặt mất, cộng thẳng sẽ đếm thừa.
 			if (outcome.StartsWith("SLOT_LEFT", StringComparison.Ordinal)) finder.InvalidatePotionCounts();
+			// A chase out of the radius is over (item gone — picked, taken by someone, or cleared): ask the coordinator to
+			// bring the character back to the training area at once (owner rule 2026-10-08) instead of the 20 s outside rule.
+			if (farChase && outcome.StartsWith("SLOT_LEFT", StringComparison.Ordinal)) {
+				Volatile.Write(ref returnToTrainingRequested, true);
+				LogLootDiagnostic(context.DropLog, $"LOOT_FAR_CHASE_ENDED | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | Action=Yêu cầu quay lại bãi");
+			}
 			if (token.IsCancellationRequested) outcome = "CANCELLED";
 			else if (! settings.Enabled) outcome = "LOOT_DISABLED";
 			else if (IsManualInputActive()) outcome = "MANUAL_INPUT_PRIORITY";
@@ -647,10 +670,10 @@ public sealed class Engine {
 		currentDropLog(message);
 	}
 
+	// Manhattan distance, as AutoFS's pickup loop measures near/far (ToolbarSet.cs:1883: |dx| + |dy| < 200). The scan-time
+	// command 9 pre-selection uses the straight-line GetScanDistance below, also as AutoFS does (ToolbarSet.cs:1692).
 	private static int GetRawDistance(GameSnapshot snapshot, LootSnapshot item) {
-		long deltaX = (long)snapshot.X - item.RawX;
-		long deltaY = (long)snapshot.Y - item.RawY;
-		return (int)Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+		return (int)Math.Min(int.MaxValue, Math.Abs((long)snapshot.X - item.RawX) + Math.Abs((long)snapshot.Y - item.RawY));
 	}
 
 	private static double GetScanDistance(GameSnapshot snapshot, LootSnapshot item) {
@@ -660,6 +683,7 @@ public sealed class Engine {
 	}
 
 	private static bool IsPersistentNearRetry(LootSnapshot item) {
+		if (Finder.IsLowValueMaterial(item)) return false;
 		ItemClassification classification = ItemGroupClassifier.Classify(item);
 		if (classification.AttributeClass == 3) return true;
 		if (classification.Color is ItemColor.Green or ItemColor.Yellow) return true;

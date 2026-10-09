@@ -73,8 +73,10 @@ public static class TalismanDestinationCatalog {
 	// tính thử trên Data\Maps ngày 2026-09-10: map 22/32 từ Tây Kỳ chỉ 1 chặng thay vì 5 chặng nếu về Triều Ca;
 	// map 37-41 từ Trần Đường 1-5 chặng thay vì 2-6; map 42-46 từ Tuyệt Long lĩnh 1-5 thay vì 4-8.
 	//
-	// Nhóm 47-51 (Khổn Tiên Cung) KHÔNG chọn được điểm đến nào: Data\Maps không có dòng chuyển map nào tới hoặc
-	// đi khỏi 47-52, nên mọi tuyến đều rỗng. Hàm trả false, nơi gọi lui về đi bộ rồi sẽ báo "No route".
+	// Khổn Tiên Cung 47-51 is reached from Diêu Trì (52): portal lines 52->47->48->49->50->51 were recorded by
+	// MapTransitionRecorder on 2026-10-09 (map-transition.log, PID 4452), so this returns menu index 1 for them.
+	// ScoutQuestAutomation does not call this (talisman only when the target itself is in the menu); the quest reaches
+	// 47-51 through TransitGateDestinationCatalog.TryGetNearestOptionIndex instead (Triều Ca gate, option 5 -> Map52).
 	public static bool TryGetNearestMenuIndex(int destinationMapId, out int menuIndex, out int hubMapId, out int transitionCount) {
 		menuIndex = -1;
 		hubMapId = 0;

@@ -61,6 +61,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		foreach (TabItemViewModel tab in Tabs) tab.PropertyChanged += OnTabPropertyChanged;
 		AccountList.PropertyChanged += OnAccountListPropertyChanged;
 		AccountList.AttackToggledExternally += OnAttackToggledExternally;
+		AccountList.BossModeSwitchedExternally += OnBossModeSwitchedExternally;
 		// Hồ sơ vừa khôi phục ghi thẳng vào Settings từ code, WPF không biết giá trị đã đổi. Dựng lại tab là cách
 		// rẻ và chắc chắn nhất — đúng thứ code đã làm khi đổi dòng account.
 		AccountList.ProfileRestored += OnProfileRestored;
@@ -126,6 +127,11 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		}
 
 		SelectedTabContent = selectedTab.Content;
+	}
+
+	private void OnBossModeSwitchedExternally(GameWindow game) {
+		if (game != AccountList.SelectedRow?.GameWindow) return;
+		if (attackTabItem.Content is AttackViewModel attackViewModel) attackViewModel.RefreshBossMode();
 	}
 
 	private void OnAttackToggledExternally(GameWindow game) {

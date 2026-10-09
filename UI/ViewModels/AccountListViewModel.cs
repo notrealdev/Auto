@@ -41,6 +41,9 @@ public sealed class AccountListViewModel : ViewModelBase {
 	// Raised khi hotkey Ctrl+A đổi AttackSettings.Enabled từ bên ngoài, để tab Đánh đang mở tự cập nhật lại.
 	public event Action<GameWindow>? AttackToggledExternally;
 
+	// Raised when the attack engine itself switched "Chỉ đánh Boss" -> "Không đánh Boss" after a patrol with no boss.
+	public event Action<GameWindow>? BossModeSwitchedExternally;
+
 	// Raised sau khi hồ sơ cấu hình vừa được khôi phục cho một account. Các tab đọc Settings qua getter nên WPF
 	// không biết giá trị vừa đổi từ code — MainWindowViewModel nghe sự kiện này để dựng lại tab đang mở.
 	public event Action<GameWindow>? ProfileRestored;
@@ -194,6 +197,9 @@ public sealed class AccountListViewModel : ViewModelBase {
 			if (game == null) continue;
 			game.AttackSettings.Enabled = !game.AttackSettings.Enabled;
 			AttackToggledExternally?.Invoke(game);
+		}
+		foreach (AccountRowViewModel row in Accounts) {
+			if (row.GameWindow.AttackEngine.TakeBossModeSwitched()) BossModeSwitchedExternally?.Invoke(row.GameWindow);
 		}
 
 		UpdateAutoLogSessionState();

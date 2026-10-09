@@ -2,14 +2,16 @@ namespace Auto.Loot;
 
 using Auto.Utils;
 
+public enum CarryingLimit { None, BelowSaleThreshold, Full }
+
 public sealed class Finder {
+	// Loot radius in raw around the character (straight-line distance): items farther away are neither scanned nor walked
+	// to. Owner-tunable (2026-10-08, set back to 300 after the no-limit AutoFS scan sent characters far off for HP potions).
+	// Also the live cut-off in Loot/Engine's pickup loop, so one number governs both.
+	public const int PlayerScanRadius = 300;
 	private const int AttackSafetyMaxItems = 128;
 	// Quy đổi 1 ô hiển thị = 256 raw trục X, dùng riêng cho bán kính liệt kê đồ dưới đất ở ô chọn tab Nhặt.
 	private const int GroundDiscoveryRawPerMapUnit = 256;
-	// Bán kính quét Nhặt tính từ chính nhân vật. Giữ nhỏ để lệnh nhặt không bao giờ kéo nhân vật ra khỏi bãi.
-	// Đơn vị là raw: 1 ô toạ độ hiển thị = 256 raw theo trục X và 512 raw theo trục Y, nên 150 raw chưa tới nửa ô.
-	// public để Loot/Engine dùng chung đúng con số này cho chốt chặn OUT_OF_SCAN_RADIUS trong vòng lặp nhặt.
-	public const int PlayerScanRadius = 150;
 	// Một chỗ duy nhất giữ nhãn nhóm "Vũ khí xanh": Finder đọc, LootViewModel dựng ô tick, Settings đặt mặc định.
 	public const string GreenWeaponSelectionName = "Vũ khí xanh";
 	// Cùng khuôn với trên: nhãn nhóm "Bá Lạc Nhãn" (vật phẩm cường hoá thú cưỡi) chỉ khai báo ở đúng một chỗ.
@@ -38,9 +40,8 @@ public sealed class Finder {
 	// Lỗi chỉ lộ ra sau khi bộ lọc bán kính được thêm vào scanner; trước đó tham số bị bỏ qua nên truyền gì cũng chạy
 	// (xem chính ghi chú ở AutoFsGroundItemScanner.cs:86-88).
 	//
-	// Quy đổi 1 ô = 256 raw, cùng thang RawXScale mà AttackViewModel dùng. KHÔNG dùng PlayerScanRadius (150 raw)
-	// của luồng nhặt thật: đó là bán kính để RA TAY nhặt, còn đây chỉ liệt kê tên cho người dùng chọn nên nhìn rộng
-	// bằng đúng ô Range người dùng đặt thì hợp lý hơn.
+	// Quy đổi 1 ô = 256 raw, cùng thang RawXScale mà AttackViewModel dùng. Chỉ liệt kê tên cho người dùng chọn nên
+	// nhìn rộng bằng đúng ô Range người dùng đặt.
 	public List<LootSnapshot> FindVisibleSpriteItemsForAttackSafety(GameSnapshot snapshot) {
 		int rangeRaw = Math.Max(settings.Range, 1) * GroundDiscoveryRawPerMapUnit;
 		return spriteItemScanner.Find(snapshot.ProcessId, snapshot.X, snapshot.Y, rangeRaw, AttackSafetyMaxItems);
@@ -62,13 +63,11 @@ public sealed class Finder {
 		}
 
 		try {
-			// Quét quanh chính nhân vật với bán kính nhỏ cố định, không dùng tâm bãi nữa.
-			// Trước đây quét quanh tâm bãi với bán kính 1.5 lần phạm vi đánh (1800 khi đánh 1200), nên một item nằm
-			// ngoài phạm vi đánh vẫn được nhận và lệnh nhặt kéo nhân vật ra khỏi bãi. Bán kính 150 nhỏ hơn ngưỡng 200
-			// mà AutoFS dùng cho lệnh 9 (AGENTS.md "Confirmed AutoFS Loot Flow"), nên item chỉ được nhận khi đã ở sát nhân vật.
 			int centerX = snapshot.X;
 			int centerY = snapshot.Y;
-			int maxRange = PlayerScanRadius;
+			// Scan the whole ground table; the PlayerScanRadius cut-off is applied below to ordinary items only. Valuable
+			// items are followed out of the radius until their ground slot empties (owner rule 2026-10-08).
+			int maxRange = 0;
 
 			result.Success = true;
 			result.CenterRawX = centerX;
@@ -82,11 +81,11 @@ public sealed class Finder {
 			// đã đúng công thức (RemainingStrength = Maximum - Current, đi bán khi < ngưỡng) vẫn không kịp cản một
 			// lần nhặt duy nhất đẩy Current vọt qua Maximum. Chặn nhặt tiếp ngay khi chạm đúng ngưỡng đi bán, cùng
 			// một điều kiện với Sale/InventorySaleEngine.ReadAutomaticTrigger để hai nơi không lệch nhau.
-			if (IsCarryingCapacityExhausted(snapshot.ProcessId)) {
-				result.Candidates.Clear();
-			} else {
-				result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item)));
-			}
+			// Owner rule 2026-10-08: valuable items ignore the sale threshold and are still picked; only a bag already at
+			// or over its maximum (the game locks movement there) stops them too. ZALO0988777666 2026-10-08 15:42:15 left
+			// "ấm Vạn Nha" (Artifact, Yellow, Accepted=True) on the ground once RemainingStrength fell to 24 < 25.
+			CarryingLimit limit = GetCarryingLimit(snapshot.ProcessId);
+			result.Candidates.RemoveAll(item => !ShouldPick(item, ItemGroupClassifier.Classify(item)) || ! IsPickAllowed(limit, item) || ! IsWithinPickRadius(item, item.DistanceToPlayer));
 
 			result.Candidates.Sort(CompareCandidates);
 
@@ -138,11 +137,41 @@ public sealed class Finder {
 	//
 	// Chỉ đọc bộ nhớ khi tính năng "Sức lực còn dưới ngưỡng" đang bật — tắt thì giữ nguyên hành vi cũ, không thêm
 	// chi phí đọc bộ nhớ mỗi vòng quét 200ms.
-	public bool IsCarryingCapacityExhausted(int processId) {
-		if (! settings.EnableSaleRemainingStrengthThreshold) return false;
+	public CarryingLimit GetCarryingLimit(int processId) {
+		if (! settings.EnableSaleRemainingStrengthThreshold) return CarryingLimit.None;
 		InventoryStrengthReading strength = InventoryStrengthReader.Read(processId);
-		return strength.Success && strength.Free < settings.SaleRemainingStrengthThreshold;
+		if (! strength.Success) return CarryingLimit.None;
+		if (strength.Free <= 0) return CarryingLimit.Full;
+		return strength.Free < settings.SaleRemainingStrengthThreshold ? CarryingLimit.BelowSaleThreshold : CarryingLimit.None;
 	}
+
+	// Skill books weigh nothing (owner rule 2026-10-08): no strength limit applies to them; the item filter still does.
+	public static bool IsPickAllowed(CarryingLimit limit, LootSnapshot item) {
+		return IsSkillBook(item) || limit == CarryingLimit.None || limit == CarryingLimit.BelowSaleThreshold && IsValuable(item);
+	}
+
+	// Ordinary items: only within PlayerScanRadius of the character. Valuable items: anywhere in the client's ground table.
+	public static bool IsWithinPickRadius(LootSnapshot item, double distanceToPlayer) => distanceToPlayer <= PlayerScanRadius || IsValuable(item);
+
+	public static bool IsSkillBook(LootSnapshot item) => AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) == AutoFsSpecialItemCategory.SkillBook;
+
+	// Pick order: skill books, then other valuable items, then the rest (each group nearest first).
+	public static int GetPickPriority(LootSnapshot item) => IsSkillBook(item) ? 2 : IsValuable(item) ? 1 : 0;
+
+	// "Item có giá trị": the near-retry exception set (AttributeClass 3, green/yellow, skill book) plus artifacts (Pháp Bảo)
+	// and Bá Lạc Nhãn (owner, 2026-09-17: high value). Picked first and allowed past the sale threshold.
+	public static bool IsValuable(LootSnapshot item) {
+		if (IsLowValueMaterial(item)) return false;
+		ItemClassification classification = ItemGroupClassifier.Classify(item);
+		if (classification.AttributeClass == 3) return true;
+		if (classification.Color is ItemColor.Green or ItemColor.Yellow) return true;
+		return AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) is AutoFsSpecialItemCategory.SkillBook or AutoFsSpecialItemCategory.Artifact or AutoFsSpecialItemCategory.MountUpgrade;
+	}
+
+	// Tứ Tượng and Lục Đạo are low-value materials (owner rule 2026-10-09): never "valuable", even when their AttributeClass
+	// is 3 like gems. One near pickup attempt, then skip; no chase, no standing still until it is picked. Before this a Tứ
+	// Tượng "Phong Lệ" took 194 pickup attempts and a chase out of the area (loot-scan.log 2026-10-09 10:49:51, PID 24284).
+	public static bool IsLowValueMaterial(LootSnapshot item) => AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) is AutoFsSpecialItemCategory.FourSymbols or AutoFsSpecialItemCategory.SixPaths;
 
 	// Áp dụng category đã biết trước item riêng để checkbox category luôn có quyền quyết định
 	private bool ShouldPick(LootSnapshot snapshot, ItemClassification item) {
@@ -319,7 +348,10 @@ public sealed class Finder {
 		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
 	}
 
+	// Skill books, then valuable items (owner rules 2026-10-08), then nearest first as AutoFS.
 	private static int CompareCandidates(LootSnapshot left, LootSnapshot right) {
+		int valueCompare = GetPickPriority(right).CompareTo(GetPickPriority(left));
+		if (valueCompare != 0) return valueCompare;
 		int distanceCompare = left.DistanceToPlayer.CompareTo(right.DistanceToPlayer);
 		return distanceCompare != 0 ? distanceCompare : left.Index.CompareTo(right.Index);
 	}

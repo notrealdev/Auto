@@ -68,9 +68,9 @@ public sealed class WeaponRepairAutomation {
 	private int doctorClickAttempts;
 	private int menuProfileIndex;
 	private int repairClickAttempts;
-	private uint durabilityBeforeRepair;
-	private uint pendingSuccessfulDurability;
-	private int successConfirmationCount;
+	private DateTime repairConfirmSentUtc;
+	private DateTime saleDeferredSinceUtc = DateTime.MinValue;
+	private const int SaleValuableDeferSeconds = 60;
 	private RepairState lastLoggedState = RepairState.Idle;
 	private bool shopOpened;
 	private bool interactionLocked;
@@ -126,7 +126,6 @@ public sealed class WeaponRepairAutomation {
 				debugRunRequested = false;
 				debugMode = true;
 				EquippedWeaponDurabilityReading reading = game.WeaponRepairMonitor.ReadFresh(game.ProcessId);
-				durabilityBeforeRepair = reading.Success ? reading.Current : 0;
 				runSaleThisVisit = game.InventorySaleEngine.IsAutomaticSaleEnabled;
 				runRepairThisVisit = true;
 				repairRequestedThisVisit = true;
@@ -138,13 +137,23 @@ public sealed class WeaponRepairAutomation {
 				bool repairRequested = game.RuntimeLayout.RepairReady && game.WeaponRepairMonitor.TryTakeRepairRequest(out requestedDurability);
 				if (! saleRequestPending && ! repairRequested) return false;
 				if (saleRequestPending && ! game.RuntimeLayout.SaleReady) return false;
+				// A sale-only trip waits while a valuable item is still on the ground (owner rule 2026-10-08), at most
+				// SaleValuableDeferSeconds so an item that can never be picked does not hold the sale forever.
+				if (saleRequestPending && ! repairRequested && game.LootEngine.HasValuablePending) {
+					DateTime now = DateTime.UtcNow;
+					if (saleDeferredSinceUtc == DateTime.MinValue) {
+						saleDeferredSinceUtc = now;
+						log?.Invoke($"SALE_DEFERRED_FOR_VALUABLE_LOOT | Chờ nhặt đồ có giá trị trước khi đi bán | TốiĐa={SaleValuableDeferSeconds}s");
+					}
+					if (now - saleDeferredSinceUtc < TimeSpan.FromSeconds(SaleValuableDeferSeconds)) return false;
+					log?.Invoke($"SALE_DEFER_TIMEOUT | Đã chờ {SaleValuableDeferSeconds}s mà đồ có giá trị vẫn chưa nhặt được, đi bán");
+				}
+				saleDeferredSinceUtc = DateTime.MinValue;
 				runSaleThisVisit = game.InventorySaleEngine.IsAutomaticSaleEnabled;
 				runRepairThisVisit = game.BasicSettings.EnableWeaponRepair && game.RuntimeLayout.RepairReady;
 				repairRequestedThisVisit = repairRequested;
-				if (repairRequested) durabilityBeforeRepair = requestedDurability;
-				else if (runRepairThisVisit) {
+				if (! repairRequested && runRepairThisVisit) {
 					EquippedWeaponDurabilityReading reading = game.WeaponRepairMonitor.ReadFresh(game.ProcessId);
-					durabilityBeforeRepair = reading.Success ? reading.Current : 0;
 					log?.Invoke($"Dịch vụ NPC ghép Bán/Sửa | Bán kích hoạt, chuẩn bị sửa cùng chuyến | Durability={(reading.Success ? reading.Current : 0)} | Reading={(reading.Success ? "OK" : reading.FailureReason)}");
 				}
 				saleRequestPending = false;
@@ -347,53 +356,21 @@ public sealed class WeaponRepairAutomation {
 			case RepairState.ClickingConfirm:
 				if (DateTime.UtcNow >= nextActionUtc) ClickConfirm(game, log);
 				break;
-			case RepairState.WaitingDurability:
+			// Owner decision 2026-10-06: the repair is done once the confirmation popup closes after command 7/-1; durability is
+			// not re-read. The old durability check never saw "already full" (ReadCurrent reports Maximum=0), so every sale trip
+			// whose weapon was undamaged sat 10 s at the shop (repair.log 2026-10-06: 6 waits of 10.07..10.31 s).
+			case RepairState.WaitingConfirmClosed:
 				if (DateTime.UtcNow < nextActionUtc) break;
-				EquippedWeaponDurabilityReading reading = game.WeaponRepairMonitor.ReadFresh(game.ProcessId);
-				if (reading.Success && reading.Maximum > 0 && reading.Current == reading.Maximum) {
+				uint confirmModal = ReadModalState(game.ProcessId);
+				if (confirmModal == 0) {
 					repairCompletionConfirmed = true;
-					log?.Invoke($"Sửa đồ hoàn tất | Độ bền đã đầy={reading.Current}/{reading.Maximum}; không yêu cầu giá trị tăng thêm.");
+					log?.Invoke($"Sửa đồ | popup xác nhận sửa đã đóng | Chờ={(int)(DateTime.UtcNow - repairConfirmSentUtc).TotalMilliseconds}ms");
 					state = RepairState.ClosingUiFirst;
 					nextActionUtc = DateTime.UtcNow;
-				} else if (reading.Success && reading.Current > durabilityBeforeRepair) {
-					if (pendingSuccessfulDurability == reading.Current) successConfirmationCount++;
-					else {
-						pendingSuccessfulDurability = reading.Current;
-						successConfirmationCount = 1;
-					}
-					if (successConfirmationCount >= 2) {
-						repairCompletionConfirmed = true;
-						log?.Invoke($"Sửa toàn bộ thành công | Độ bền thấp nhất={durabilityBeforeRepair}->{reading.Current} | {reading.Evidence} | XácNhận=2/2");
-						state = RepairState.ClosingUiFirst;
-						nextActionUtc = DateTime.UtcNow;
-					} else {
-						log?.Invoke($"Sửa toàn bộ | độ bền thấp nhất đã tăng, chờ xác nhận ổn định | Minimum={reading.Current} | {reading.Evidence} | XácNhận=1/2");
-						nextActionUtc = DateTime.UtcNow.AddMilliseconds(500);
-					}
 				} else if (HasTimedOut()) {
-					if (debugMode) {
-						log?.Invoke($"DEBUG Sửa đồ hoàn tất thao tác | Độ bền không đổi như dự kiến | Current={(reading.Success ? reading.Current : 0)}");
-						state = RepairState.ClosingUiFirst;
-						nextActionUtc = DateTime.UtcNow;
-						break;
-					}
-					// Chuyến do BÁN kích hoạt, sửa chỉ là ghép thêm: đồ chưa hỏng thì độ bền đương nhiên không tăng, đó
-					// không phải lỗi. Trước đây nhánh này rơi vào Fail -> AbortAndRetry, nhả quyền NGAY TẠI NPC mà không
-					// quay lại bãi. Bằng chứng (repair.log 2026-09-24 16:45:06, PID=17904): bán xong 33->5 ô, Durability=12
-					// đã đầy từ chuyến 14:55 (10->12), "Sửa đồ hoãn | Độ bền không tăng", rồi auto-runtime.log cho thấy
-					// nhân vật đứng quanh 59500/92770 cạnh Đại Phu, mọi quái cách ~2000 đều bị cấm vì không tới được.
-					// ReadCurrent trả Maximum=0 nên nhánh "độ bền đã đầy" ở trên không bao giờ bắt được ca này.
-					if (! repairRequestedThisVisit && reading.Success) {
-						if (interactionLocked) BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
-						log?.Invoke($"Dịch vụ NPC | sửa ghép chuyến bán nhưng độ bền không đổi | Current={reading.Current} | Đồ chưa hỏng nên không có gì để sửa; đóng shop và quay lại bãi.");
-						BeginReturn(game, log);
-						break;
-					}
-					return Fail(game, reading.Success ? $"Độ bền không tăng sau xác nhận | Current={reading.Current}" : reading.FailureReason, log);
+					return Fail(game, $"Popup xác nhận sửa đồ không đóng sau khi xác nhận | Modal=0x{confirmModal:X8}", log);
 				} else {
-					pendingSuccessfulDurability = 0;
-					successConfirmationCount = 0;
-					nextActionUtc = DateTime.UtcNow.AddMilliseconds(300);
+					nextActionUtc = DateTime.UtcNow.AddMilliseconds(100);
 				}
 				break;
 			case RepairState.PausedAtDoctor:
@@ -500,7 +477,20 @@ public sealed class WeaponRepairAutomation {
 		rememberedReturnRawX = returnRawX;
 		rememberedReturnRawY = returnRawY;
 		rememberedReturnUntilUtc = DateTime.UtcNow.AddMinutes(10);
-		if (!TryAutoFsMovement(game, doctorRawX, doctorRawY, out string routeResult)) {
+		// Drop the target the client is still fighting, otherwise it keeps hitting it (a boss: until it dies) and ignores
+		// the walk to the doctor. Owner rule 2026-10-08: once a sale is due, leave the target and go at once.
+		// The attack/loot workers are only blocked after this Tick returns (coordinator sets SaleRepairOwner from
+		// IsBusy), so a worker holding the gate could re-send command 300 right after the cancel: repair.log
+		// 2026-10-08 16:57-19:40 has HuỷĐánh=OK on all 20 trips yet 9 of them logged "đứng yên 8 giây" first.
+		// Block them first, then cancel and send the route under one gate lock so nothing slips in between.
+		game.AutoFsActionGate.SetLootSuspended(Auto.Attack.AutoFsActionGate.SaleRepairOwner, true);
+		string cancelAttack = "HuỷĐánh=BỊ_KHOÁ";
+		string routeResult = "";
+		bool routeSent = game.AutoFsActionGate.RunCommand(() => {
+			cancelAttack = ClientAttackCanceller.Cancel(game);
+			return TryAutoFsMovement(game, doctorRawX, doctorRawY, out routeResult);
+		});
+		if (!routeSent) {
 			log?.Invoke("Sửa đồ FAIL | Không khởi tạo được tuyến nội bộ tới Đại Phu | " + routeResult);
 			Reset();
 			return false;
@@ -511,7 +501,7 @@ public sealed class WeaponRepairAutomation {
 		lastLoggedState = RepairState.Idle;
 		nextMoveRefreshUtc = DateTime.UtcNow.AddMilliseconds(StuckDetectionMilliseconds);
 		nextProgressLogUtc = DateTime.UtcNow.AddSeconds(10);
-		log?.Invoke($"Sửa đồ bắt đầu | Map={map.MapId} | ĐạiPhu={map.DoctorRawX}/{map.DoctorRawY} | QuayLại=Map{returnMapId}/{returnRawX}/{returnRawY}");
+		log?.Invoke($"Sửa đồ bắt đầu | Map={map.MapId} | ĐạiPhu={map.DoctorRawX}/{map.DoctorRawY} | QuayLại=Map{returnMapId}/{returnRawX}/{returnRawY} | {cancelAttack}");
 		log?.Invoke("Sửa đồ | đã gửi lệnh di chuyển AutoFS tới Đại Phu | " + routeResult);
 		return true;
 	}
@@ -682,9 +672,10 @@ public sealed class WeaponRepairAutomation {
 			return;
 		}
 		game.WeaponRepairMonitor.ResetCache();
-		state = RepairState.WaitingDurability;
+		state = RepairState.WaitingConfirmClosed;
+		repairConfirmSentUtc = DateTime.UtcNow;
 		deadlineUtc = DateTime.UtcNow.AddSeconds(debugMode ? 3 : 10);
-		nextActionUtc = DateTime.UtcNow.AddMilliseconds(350);
+		nextActionUtc = DateTime.UtcNow.AddMilliseconds(100);
 	}
 
 	// Dùng AutoFsTrainingOrderQueue (có định tuyến qua cổng) thay vì di chuyển thẳng cùng-map, vì Sửa đồ có thể xảy ra ở map khác bãi đã cấu hình.
@@ -836,7 +827,7 @@ public sealed class WeaponRepairAutomation {
 			RepairState.ClickingRepair => "đang mở xác nhận sửa đồ",
 			RepairState.WaitingRepairConfirm => "đang chờ xác nhận sửa đồ",
 			RepairState.ClickingConfirm => "đang xác nhận sửa đồ",
-			RepairState.WaitingDurability => "đang kiểm tra độ bền sau sửa",
+			RepairState.WaitingConfirmClosed => "đang chờ popup xác nhận sửa đồ đóng",
 			RepairState.ClosingUiFirst => "đang đóng giao diện Đại Phu",
 			RepairState.Returning => "đang quay lại bãi",
 			_ => ""
@@ -858,8 +849,6 @@ public sealed class WeaponRepairAutomation {
 		repairConfirmationObserved = false;
 		repairCompletionConfirmed = false;
 		handledDoctorModalState = 0;
-		pendingSuccessfulDurability = 0;
-		successConfirmationCount = 0;
 		movementFailures = 0;
 		doctorClickAttempts = 0;
 		doctorCoordinateFallbackUsed = false;
@@ -891,7 +880,7 @@ public sealed class WeaponRepairAutomation {
 		ClickingRepair,
 		WaitingRepairConfirm,
 		ClickingConfirm,
-		WaitingDurability,
+		WaitingConfirmClosed,
 		PausedAtDoctor,
 		ClosingUiFirst,
 		Returning

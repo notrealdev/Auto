@@ -15,6 +15,10 @@ public sealed class Engine {
 	private const int ScanIntervalMilliseconds = 40;
 	private const int AttackIntervalMilliseconds = 50;
 	private const int OutsideAreaWalkIntervalMilliseconds = 700;
+	// Boss-only patrol: resend the corner walk only after this long without moving, and give up on a corner after
+	// BossPatrolCornerTimeoutMilliseconds (a blocked corner still counts as patrolled so the round can finish).
+	private const int BossPatrolStallMilliseconds = 2000;
+	private const int BossPatrolCornerTimeoutMilliseconds = 30000;
 	// Đứng im bao lâu thì mới coi là kẹt và gửi lại lệnh tránh thủ lĩnh. Cùng ngưỡng với nhánh qua cổng của hai
 	// hàng đợi di chuyển, vì cùng một lý do: đang đi thì để yên, đừng phát lại lệnh.
 	private const int EliteWalkStallMilliseconds = 2000;
@@ -106,6 +110,14 @@ public sealed class Engine {
 	private string lastError = "";
 	private int outsideAreaCornerIndex;
 	private int outsideAreaCornerAttempt;
+	// "Chỉ đánh Boss" patrol: one bit per corner reached since a boss was last targeted, plus the current leg's timing.
+	private int bossPatrolVisitedCorners;
+	private DateTime bossPatrolLegStartedUtc = DateTime.MinValue;
+	private DateTime bossPatrolProgressUtc = DateTime.MinValue;
+	private int bossPatrolObservedX;
+	private int bossPatrolObservedY;
+	// Set by the worker when the patrol flips "Chỉ đánh Boss" -> "Không đánh Boss"; the UI tick takes it to refresh the tab.
+	private int bossModeSwitchPending;
 	private bool outsideAreaAbortLogged;
 	private string lastWalkFailure = "";
 	private DateTime nextOutsideAreaWalkUtc = DateTime.MinValue;
@@ -233,6 +245,9 @@ public sealed class Engine {
 		}
 	}
 
+	// True once after the patrol switched the boss mode, so the UI thread can refresh the two boss checkboxes.
+	public bool TakeBossModeSwitched() => Interlocked.Exchange(ref bossModeSwitchPending, 0) == 1;
+
 	public void ResetForMapChange() {
 		Stop();
 	}
@@ -258,6 +273,10 @@ public sealed class Engine {
 			lastError = "";
 			outsideAreaCornerIndex = 0;
 			outsideAreaCornerAttempt = 0;
+			// bossPatrolVisitedCorners survives Stop on purpose: the worker is stopped whenever another flow takes over
+			// (auto-runtime.log 2026-10-08 11:38:35 PID=20808: pet approach walk, then "Auto Nhặt AutoFS bắt đầu"), and
+			// clearing it there restarted the round at 3/4 — the "patrols twice" the owner saw.
+			bossPatrolLegStartedUtc = DateTime.MinValue;
 			outsideAreaAbortLogged = false;
 			lastWalkFailure = "";
 			nextOutsideAreaWalkUtc = DateTime.MinValue;
@@ -377,6 +396,11 @@ public sealed class Engine {
 							LogErrorOnce(currentLog, currentProcessId, error);
 						} else {
 							attackPosted = true;
+							// A boss was found: the "patrol 4 corners without a boss" round starts over.
+							if (settings.OnlyAttackBoss) {
+								bossPatrolVisitedCorners = 0;
+								bossPatrolLegStartedUtc = DateTime.MinValue;
+							}
 							// Ghi nhớ con vừa đánh để lượt quét sau ưu tiên nó, thay cho ô CurrentTargetIndex đã hỏng.
 							preferredTargetIndex = target.Index;
 							Interlocked.Exchange(ref lastAttackPostedUtcTicks, DateTime.UtcNow.Ticks);
@@ -667,6 +691,13 @@ public sealed class Engine {
 				destinationY = eliteWalkDestinationY;
 			}
 		}
+		// Read BEFORE resending: shows what the client did with the previous retreat command. Equal to the held destination
+		// = client accepted it but is not walking; 135/-1 = the client is casting skill 135 at its attack target (measured
+		// 2026-10-06, not an idle sentinel as noted on 2026-10-01); another point = something cancelled or overwrote it.
+		string clientMoveState = ReadClientMoveState(currentGame);
+		// The client keeps hitting the monster command 300 handed it and the walk alone does not stop that; switch the
+		// attack order off first so the retreat starts at once, whatever the character was doing.
+		string cancelAttack = ClientAttackCanceller.Cancel(currentGame);
 		if (!AutoFsMovementCommand.TryWalkTo(currentGame, destinationX, destinationY, out string walkResult)) {
 			if (!string.Equals(lastWalkFailure, walkResult, StringComparison.Ordinal)) {
 				lastWalkFailure = walkResult;
@@ -685,8 +716,24 @@ public sealed class Engine {
 		eliteWalkObservedY = playerY;
 		eliteWalkProgressUtc = now;
 		(int nearestX, int nearestY) = elites.OrderBy(elite => EliteAvoidance.Distance(playerX, playerY, elite.X, elite.Y)).First();
-		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.ElitePlayerRetreatRadius} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | LýDoBắn={retreatReason} | CònCáchĐíchCũ={(retreatRemaining < 0 ? "chưa có đích" : retreatRemaining.ToString("F0"))} | {walkResult}");
+		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.ElitePlayerRetreatRadius} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | LýDoBắn={retreatReason} | CònCáchĐíchCũ={(retreatRemaining < 0 ? "chưa có đích" : retreatRemaining.ToString("F0"))} | {clientMoveState} | {cancelAttack} | {walkResult}");
 		return true;
+	}
+
+	private static string ReadClientMoveState(GameWindow game) {
+		try {
+			RuntimeLayout layout = game.RuntimeLayout;
+			using MemoryReader reader = new(game.ProcessId);
+			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
+			IntPtr entityTable = reader.ReadPointer32(IntPtr.Add(moduleBase, layout.EntityTableRva));
+			if (entityTable == IntPtr.Zero) return "ĐíchClient=KHÔNG_ĐỌC_ĐƯỢC";
+			IntPtr player = IntPtr.Add(entityTable, layout.PlayerRecordOffset);
+			int x = reader.ReadInt32(IntPtr.Add(player, GameAddresses.Entity.MovementDestinationX));
+			int y = reader.ReadInt32(IntPtr.Add(player, GameAddresses.Entity.MovementDestinationY));
+			return $"ĐíchClient={x}/{y}";
+		} catch (Exception ex) {
+			return $"ĐíchClient=LỖI({ex.GetType().Name})";
+		}
 	}
 
 	// Port khối "Quanh điểm, không còn ứng viên" của AutoFS (VectorFactory.cs:4523-4640, bản đã bóc lớp làm rối):
@@ -713,8 +760,18 @@ public sealed class Engine {
 		(int centerX, int centerY) = AutoFsEntityScanner.GetCenter(settings, playerX, playerY);
 		if (centerX <= 0 || centerY <= 0) return;
 		int range = Math.Max(settings.Range, 1);
+		// Boss-only: skip corners already patrolled this round (Stop resets the index to 0 but keeps the round).
+		if (settings.OnlyAttackBoss && bossPatrolVisitedCorners != 0b1111) {
+			while ((bossPatrolVisitedCorners & (1 << outsideAreaCornerIndex)) != 0) outsideAreaCornerIndex = (outsideAreaCornerIndex + 1) % 4;
+		}
 		int corner = outsideAreaCornerIndex;
-		int step = range / 3;
+		// "Chỉ đánh Boss": patrol at Range/2 instead of AutoFS's Range/3. The client only refreshes entities roughly one
+		// screen around the player (cross-checked live on 6 clients 2026-10-01: a boss 1674/2254 raw away was visible, one
+		// 1956/1601 and one 2706/317 away were not), while bosses on map 32 spawned 2205-2976 from the center (Range 3000).
+		// From Range/3 corners the rim stays out of view. Boss-only patrols the rim itself (owner decision 2026-10-08): the four
+		// diagonal points exactly Range from the center, i.e. Range/sqrt(2) per axis (2121 at Range 3000), since the training
+		// area is the circle distanceToCenter <= Range (AutoFsEntityScanner) and anything beyond it is never targeted.
+		int step = settings.OnlyAttackBoss ? (int)(range / Math.Sqrt(2)) : range / 3;
 		int destinationX = centerX + (corner is 1 or 3 ? step : -step);
 		int destinationY = centerY + (corner is 1 or 2 ? step : -step);
 		// AutoFS "if (SplitDisk()) break;": bỏ lượt đi khi ô trạng thái của nhân vật đang mang giá trị bận.
@@ -734,6 +791,10 @@ public sealed class Engine {
 			return;
 		}
 		outsideAreaAbortLogged = false;
+		if (settings.OnlyAttackBoss) {
+			PatrolBossCorner(currentGame, currentProcessId, playerX, playerY, corner, destinationX, destinationY, range, now, currentTargetMovementLog);
+			return;
+		}
 		// AutoFS bỏ hẳn bước đi khi đã tới góc đó và chuyển sang góc kế ngay, thay vì gửi thêm lệnh thừa.
 		if (HasReachedTrainingCorner(playerX, playerY, destinationX, destinationY)) {
 			outsideAreaCornerAttempt = 0;
@@ -761,6 +822,49 @@ public sealed class Engine {
 		lastWalkFailure = "";
 		nextOutsideAreaWalkUtc = now.AddMilliseconds(OutsideAreaWalkIntervalMilliseconds);
 		currentTargetMovementLog?.Invoke($"NO_TARGET_CORNER_WALK | PID={currentProcessId} | Player={playerX}/{playerY} | Center={centerX}/{centerY} | Corner={corner} | Attempt={attempt} | PlayerStatus={playerLifecycleStatus} | Destination={destinationX}/{destinationY} | Range={range} | {walkResult}");
+	}
+
+	// "Chỉ đánh Boss" with no boss in view (owner decision 2026-10-08): walk each corner all the way, then the next, until
+	// all 4 are patrolled; if no boss turned up, switch the account to "Không đánh Boss". The generic patrol moves on after
+	// 3 sends 700 ms apart (~2 s), far too short for a rim corner (3000 raw from the center at Range 3000; a walk
+	// measured 2026-10-06 covered ~16 raw per 60 ms), so the character turned back before ever reaching one.
+	private void PatrolBossCorner(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int corner, int destinationX, int destinationY, int range, DateTime now, Action<string>? currentTargetMovementLog) {
+		bool legActive = bossPatrolLegStartedUtc != DateTime.MinValue;
+		bool reached = HasReachedTrainingCorner(playerX, playerY, destinationX, destinationY);
+		bool timedOut = legActive && now - bossPatrolLegStartedUtc >= TimeSpan.FromMilliseconds(BossPatrolCornerTimeoutMilliseconds);
+		if (reached || timedOut) {
+			bossPatrolVisitedCorners |= 1 << corner;
+			bossPatrolLegStartedUtc = DateTime.MinValue;
+			outsideAreaCornerIndex = (corner + 1) % 4;
+			int visited = System.Numerics.BitOperations.PopCount((uint)bossPatrolVisitedCorners);
+			currentTargetMovementLog?.Invoke($"BOSS_PATROL_CORNER | PID={currentProcessId} | Player={playerX}/{playerY} | Corner={corner} | Result={(reached ? "TỚI_NƠI" : "QUÁ_30S")} | ĐãTuần={visited}/4 | Destination={destinationX}/{destinationY} | Range={range}");
+			if (bossPatrolVisitedCorners != 0b1111) return;
+			bossPatrolVisitedCorners = 0;
+			settings.OnlyAttackBoss = false;
+			settings.DoNotAttackBoss = true;
+			Interlocked.Exchange(ref bossModeSwitchPending, 1);
+			currentTargetMovementLog?.Invoke($"BOSS_PATROL_DONE | PID={currentProcessId} | Player={playerX}/{playerY} | Action=Đã tuần đủ 4 góc không thấy boss, chuyển sang Không đánh Boss");
+			return;
+		}
+		if (playerX != bossPatrolObservedX || playerY != bossPatrolObservedY) {
+			bossPatrolObservedX = playerX;
+			bossPatrolObservedY = playerY;
+			bossPatrolProgressUtc = now;
+		}
+		bool stalled = legActive && now - bossPatrolProgressUtc >= TimeSpan.FromMilliseconds(BossPatrolStallMilliseconds);
+		if (legActive && !stalled) return;
+		if (!AutoFsMovementCommand.TryWalkTo(currentGame, destinationX, destinationY, out string walkResult)) {
+			if (!string.Equals(lastWalkFailure, walkResult, StringComparison.Ordinal)) {
+				lastWalkFailure = walkResult;
+				currentTargetMovementLog?.Invoke($"BOSS_PATROL_WALK FAIL | PID={currentProcessId} | Player={playerX}/{playerY} | Corner={corner} | Destination={destinationX}/{destinationY} | {walkResult}");
+			}
+			return;
+		}
+		lastWalkFailure = "";
+		if (!legActive) bossPatrolLegStartedUtc = now;
+		bossPatrolProgressUtc = now;
+		nextOutsideAreaWalkUtc = now.AddMilliseconds(OutsideAreaWalkIntervalMilliseconds);
+		currentTargetMovementLog?.Invoke($"BOSS_PATROL_WALK | PID={currentProcessId} | Player={playerX}/{playerY} | Corner={corner} | LýDo={(legActive ? "ĐỨNG_IM" : "GÓC_MỚI")} | ĐãTuần={System.Numerics.BitOperations.PopCount((uint)bossPatrolVisitedCorners)}/4 | Destination={destinationX}/{destinationY} | Range={range} | {walkResult}");
 	}
 
 	// Port AutoFS WindowQueue.NavigateEmulator(x, y) (WindowQueue.cs:26907-26955): so ô lưới của vị trí hiện tại với

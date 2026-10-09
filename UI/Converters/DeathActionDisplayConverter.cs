@@ -6,13 +6,7 @@ using Auto.Runtime;
 
 public sealed class DeathActionDisplayConverter : IValueConverter {
 	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
-		return value switch {
-			DeathAction.StayStill => "Nằm im",
-			DeathAction.ReturnToTown => "Về thành",
-			DeathAction.Substitute => "Thế mạng",
-			DeathAction.Revive => "Phục sinh",
-			_ => ""
-		};
+		return value is DeathAction action ? DeathActionNames.ToDisplay(action) : "";
 	}
 
 	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {

@@ -36,6 +36,7 @@ public static class DebugLog {
 	private static readonly string clientEventLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "client-freeze.log");
 	private static readonly string loginLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "login.log");
 	private static readonly string profileLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "profile.log");
+	private static readonly string mapTransitionLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "map-transition.log");
 	private const int MaximumFlushCharacters = 64000;
 	private const long MaximumLogBytes = 5L * 1024L * 1024L;
 	private static readonly ConcurrentQueue<RuntimeLogEntry> pendingRuntimeLines = new();
@@ -94,6 +95,12 @@ public static class DebugLog {
 	public static void AddProfileEvent(string text) {
 		if (string.IsNullOrWhiteSpace(text)) return;
 		QueueLog(profileLogPath, FormatLine(text));
+	}
+
+	// DebugTools/MapTransitionRecorder. Not gated by autoLoggingEnabled: the owner walks by hand with Auto off.
+	public static void AddMapTransition(string text) {
+		if (string.IsNullOrWhiteSpace(text)) return;
+		QueueLog(mapTransitionLogPath, FormatLine(text));
 	}
 
 	public static void AddForProcess(int processId, string text) {

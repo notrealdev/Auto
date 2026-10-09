@@ -7,6 +7,17 @@ public enum DeathAction {
 	Revive = 2
 }
 
+// The in-game label of each death action, shared by the Basic tab and death.log.
+public static class DeathActionNames {
+	public static string ToDisplay(DeathAction action) => action switch {
+		DeathAction.StayStill => "Nằm im",
+		DeathAction.ReturnToTown => "Về thành",
+		DeathAction.Substitute => "Thế mạng",
+		DeathAction.Revive => "Phục sinh",
+		_ => ""
+	};
+}
+
 public sealed class BasicSettings {
 	// Mặc định bật, ngưỡng 15% chốt với chủ dự án 2026-09-08.
 	public bool EnableLowHpReturnTalisman { get; set; } = true;

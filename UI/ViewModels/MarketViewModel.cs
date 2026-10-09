@@ -5,6 +5,7 @@ using Auto.UI.Models;
 
 public sealed class MarketViewModel : ViewModelBase {
 	public static IReadOnlyList<AdvertiseTemplateOption> Templates { get; } = [
+		new("Suc vat", "Địt mẹ thằng súc vật PhiDương, bố mẹ mày ra đường bị ô tô đâm chết, vợ con mày bị hàng xóm hiếp dâm đến chết, Đào Hoa Đảo chứa chấp 1 lũ chó súc vật:@:@:@:@:@:@:@"),
 		new("Mua Xu", "Mua xu giá 4v/1 ai bán pm nào :0:0:0"),
 		new("Ban PB 7X", "Bán pb 7x sll 299x/1 ai mua pm nhé :$"),
 		new("Ban Lieu", "Bán 145K liễu mộc sll 99X/100, ai mua pm :E"),
