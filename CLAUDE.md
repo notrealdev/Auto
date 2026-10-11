@@ -43,6 +43,12 @@ Gọi ứng dụng của dự án này là `Auto` (phân biệt với `DEV auto`
 * Build thành công vẫn KHÔNG phải bằng chứng chức năng chạy đúng — áp nguyên Mục 4 của rule global.
 * Khi cần kiểm tra XAML hợp lệ, có thể build project demo/scratchpad riêng thay vì build chính `Auto.csproj`, trừ khi chủ dự án yêu cầu build trực tiếp.
 
+## Luật đăng nhập (chủ dự án chốt 2026-10-10)
+
+* Thử login lại KHÔNG được tắt client: giữ nguyên cửa sổ, đi tiếp từ màn hình client đang đứng, xoá hai ô tài khoản/mật khẩu rồi nhập lại.
+* Chỉ khi client crash (tiến trình đã thoát) hoặc đơ (cửa sổ không phản hồi / không có cửa sổ) mới được tắt client đó và mở client mới.
+* Code: `Login/LoginAutomation.cs` → `TryLoginWithRetries`, `IsClientUsable`, `RunLoginSteps`.
+
 ## Git Rules
 
 * Không tự `git commit`/`git push` trừ khi được yêu cầu rõ ràng.

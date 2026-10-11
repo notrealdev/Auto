@@ -27,8 +27,6 @@ public sealed class LoginAccountRowViewModel(LoginAccount account) : ViewModelBa
 			return user.Length <= 2 ? new string('*', user.Length) : new string('*', user.Length - 2) + user[^2..];
 		}
 	}
-
-	public string Partition => $"{Account.Partition} / {Account.Server}";
 }
 
 // Tab Login: đọc Login\Login.json, cho chọn account nào chạy, rồi mở client và gửi chuỗi lệnh đăng nhập.
@@ -43,6 +41,7 @@ public sealed class LoginViewModel : ViewModelBase {
 	private string gamePath = "";
 	private string statusText = "";
 	private bool isRunning;
+	private int loginRetryCount = 1;
 
 	public LoginViewModel() {
 		RunCommand = new RelayCommand(_ => Run(), _ => ! isRunning && Accounts.Count > 0);
@@ -69,6 +68,16 @@ public sealed class LoginViewModel : ViewModelBase {
 		private set => SetField(ref isRunning, value);
 	}
 
+	// "Số lần thử login lại": extra attempts per account after a failed login, saved to Login.json (LoginRetryCount).
+	public int LoginRetryCount {
+		get => loginRetryCount;
+		set {
+			int clamped = Math.Max(0, value);
+			if (! SetField(ref loginRetryCount, clamped)) return;
+			SaveLoginRetryCount(clamped);
+		}
+	}
+
 	public RelayCommand RunCommand { get; }
 
 	public RelayCommand StopCommand { get; }
@@ -83,6 +92,9 @@ public sealed class LoginViewModel : ViewModelBase {
 		}
 		foreach (LoginAccount account in settings.Accounts) Accounts.Add(new LoginAccountRowViewModel(account));
 		GamePath = settings.ExeLink;
+		// Field, not the property: loading must not write Login.json back.
+		loginRetryCount = Math.Max(0, settings.LoginRetryCount);
+		OnPropertyChanged(nameof(LoginRetryCount));
 		StatusText = $"Đã đọc {Accounts.Count} account | Speed={settings.Speed} | ChờTrướcĐăngNhập={settings.WaitBeforeLogin}ms | DelayLogin={settings.DelayLogin}ms";
 	}
 
@@ -104,6 +116,18 @@ public sealed class LoginViewModel : ViewModelBase {
 			return;
 		}
 		Reload();
+	}
+
+	// Same load-modify-save as BrowseGamePath: only LoginRetryCount changes, Accounts and passwords are written back as read.
+	private void SaveLoginRetryCount(int retryCount) {
+		if (! Settings.TryLoad(configPath, out Settings settings, out string loadFailure)) {
+			StatusText = $"Không đọc được cấu hình: {loadFailure}";
+			return;
+		}
+		settings.LoginRetryCount = retryCount;
+		if (! Settings.TrySave(configPath, settings, out string saveFailure)) {
+			StatusText = $"Không lưu được cấu hình: {saveFailure}";
+		}
 	}
 
 	private void Run() {

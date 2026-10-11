@@ -128,6 +128,8 @@ internal static class ReloginSupervisor {
 				WaitBeforeLogin = settings.WaitBeforeLogin,
 				StepTimeoutMilliseconds = settings.StepTimeoutMilliseconds,
 				AutoReloginEnabled = settings.AutoReloginEnabled,
+				// Own retry loop (MaximumAttempts, RetryGapMinutes); no extra attempts inside one LoginAutomation.Run.
+				LoginRetryCount = 0,
 				Accounts = [account]
 			};
 			int dispatched = new LoginAutomation().Run(single, DebugLog.AddLoginEvent, CancellationToken.None);

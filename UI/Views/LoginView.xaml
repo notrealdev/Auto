@@ -4,6 +4,7 @@
 	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 	xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
 	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+	xmlns:controls="clr-namespace:Auto.UI.Controls"
 	xmlns:vm="clr-namespace:Auto.UI.ViewModels"
 	d:DataContext="{d:DesignInstance Type=vm:LoginViewModel}"
 	mc:Ignorable="d">
@@ -20,8 +21,7 @@
 				<Grid Margin="0,0,0,4">
 					<Grid.ColumnDefinitions>
 						<ColumnDefinition Width="Auto" />
-						<ColumnDefinition Width="3*" />
-						<ColumnDefinition Width="1*" />
+						<ColumnDefinition Width="*" />
 					</Grid.ColumnDefinitions>
 					<CheckBox
 						Grid.Column="0"
@@ -32,12 +32,6 @@
 						VerticalAlignment="Center"
 						Foreground="{StaticResource Brush.TextPrimary}"
 						Text="{Binding MaskedUser}"
-						TextTrimming="CharacterEllipsis" />
-					<TextBlock
-						Grid.Column="2"
-						VerticalAlignment="Center"
-						Foreground="{StaticResource Brush.TextSecondary}"
-						Text="{Binding Partition}"
 						TextTrimming="CharacterEllipsis" />
 				</Grid>
 			</StackPanel>
@@ -81,6 +75,23 @@
 				ItemsSource="{Binding Accounts}"
 				ScrollViewer.HorizontalScrollBarVisibility="Disabled"
 				ScrollViewer.VerticalScrollBarVisibility="Auto" />
+
+			<Grid Margin="0,0,0,10">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="27" />
+				</Grid.ColumnDefinitions>
+				<TextBlock
+					Grid.Column="0"
+					Margin="0,0,10,0"
+					Style="{StaticResource FieldLabel}"
+					Text="Số lần thử login lại" />
+				<TextBox
+					Grid.Column="1"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding LoginRetryCount, UpdateSourceTrigger=LostFocus}"
+					controls:NumericInputBehavior.IsEnabled="True" />
+			</Grid>
 
 			<Grid>
 				<Grid.ColumnDefinitions>

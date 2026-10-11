@@ -35,6 +35,10 @@ public static class GameAddresses {
 		public const int CurrentTargetIndex = 0x4F2674;
 		public const int InventoryRoot = 0xAA3E84;
 		public const int ItemTable = 0x5650C8;
+		// Magic attribute descriptor table (static data, VA 0x8F2E10 on the image of 2026-10-09): 0xA4 bytes per id,
+		// +0 pointer to the key ("attackspeed_v"), +4 the TCVN3 tooltip template ("Xuất chiêu (Vũ khí):#d1+%"). The ids follow
+		// the line order of [Descript] in 2008settings.pak entry 93F6768D (skill_begin = 0, attackspeed_v = 115).
+		public const int MagicAttributeDescriptorTable = 0x4F2E10;
 		// UNUSED_NO_RULE từ trước bản update này (không có nơi nào tham chiếu) — giữ nguyên RVA cũ, KHÔNG xác nhận lại.
 		public const int AttackManager = 0x4E0640;
 		public const int MapCoordinateRoot = 0xA1E0E0;
@@ -254,6 +258,14 @@ public static class GameAddresses {
 		public const int InventoryClassField6E0 = 0x06E0;
 		public const int InventoryClassField700 = 0x0700;
 		public const int InventoryClassFieldAA8 = 0x0AA8;
+		// Magic attribute lines of an item record (the blue/green stat lines of the tooltip), verified 2026-10-09:
+		// array at +0x2A4, 0x34 bytes per line = {int id, 4 groups of (value, a, b)}; the tooltip shows the first value.
+		// Matched the owner's tooltips line for line: PID 4452 "Tiếu Thiên đao" id 121 value 30 = "STCB: +30 điểm",
+		// "Vũ Khúc Yêu Đái" ids 176/102 values 5/10 = "Phòng thổ: +5%" / "Kháng Hỏa: +10%"; PID 22856 "Phục Thế phủ"
+		// id 115 value 10 = "Xuất chiêu (Vũ khí): +10%". InventoryClassField2A4 is the id of the first line.
+		public const int MagicAttributeArray = 0x02A4;
+		public const int MagicAttributeStride = 0x34;
+		public const int MagicAttributeMaximumCount = 6;
 		public const int Name = 0x0704;
 		public const int Weight = 0x06EC;
 		public const int Quantity = 0x0754;

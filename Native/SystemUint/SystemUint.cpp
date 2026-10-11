@@ -53,6 +53,9 @@ namespace {
 	constexpr WPARAM UseItemByIdCommand = 329;
 	// Buy from the open NPC shop: lParam = shop position | count << 8. See GameClientAddresses::ShopBuyFunctionRva.
 	constexpr WPARAM ShopBuyCommand = 330;
+	// Route around terrain through the client navigator without the minimap flag (test). X/32 is sent first through
+	// MovementXCommand, then this command with Y/32. See GameClientAddresses::NavigatorRouteRva.
+	constexpr WPARAM NavigatorRouteCommand = 331;
 	// Năm lệnh đăng nhập giữ NGUYÊN số hiệu của AutoFS vì chúng không đụng số nào đang dùng ở trên.
 	constexpr WPARAM LoginNoticeCommand = 280;
 	constexpr WPARAM LoginVersionCommand = 281;
@@ -118,7 +121,7 @@ namespace {
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990014;
+	constexpr int NativeBuildStamp = 99990017;
 	constexpr int AuditEntryCount = 35;
 	constexpr uint16_t AttackTargetType = 0x87;
 	constexpr size_t MaximumScriptLength = 199;
@@ -174,6 +177,20 @@ namespace {
 	using ChatEncodeFunction = int(__cdecl*)(char*, int);
 	using ChannelActivateFunction = void(__cdecl*)(int, int);
 	using ChatSendFunction = void(__cdecl*)(int, const char*, int, int);
+	using NavigatorGetterFunction = void*(__cdecl*)();
+	using NavigatorResetFunction = void(__thiscall*)(void*, int, int, int);
+	using NavigatorRouteFunction = int(__thiscall*)(void*, int, int, int, int, int, int);
+	// First 16 bytes of the three navigator functions, read from the live image of PID 4452 on 2026-10-09. The getter holds
+	// the SEH handler 0x86EC35 and the cookie 0x901000; the route function holds the "mov [ebx+0x24C], al" store.
+	constexpr uint8_t NavigatorGetterSignature[] = {
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0x35, 0xEC, 0x86, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00
+	};
+	constexpr uint8_t NavigatorResetSignature[] = {
+		0x55, 0x8B, 0xEC, 0x56, 0x57, 0x8B, 0x7D, 0x08, 0x8B, 0xF1, 0x8D, 0x47, 0xFF, 0x83, 0xF8, 0x04
+	};
+	constexpr uint8_t NavigatorRouteSignature[] = {
+		0x55, 0x8B, 0xEC, 0x8A, 0x45, 0x14, 0x53, 0x8B, 0xD9, 0x88, 0x83, 0x4C, 0x02, 0x00, 0x00, 0xFF
+	};
 	constexpr uint8_t AttackWriterSignature[] = {
 		0xC7, 0x81, 0x94, 0xD7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x89, 0xB9, 0x98, 0xD7, 0x00, 0x00,
@@ -912,6 +929,56 @@ namespace {
 		return 1;
 	}
 
+	// Same steps as the client's CoordinateOpcode 0x9F case (0x6CBC21) for a real destination, but the route call gets
+	// (1, 0, 0, 0) like the client's own calls at 0x7FD96E / 0x7FE1C8 instead of 0x9F's (1, 1, 0, 1).
+	// Returns 1 called, 60 bad coordinates, 61 unknown image, 62 not executable, 63 signature mismatch,
+	// 64 InventoryRoot null, 65 navigator blocked ([root+0x5D23C] == 1), 66 map state 0x10/0x40, 67 navigator null.
+	int TryDispatchNavigatorRoute(int dispatchY) {
+		int dispatchX = pendingMovementX;
+		pendingMovementX = 0;
+		if (dispatchX <= 0 || dispatchY <= 0) {
+			return 60;
+		}
+		auto gameBase = reinterpret_cast<uint8_t*>(GetModuleHandleA("Game.exe"));
+		if (!HasSupportedGameImage(gameBase)) {
+			return 61;
+		}
+		auto getter = reinterpret_cast<NavigatorGetterFunction>(gameBase + GameClientAddresses::NavigatorGetterRva);
+		auto reset = reinterpret_cast<NavigatorResetFunction>(gameBase + GameClientAddresses::NavigatorResetRva);
+		auto route = reinterpret_cast<NavigatorRouteFunction>(gameBase + GameClientAddresses::NavigatorRouteRva);
+		if (!IsExecutableAddress(reinterpret_cast<void*>(getter)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(reset)) ||
+			!IsExecutableAddress(reinterpret_cast<void*>(route))) {
+			return 62;
+		}
+		if (memcmp(reinterpret_cast<void*>(getter), NavigatorGetterSignature, sizeof(NavigatorGetterSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(reset), NavigatorResetSignature, sizeof(NavigatorResetSignature)) != 0 ||
+			memcmp(reinterpret_cast<void*>(route), NavigatorRouteSignature, sizeof(NavigatorRouteSignature)) != 0) {
+			return 63;
+		}
+		auto inventoryRoot = *reinterpret_cast<uint8_t**>(gameBase + GameClientAddresses::InventoryRootRva);
+		if (inventoryRoot == nullptr) {
+			return 64;
+		}
+		if (*reinterpret_cast<int*>(inventoryRoot + GameClientAddresses::NavigatorBlockedStateOffset) == 1) {
+			return 65;
+		}
+		auto mapRoot = *reinterpret_cast<uint8_t**>(gameBase + GameClientAddresses::MapCoordinateRootRva);
+		if (mapRoot != nullptr) {
+			int mapState = *reinterpret_cast<int*>(mapRoot + GameClientAddresses::MapCoordinateStateOffset);
+			if (mapState == 0x10 || mapState == 0x40) {
+				return 66;
+			}
+		}
+		void* navigator = getter();
+		if (navigator == nullptr) {
+			return 67;
+		}
+		reset(navigator, 1, 1, 0);
+		route(navigator, dispatchX, dispatchY, 1, 0, 0, 0);
+		return 1;
+	}
+
 	// Chuyển lựa chọn xử lý khi chết của AutoFS vào cùng handler popup của game.
 	bool TryDispatchReturnToTown(int option) {
 		if (option < 0 || option > 2) {
@@ -1445,6 +1512,31 @@ namespace {
 	// int flag), "ret 0xC". Dung de doc lai NOI DUNG that (khac LoginReadCredentialFieldLengthCommand chi doc do dai).
 	using FieldGetTextFunction = int(__thiscall*)(void* self, char* out, int maxLen, int flag);
 
+	// SetText stores plain text, but a field with flag 0x10 (the password box) keeps its text XOR-masked and GetText
+	// unmasks it, so the plain text would be read back as garbage. Applies the client's own mask (0x4283D0, see
+	// GameClientAddresses.h FieldMaskSeed) to the text SetText just wrote. Does nothing for an unmasked field.
+	void MaskFieldTextIfNeeded(void* field) {
+		auto bytes = reinterpret_cast<uint8_t*>(field);
+		if (!IsReadableRange(field, GameClientAddresses::FieldTextLengthOffset + sizeof(int))) {
+			return;
+		}
+		uint32_t flags = *reinterpret_cast<uint32_t*>(bytes + GameClientAddresses::FieldFlagsOffset);
+		if ((flags & GameClientAddresses::FieldMaskedTextFlag) == 0) {
+			return;
+		}
+		auto text = *reinterpret_cast<uint8_t**>(bytes + GameClientAddresses::FieldTextBufferOffset);
+		int length = *reinterpret_cast<int*>(bytes + GameClientAddresses::FieldTextLengthOffset);
+		if (text == nullptr || length <= 0 || !IsReadableRange(text, static_cast<size_t>(length))) {
+			return;
+		}
+		int key = GameClientAddresses::FieldMaskSeed;
+		for (int index = 0; index < length;) {
+			text[index] = static_cast<uint8_t>(text[index] ^ static_cast<uint8_t>((key * key) % 0xFF));
+			index++;
+			key += index;
+		}
+	}
+
 	// CHAN DOAN 2026-09-22 (tiep theo LoginReadCredentialFieldLengthCommand): do dai da khop nhung khong chung minh
 	// NOI DUNG dung. Doc lai chuoi that qua GetText roi bam FNV-1a — TUYET DOI KHONG tra/ghi chuoi mat khau ra ngoai,
 	// chi tra ve hash de C# so sanh va ghi log dung/sai.
@@ -1507,6 +1599,7 @@ namespace {
 		}
 		void* field = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginPasswordFieldOffset;
 		setText(field, PasswordFieldTestString, -1, 0);
+		MaskFieldTextIfNeeded(field);
 		char buffer[GameClientAddresses::LoginCredentialBufferSize + 1]{};
 		getText(field, buffer, static_cast<int>(GameClientAddresses::LoginCredentialBufferSize), 0);
 		return static_cast<uint8_t>(buffer[byteIndex]);
@@ -1559,7 +1652,9 @@ namespace {
 		void* accountField = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginAccountFieldOffset;
 		void* passwordField = reinterpret_cast<uint8_t*>(dialog) + GameClientAddresses::LoginPasswordFieldOffset;
 		setText(accountField, account, -1, flag);
+		MaskFieldTextIfNeeded(accountField);
 		setText(passwordField, password, -1, flag);
+		MaskFieldTextIfNeeded(passwordField);
 		return true;
 	}
 
@@ -1911,6 +2006,9 @@ namespace {
 			}
 			if (wParam == UseItemByIdCommand) {
 				return TryDispatchUseItemById(static_cast<int>(lParam));
+			}
+			if (wParam == NavigatorRouteCommand) {
+				return TryDispatchNavigatorRoute(static_cast<int>(lParam));
 			}
 			if (wParam == NativeBuildStampCommand) {
 				return NativeBuildStamp;

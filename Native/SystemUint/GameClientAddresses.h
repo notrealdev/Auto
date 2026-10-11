@@ -185,6 +185,19 @@ namespace GameClientAddresses {
 	constexpr uintptr_t QuickBuyCurrencyTypeOffset = 0x0006B764;
 	constexpr uintptr_t QuickBuyPendingFlagOffset = 0x0004B79C;
 	constexpr uintptr_t PickupFunctionRva = 0x003B1510;
+	// Client navigator (route finding around terrain). Found 2026-10-09 in the live image of PID 4452 (Game.exe of
+	// 2026-10-09): UI dispatcher 0x6C6010 (manager vtable+0x10) does "dec esi; jmp [esi*4+0x6D014C]", entry 0x9E ->
+	// 0x6CBC21 = the CoordinateOpcode 0x9F case. For real coordinates it returns when [root+0x5D23C] == 1 or when
+	// [[0xE1E0E0]+8] is 0x10 or 0x40, then calls navigator = 0x7A8570() (cdecl, no arguments), navigator->0x7A84F0(1, 1, 0)
+	// (thiscall, ret 0xC) and navigator->0x7A7F60(x/32, y/32, 1, 1, 0, 1) (thiscall, ret 0x18). The 4th argument is stored
+	// as a byte at navigator+0x24C before the route is built. The client itself calls 0x7A7F60 with (1, 0, 0, 0) at
+	// 0x7FD96E and 0x7FE1C8. HYPOTHESIS: the 4th (or 6th) argument shows the minimap flag; command 331 tests (1, 0, 0, 0).
+	constexpr uintptr_t NavigatorGetterRva = 0x003A8570;
+	constexpr uintptr_t NavigatorResetRva = 0x003A84F0;
+	constexpr uintptr_t NavigatorRouteRva = 0x003A7F60;
+	constexpr uintptr_t NavigatorBlockedStateOffset = 0x0005D23C;
+	constexpr uintptr_t MapCoordinateRootRva = 0x00A1E0E0;
+	constexpr uintptr_t MapCoordinateStateOffset = 0x00000008;
 	// Cập nhật 2026-09-06 sau khi client dời object popup Về thành. Nguồn: ModalVtableProbe chạy lúc popup chết đang mở
 	// (ModuleBase=0x00400000, Modal=0x008FED58), đối chiếu death.log ghi cùng giá trị ở cả 5 tiến trình lúc chết.
 	//   Object  0x004FCD38 -> 0x004FED58  (MODAL_VTABLE_OBJECT | ObjectRva=0x4FED58)
@@ -289,14 +302,23 @@ namespace GameClientAddresses {
 	//   Khuyến cáo (280): RVA 0x354D5C -> 0x4FED14, một ô duy nhất về 0 trong toàn bộ 33MB ảnh khi đóng hộp.
 	//   Phiên bản (281): RVA 0x354C50 -> 0x4EECD0 (dùng ô này), đối chứng bằng ô song song 0x4F47DC cùng trỏ một
 	//     đối tượng và cùng về 0 lúc đóng — hai ô là bản sao của nhau, dùng ô nào cũng ra cùng đối tượng.
-	constexpr uintptr_t LoginNoticeDialogRva = 0x004FED14;   // lệnh 280: hộp "Khuyến cáo chơi game"
-	constexpr uintptr_t LoginVersionDialogRva = 0x004EECD0;  // lệnh 281: hộp "Thông tin phiên bản"
+	//
+	// Re-measured on client 1.34 (2026-10-10). Every login data slot below moved by +0x24068 (same as ModalStateRva);
+	// the 2026-09-29 address update had missed this group, so login stalled on the first dialog ("ThấyHộp=False").
+	//   Notice 0x4FED14 -> 0x522D7C, Version 0x4EECD0 -> 0x512D38: on 6/6 live clients these were the only two slots
+	//     pointing at the open "Khuyến cáo" dialog; command 294 read 3 on the new slot and -2 on the old one; command
+	//     295 through 0x522D7C moved the screen to "Thông tin phiên bản" (screenshot), and 295 through 0x512D38 then
+	//     moved it to "Chọn máy chủ" (screenshot).
+	//   Server 0x50477C -> 0x5287E4: command 294 read 3 while "Chọn máy chủ" was open; 3 code references in the old
+	//     dump (Recovery0925/game2228.bin) map to it in the 1.34 image.
+	constexpr uintptr_t LoginNoticeDialogRva = 0x00522D7C;   // lệnh 280: hộp "Khuyến cáo chơi game"
+	constexpr uintptr_t LoginVersionDialogRva = 0x00512D38;  // lệnh 281: hộp "Thông tin phiên bản"
 	// Hộp "Chọn máy chủ". Hai ứng viên tìm bằng kỹ thuật "quét về 0" trước đó (0x4EEFAC, 0x4EE7FC) đều ĐÃ LOẠI:
 	// đọc lại trên nhiều tiến trình độc lập chỉ hợp lệ ~50% và 0%, trong khi một global slot thật phải hợp lệ 100%.
 	// Giá trị dưới đây tìm bằng cách khác, chặt hơn: chụp ảnh bộ nhớ lúc đang ở hộp 1 (chưa có hộp "Chọn máy chủ")
 	// và lúc đã sang hộp 3, lấy GIAO các ô thay đổi qua 4 tiến trình độc lập — lọc từ hàng nghìn ô xuống 8 ứng viên,
 	// rồi đọc lại trên 3 tiến trình mới: 0x50477C hợp lệ 3/3 và là ô DUY NHẤT có vtable nằm trong ảnh Game.exe.
-	constexpr uintptr_t LoginServerDialogRva = 0x0050477C;   // lệnh 282: hộp "Chọn máy chủ"
+	constexpr uintptr_t LoginServerDialogRva = 0x005287E4;   // lệnh 282: hộp "Chọn máy chủ" (1.34, see above)
 	// Bố cục bên trong hộp "Chọn máy chủ", đọc trực tiếp từ mã máy của client (không suy đoán từ AutoFS):
 	//   Bộ điều phối sự kiện = vtable[0x10] tại RVA 0x1FE9D0, chỉ nhận đúng hai mã sự kiện AutoFS dùng:
 	//     0x1FE9D0+0x3E: cmp [ebp-0xC], 0x565 (bấm nút)   0x1FE9D0+0x4C: cmp [ebp-0xC], 0x691 (chọn dòng)
@@ -323,7 +345,9 @@ namespace GameClientAddresses {
 	// (0x1FE7C0) gọi chính nó với tham số -1 để xoá chọn ba danh sách còn lại:
 	//   0x1FE7C0+0x3F: push -1 / mov ecx,[ebp-8] / call 0x355B0
 	// Bên trong 0x355B0 có "cmp ecx,[eax+0x194]" → số phần tử của danh sách nằm ở control+0x194.
-	constexpr uintptr_t ListSetSelectionFunctionRva = 0x000355B0;
+	// 1.34: 0x355B0 -> 0x362B0. The first 48 bytes of the old function match only there, and the list-select handler
+	// (old 0x1FE7C0, now 0x201640, byte-identical apart from rel32) calls exactly 0x362B0.
+	constexpr uintptr_t ListSetSelectionFunctionRva = 0x000362B0;
 	constexpr size_t ListItemCountOffset = 0x194;
 	// obj -> +0x54 lấy khung giao diện, khung -> +0x58 lấy đối tượng nhận sự kiện, gọi vtable[0x10] của nó.
 	// XÁC NHẬN SAI trên client 1.28: đo trực tiếp bằng lệnh chẩn đoán 286 (DiagnoseLoginControlChain) ngày
@@ -360,7 +384,9 @@ namespace GameClientAddresses {
 	//
 	// Nhánh đăng nhập lấy hai chuỗi từ hai Ô NHẬP trên giao diện rồi mới gửi đi — nội dung cũ còn trong ô tài khoản
 	// CÓ ảnh hưởng, nên phải ghi đè chứ không nối thêm.
-	constexpr uintptr_t LoginCredentialDialogRva = 0x00503A90;
+	// 1.34: 0x503A90 -> 0x527AF8 (12 code references map to it). The button/field offsets below were found unchanged in
+	// the 1.34 code: 0xAC4 (12 sites) and 0x1B28 (11 sites) with the same instruction context as the old dump.
+	constexpr uintptr_t LoginCredentialDialogRva = 0x00527AF8;
 	constexpr size_t LoginStartButtonOffset = 0x0AC4;      // "Bắt đầu trò chơi"
 	constexpr size_t LoginAccountDropdownOffset = 0x159C;  // xổ danh sách tài khoản đã lưu
 	//
@@ -378,8 +404,22 @@ namespace GameClientAddresses {
 	// Thân SetText đọc được: nếu text == null thì thoát; truyền length = -1 thì tự gọi strlen; sau đó memcpy vào
 	// [this+0x27C], ghi độ dài vào [this+0x288], đặt NUL, xoá vùng chọn (+0x290/+0x294) và đưa con trỏ nhập
 	// (+0x29C) về cuối chuỗi. Vì nó GHI ĐÈ nên không cần xoá ô tài khoản trước.
-	constexpr uintptr_t FieldGetTextFunctionRva = 0x00028820;
-	constexpr uintptr_t FieldSetTextFunctionRva = 0x0002BEB0;
+	// 1.34: GetText 0x28820 -> 0x290A0 (both calls of the credential getter, now 0x1BC0D0, target it; body identical
+	// apart from one internal jump). SetText 0x2BEB0 -> 0x2C790 (150/160 bytes identical, the 10 others are rel32).
+	constexpr uintptr_t FieldGetTextFunctionRva = 0x000290A0;
+	constexpr uintptr_t FieldSetTextFunctionRva = 0x0002C790;
+	//
+	// Masked fields (the password box): field flag 0x10 means the buffer at [field+0x27C] is kept XOR-masked. GetText
+	// unmasks (0x4281A0) before copying and masks again (0x4283D0) after; typing stores masked bytes, but SetText copies
+	// the plain text in. Both helpers are the same XOR: key byte i = (k*k) % 0xFF, k starts at 0x72, k += i+1 after byte i
+	// (decompiled from game_new.bin, Recovery0929). Measured 2026-10-10: the password box has flags 0x111; typing
+	// "ABCDEFGHIJ" by hand read back "ABCDEFGHIJ", SetText read back B7 9E ED 3C 09 04 3F 5B 75 6E = that XOR of it, so
+	// the server got garbage and answered "Tài khoản hoặc mật mã không đúng!". After SetText the text must be masked.
+	constexpr size_t FieldFlagsOffset = 0x274;
+	constexpr uint32_t FieldMaskedTextFlag = 0x10;
+	constexpr size_t FieldTextBufferOffset = 0x27C;
+	constexpr size_t FieldTextLengthOffset = 0x288;
+	constexpr int FieldMaskSeed = 0x72;
 	//
 	// ĐÃ KIỂM CHỨNG ĐẦU-CUỐI trên client mới PID 17128 (2026-09-16), chỉ dùng đường dispatch nội bộ:
 	//   280 -> 281 -> 282 -> ghi hai ô nhập bằng SetText -> bật ô Điều khoản -> bấm nút 0xAC4.
@@ -395,7 +435,8 @@ namespace GameClientAddresses {
 	//   sai mật khẩu     -> "Tài khoản hoặc mật mã không đúng!"        (PID 9796)
 	//   hai ô để rỗng    -> "Xin nhập tài khoản và mật mã."            (PID 22204)
 	// Chuỗi mã hoá TCVN3 chứ không phải UTF-8: đọc được ả=0xB6, đ=0xAE, ọ=0xE4, ò=0xDF, cả bốn khớp bảng TCVN3.
-	constexpr uintptr_t LoginStatusMessageObjectRva = 0x004FDA48;
+	// 1.34: 0x4FDA48 -> 0x521AB0 (6 code references map to it, 1 maps elsewhere); offset 0x22E4 still used in 1.34 code.
+	constexpr uintptr_t LoginStatusMessageObjectRva = 0x00521AB0;
 	constexpr size_t LoginStatusMessageOffset = 0x22E4;
 	constexpr int LoginStatusMessageMaxLength = 128;
 	//
@@ -417,7 +458,8 @@ namespace GameClientAddresses {
 	//   0x24AB9..0x24AD9 đọc bit 0x200 rồi đặt biến cục bộ = NGHỊCH ĐẢO, gọi 0x23770(bool) -> đúng nghĩa toggle.
 	//   0x24B19 push 0x565 rồi gọi vtable[0x10] của dialog cha -> control tự báo lại cho hộp thoại.
 	// Tham số 1 ([ebp+8]) chỉ dùng ở nhánh kia (chọn mã sự kiện 0x56A/0x566), nhánh này bỏ qua.
-	constexpr uintptr_t ControlClickFunctionRva = 0x00024930;
+	// 1.34: 0x24930 -> 0x251A0, the only match of the old function's first 52 bytes.
+	constexpr uintptr_t ControlClickFunctionRva = 0x000251A0;
 	// Ngõ cụt đã loại trừ, ghi lại để khỏi thử lại: bắn 0x565 thẳng vào dialog+0x1B28 trả về 1 nhưng ô KHÔNG đổi
 	// trạng thái (có ảnh trước/sau). Bộ điều phối của hộp thoại chỉ NHẬN thông báo, chính control mới tự đảo cờ.
 	//
@@ -430,8 +472,9 @@ namespace GameClientAddresses {
 	// mở lên đã đọc ra cờ = 1 sẵn, gọi hàm một phát thành 0 (ảnh cho thấy dấu tích chuyển từ đỏ sang nhạt).
 	// Vì vậy luôn phải ĐỌC cờ trước rồi mới đảo khi cần, đừng gọi thẳng.
 	// Hai ô toàn cục do nút "Vào trò chơi" ghi ra, đọc từ mã của chính nó (RVA 0x1FE0A0 + 0x39 và + 0x42):
-	constexpr uintptr_t SelectedClusterIndexRva = 0x00504790;
-	constexpr uintptr_t SelectedServerIndexRva = 0x00504794;
+	// 1.34: +0x24068 like the dialogs (2 and 1 code references).
+	constexpr uintptr_t SelectedClusterIndexRva = 0x005287F8;
+	constexpr uintptr_t SelectedServerIndexRva = 0x005287FC;
 
 	// Lệnh 284: gọi thiscall 0x00576450 với this = 0x00774140 và hai chuỗi tài khoản/mật khẩu, rồi ba hàm cdecl dọn dẹp.
 	//

@@ -5,6 +5,8 @@ namespace Auto.Login;
 // Vì sao bắt buộc: LoginAutomation mở Game.exe rồi bơm chuỗi lệnh 280/281/282 vào cửa sổ vừa hiện ra. Hai luồng
 // chạy song song sẽ mở hai client cùng lúc và mỗi luồng không có cách nào biết cửa sổ nào là của mình — chuỗi
 // lệnh bắn lẫn sang nhau. Một lượt đăng nhập chặn 60-90 giây nên cửa sổ đua này rất rộng.
+// Inside one lease, LoginAutomation.Run itself logs its accounts in parallel (2026-10-10); this lock only keeps the
+// Login tab and ReloginSupervisor from running at the same time.
 internal static class LoginSession {
 	private static readonly object SyncRoot = new();
 	private static string? currentOwner;

@@ -33,6 +33,12 @@ internal sealed class InventorySaleEngine {
 	private int popupBlockedIndex = -1;
 	private int popupCancelAttempts;
 	private DateTime nextPopupCancelUtc = DateTime.MinValue;
+	// Blue items with "Xuất chiêu" are kept through the first AttackSpeedHoldTrips sale trips they are in the bag for, and
+	// sold from the next one (owner rule 2026-10-09). Counted per item (item table index + name), for this Auto session
+	// only: never written to disk, Reset() does not clear it.
+	private const int AttackSpeedHoldTrips = 2;
+	private readonly Dictionary<int, AttackSpeedHold> attackSpeedHolds = [];
+	private int saleTrip;
 
 	public bool IsAutomaticSaleEnabled => settings.SaleItemSelections.Any(entry => entry.Value) && (settings.EnableSaleQuantityThreshold || settings.EnableSaleRemainingStrengthThreshold);
 
@@ -55,6 +61,7 @@ internal sealed class InventorySaleEngine {
 		Reset();
 		debugBypassMasterSwitch = bypassMasterSwitch;
 		active = true;
+		saleTrip++;
 		log?.Invoke("SALE_START | Slots=35 | Command=47 | Safety=WHITE_BLUE_MEDICINE_ONLY | GreenYellowSpecialUnknown=BLOCKED");
 	}
 
@@ -200,6 +207,7 @@ internal sealed class InventorySaleEngine {
 
 				InventorySaleItem item = ReadItem(reader, itemTable, itemId);
 				(bool selected, string reason) = Evaluate(item);
+				if (selected && item.Category == InventorySaleCategory.Blue) (selected, reason) = ApplyAttackSpeedHold(reader, moduleBase, itemTable, item, reason, log);
 				log?.Invoke($"SALE_FILTER | MemoryIndex={nextMemoryIndex} | ItemId={itemId} | Name={item.Name} | Type={item.Type} | GameClass={item.GameClass?.ToString() ?? "UNCONFIRMED"} | F2A4={item.Field2A4} | F6D8={item.Field6D8} | F6DC={item.Field6DC} | F6E0={item.Field6E0} | F700={item.Field700} | FAA8={item.FieldAA8} | Category={item.Category} | Selected={selected} | Reason={reason}");
 				if (! selected) {
 					nextMemoryIndex++;
@@ -221,6 +229,7 @@ internal sealed class InventorySaleEngine {
 				return InventorySaleTickResult.Running;
 			}
 			if (arrangementPosted && DateTime.UtcNow < arrangementDeadlineUtc) return InventorySaleTickResult.Running;
+			PruneAttackSpeedHolds(reader, slotList);
 			active = false;
 			log?.Invoke($"SALE_COMPLETE | ScannedSlots=35 | Sold={soldItemCount} | ArrangeCommandPosted={arrangementPosted} | Arranged=UNVERIFIED");
 			return InventorySaleTickResult.Completed;
@@ -242,7 +251,8 @@ internal sealed class InventorySaleEngine {
 		};
 	}
 
-	private InventorySaleItem ReadItem(MemoryReader reader, IntPtr itemTable, int itemId) {
+	// Static so Runtime.BagAttributeWatcher classifies blue items exactly like the sale filter does.
+	internal static InventorySaleItem ReadItem(MemoryReader reader, IntPtr itemTable, int itemId) {
 		IntPtr record = new(itemTable.ToInt64() + (long)itemId * GameAddresses.Item.InventoryRecordStride);
 		string name = ReadLegacyString(reader, IntPtr.Add(record, GameAddresses.Item.InventoryName), MaximumNameLength);
 		string type = ReadAsciiString(reader, IntPtr.Add(record, GameAddresses.Item.InventoryType), MaximumTypeLength);
@@ -308,6 +318,46 @@ internal sealed class InventorySaleEngine {
 	}
 
 	private static uint ReadUInt32(MemoryReader reader, IntPtr address) => unchecked((uint)reader.ReadInt32(address));
+
+	// Trip 1 and 2 an item is in the bag for: keep it. Trip 3 on: sell. A different name on the same item table index means
+	// the index was reused by another item, so its count starts again.
+	private (bool Selected, string Reason) ApplyAttackSpeedHold(MemoryReader reader, IntPtr moduleBase, IntPtr itemTable, InventorySaleItem item, string reason, Action<string>? log) {
+		IntPtr record = new(itemTable.ToInt64() + (long)item.ItemId * GameAddresses.Item.InventoryRecordStride);
+		IReadOnlyList<ItemMagicAttribute> attributes = ItemMagicAttributeReader.Read(reader, moduleBase, record);
+		if (! ItemMagicAttributeReader.HasAttackSpeed(attributes)) return (true, reason);
+		if (! attackSpeedHolds.TryGetValue(item.ItemId, out AttackSpeedHold? hold) || hold.Name != item.Name) {
+			hold = new AttackSpeedHold(item.Name);
+			attackSpeedHolds[item.ItemId] = hold;
+		}
+		if (hold.LastTrip != saleTrip) {
+			hold.LastTrip = saleTrip;
+			hold.TripsSeen++;
+		}
+		string stats = ItemMagicAttributeReader.Describe(attributes);
+		if (hold.TripsSeen <= AttackSpeedHoldTrips) {
+			log?.Invoke($"SALE_ATTACK_SPEED_HOLD | ItemId={item.ItemId} | Name={item.Name} | Chuyến={hold.TripsSeen}/{AttackSpeedHoldTrips} | ChỉSố={stats} | Action=Giữ lại, chưa bán");
+			return (false, $"ATTACK_SPEED_HOLD_{hold.TripsSeen}/{AttackSpeedHoldTrips}");
+		}
+		log?.Invoke($"SALE_ATTACK_SPEED_RELEASED | ItemId={item.ItemId} | Name={item.Name} | Chuyến={hold.TripsSeen} | ChỉSố={stats} | Action=Đã giữ đủ {AttackSpeedHoldTrips} chuyến, bán");
+		return (true, "ATTACK_SPEED_RELEASED");
+	}
+
+	// Drop counters of items that left the bag (sold, dropped, moved), checked by index and name.
+	private void PruneAttackSpeedHolds(MemoryReader reader, IntPtr slotList) {
+		if (attackSpeedHolds.Count == 0) return;
+		HashSet<int> inBag = [];
+		for (int index = 0; index < GameAddresses.Inventory.SaleSlotCount; index++) {
+			int itemId = reader.ReadInt32(IntPtr.Add(slotList, index * sizeof(int)));
+			if (itemId > 0) inBag.Add(itemId);
+		}
+		foreach (int itemId in attackSpeedHolds.Keys.Where(itemId => ! inBag.Contains(itemId)).ToArray()) attackSpeedHolds.Remove(itemId);
+	}
+
+	private sealed class AttackSpeedHold(string name) {
+		public string Name { get; } = name;
+		public int TripsSeen { get; set; }
+		public int LastTrip { get; set; }
+	}
 
 	private InventorySaleTickResult Fail(string reason, out string failureReason) {
 		failureReason = reason;

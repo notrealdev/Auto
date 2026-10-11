@@ -37,7 +37,10 @@ internal sealed class RecoveryEngine {
 	}
 
 	private void Check(KindState state, bool enabled, int value, int maximum, int threshold, IReadOnlyList<(string Name, int Code)> list, int code, DateTime now, int processId, IntPtr gameWindow, Action<string> log) {
-		if (!enabled || value < 0 || maximum <= 0 || value >= threshold || now < state.NextUseUtc) return;
+		// value >= maximum: a full bar never takes a potion, whatever the threshold. A threshold above the character's maximum
+		// (default 300 HP on a level-low character with 68 max HP, 2026-10-10 PID 15468) otherwise drank a potion every
+		// 500 ms at full HP and quick buy replaced each one: 77 bottles bought in 3 minutes.
+		if (!enabled || value < 0 || maximum <= 0 || value >= maximum || value >= threshold || now < state.NextUseUtc) return;
 		if (!QuickBuyPotions.TryGetName(list, code, out string name)) return;
 		state.NextUseUtc = now.AddMilliseconds(UseIntervalMilliseconds);
 		if (!TryFindPotion(processId, name, out int itemId, out string location)) {

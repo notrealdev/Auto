@@ -8,6 +8,8 @@ internal static class AutoFsMovementCommand {
 	private const int YCommand = 5;
 	private const int PortalCommand = 27;
 	private const int WalkCommand = 321;
+	// Must match SystemUint.cpp NavigatorRouteCommand.
+	private const int NavigatorRouteCommand = 331;
 
 	public static bool TryMoveTo(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
 		result = "";
@@ -69,6 +71,7 @@ internal static class AutoFsMovementCommand {
 			return false;
 		}
 		result = $"AutoFS SaveDevice | Commands=32/0,0/{dispatchX},5/{dispatchY} | Raw={destinationRawX}/{destinationRawY}";
+		game.FlaggedRouteActive = true;
 		return true;
 	}
 
@@ -95,6 +98,63 @@ internal static class AutoFsMovementCommand {
 		bool walked = game.AutoFsActionGate.RunMovement(() => TryWalkToCore(game, destinationRawX, destinationRawY, out walkResult));
 		result = walkResult;
 		return walked;
+	}
+
+	// Clears the flagged route: command 32 dispatches CoordinateOpcode 0x9F with (-1, -1). The client's 0x9F case
+	// (0x6CBC21) then sets the navigator to state 1 (0x7A84F0(1, 1, 0)) and stops the character (movement function mode 1),
+	// without building a new route. Unverified in game: that this also removes the flag and route line from the minimap.
+	public static bool TryClearFlaggedRoute(GameWindow game, out string result) {
+		string clearResult = "";
+		bool cleared = game.AutoFsActionGate.RunMovement(() => {
+			if (!game.AutoFsTransport.TrySendCommand(game.Handle, ResetCommand, 0, out string resetError)) {
+				clearResult = $"AutoFS command {ResetCommand} FAIL | {resetError}";
+				return false;
+			}
+			clearResult = $"AutoFS ClearRoute | Command={ResetCommand}/0";
+			return true;
+		});
+		// One attempt per flagged trip: a failed send is logged by the caller, not retried on every 100 ms tick.
+		game.FlaggedRouteActive = false;
+		result = clearResult;
+		return cleared;
+	}
+
+	// TEST (MonsterPathProbe only): the client navigator route of commands 0/5, called by native 331 with the arguments the
+	// client uses for its own flagless routes. Same 32 -> X/32 -> Y/32 order as TryMoveTo. Unverified: whether the minimap
+	// flag stays hidden and whether the route still goes around terrain.
+	// All three commands are sent synchronously: a sent message is handled before posted ones, so mixing posted 32/0 with a
+	// sent 331 could run 331 before X arrives (native returns 60) or run the reset after the new route.
+	public static bool TryRouteWithoutFlag(GameWindow game, int destinationRawX, int destinationRawY, out string result) {
+		result = "";
+		if (! game.RuntimeLayout.MovementReady) {
+			result = "Runtime movement layout is unavailable: " + game.RuntimeLayout.DescribeUnavailable(RuntimeSubsystem.MovementTransport);
+			return false;
+		}
+		if (destinationRawX <= 0 || destinationRawY <= 0) {
+			result = $"AutoFS ROUTE SAFE_REJECT | Raw={destinationRawX}/{destinationRawY}";
+			return false;
+		}
+		int dispatchX = destinationRawX / 32;
+		int dispatchY = destinationRawY / 32;
+		string routeResult = "";
+		bool routed = game.AutoFsActionGate.RunMovement(() => {
+			if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, ResetCommand, 0, out string resetError)) {
+				routeResult = $"AutoFS command {ResetCommand} FAIL | {resetError}";
+				return false;
+			}
+			if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, XCommand, dispatchX, out string xError)) {
+				routeResult = $"AutoFS command {XCommand} FAIL | {xError}";
+				return false;
+			}
+			if (!game.AutoFsTransport.TrySendConfirmedCommand(game.Handle, NavigatorRouteCommand, dispatchY, out string routeError)) {
+				routeResult = $"AutoFS route command {NavigatorRouteCommand} FAIL | {routeError}";
+				return false;
+			}
+			routeResult = $"AutoFS NavigatorRoute | Commands=32/0,0/{dispatchX},{NavigatorRouteCommand}/{dispatchY} | Raw={destinationRawX}/{destinationRawY} | Args=1,0,0,0";
+			return true;
+		});
+		result = routeResult;
+		return routed;
 	}
 
 	private static bool TryWalkToCore(GameWindow game, int destinationRawX, int destinationRawY, out string result) {

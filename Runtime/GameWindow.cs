@@ -71,6 +71,8 @@ public class GameWindow {
 	internal Auto.Support.Engine SupportEngine { get; }
 	internal Auto.Support.BuffEngine BuffEngine { get; }
 	internal InventorySaleEngine InventorySaleEngine { get; }
+
+	internal BagAttributeWatcher BagAttributeWatcher { get; } = new();
 	internal AutoFsAttackTransport AutoFsTransport { get; }
 	internal AutoFsActionGate AutoFsActionGate { get; }
 
@@ -107,6 +109,11 @@ public class GameWindow {
 	public bool ProfileRestored { get; set; }
 
 	public int LastObservedMapId { get; set; }
+
+	// True after a flagged route move (commands 32/0/5, minimap flag + route line) until command 32 clears it. The client
+	// keeps walking that route after Auto considers the trip done, so a character fighting in the area is pulled toward the
+	// flag (owner, 2026-10-09). AccountEngineCoordinator clears it once the character attacks inside the area.
+	public bool FlaggedRouteActive { get; set; }
 
 	public DateTime NextMapIdentityCheckUtc { get; set; } = DateTime.MinValue;
 

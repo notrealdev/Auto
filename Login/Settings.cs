@@ -44,6 +44,10 @@ public sealed class Settings {
 	// chiếu những dòng đó với client-freeze.log để chắc rằng nó chỉ nhắm đúng account kẹt thật, rồi mới bật.
 	[JsonPropertyName("AutoReloginEnabled")] public bool AutoReloginEnabled { get; set; }
 
+	// "Số lần thử login lại" on the Login tab: extra attempts per account after a failed login. A credential rejection is
+	// never retried. ReloginSupervisor passes 0, it has its own attempt counter.
+	[JsonPropertyName("LoginRetryCount")] public int LoginRetryCount { get; set; } = 1;
+
 	[JsonPropertyName("Accounts")] public List<LoginAccount> Accounts { get; set; } = [];
 
 	// Cùng quy ước đường dẫn với Runtime\DebugLog.cs: mọi thứ nằm cạnh file exe.

@@ -16,6 +16,8 @@ public sealed class Engine {
 	private const int NearRawDistance = 200;
 	private const int NearPickupAttemptLimit = 3;
 	private const int FailedCoordinateCooldownMilliseconds = 30000;
+	// How long the slot of a single-attempt item is watched after its one command 78 (no command is sent meanwhile).
+	private const int SingleAttemptObserveMilliseconds = 500;
 	private readonly Settings settings;
 	private readonly Finder finder;
 	private readonly AutoFsAttackTransport transport;
@@ -297,6 +299,8 @@ public sealed class Engine {
 		string lastSlotCurrentName = "";
 		// True once this item was chased beyond PlayerScanRadius (valuable items only).
 		bool farChase = false;
+		bool singleAttempt = Finder.IsSingleAttemptItem(candidate);
+		DateTime singleAttemptSentUtc = DateTime.MinValue;
 
 		try {
 			while (! token.IsCancellationRequested && settings.Enabled && ! IsManualInputActive()) {
@@ -323,9 +327,21 @@ public sealed class Engine {
 					outcome = "OUT_OF_SCAN_RADIUS";
 					break;
 				}
+				// Tứ Tượng / Lục Đạo / Dược Phẩm (owner rule 2026-10-09): exactly one command 78, no command 32 and no repeated 78
+				// that walks the character after the item. The slot is only watched for SingleAttemptObserveMilliseconds so a
+				// pickup that lands is still logged by the SLOT_LEFT branch, then the coordinate cools down and the item is skipped.
+				if (singleAttempt && pendingPickupAttempts > 0) {
+					if (DateTime.UtcNow - singleAttemptSentUtc < TimeSpan.FromMilliseconds(SingleAttemptObserveMilliseconds)) {
+						if (token.WaitHandle.WaitOne(RetryIntervalMilliseconds)) break;
+						continue;
+					}
+					AddFailedCoordinate(coordinate, DateTime.UtcNow.AddMilliseconds(FailedCoordinateCooldownMilliseconds));
+					outcome = "SINGLE_ATTEMPT_SKIPPED";
+					break;
+				}
 				// AutoFS pickup loop (ToolbarSet.cs:1883-1989): far (>= 200, |dx| + |dy|): command 32 once, then command 78
 				// every 100 ms until the item is near; near (< 200): command 78 at most 3 times, then a 30 s cooldown.
-				if (rawDistance >= NearRawDistance && ! approachPrepared) {
+				if (rawDistance >= NearRawDistance && ! approachPrepared && ! singleAttempt) {
 					if (! transport.TrySendCommand(context.GameWindow, AutoFsApproachCommand, 0, out string prepareError)) {
 						LogLootDiagnostic(context.DropLog, $"LOOT_COMMAND_FAILED | PID={context.ProcessId} | Command={AutoFsApproachCommand} | Payload=0 | Index={itemIndex} | Name={candidate.ItemNameRaw} | Reason={prepareError}");
 						outcome = "COMMAND_32_POST_FAILED";
@@ -342,17 +358,16 @@ public sealed class Engine {
 					break;
 				}
 				pendingPickupAttempts++;
+				if (singleAttempt) singleAttemptSentUtc = DateTime.UtcNow;
 				if (rawDistance < NearRawDistance) pendingNearPickupAttempts++;
 				LogLootDiagnostic(context.DropLog, $"LOOT_COMMAND_POSTED | PID={context.ProcessId} | Command={AutoFsPickupCommand} | Payload={itemIndex} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Attempt={pendingPickupAttempts} | NearAttempt={pendingNearPickupAttempts} | Delivery=POSTED | Acceptance=UNVERIFIED | Synchronization=SHARED_MONITOR | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | PlayerRaw={snapshot.X}/{snapshot.Y} | ItemRaw={coordinate.X}/{coordinate.Y} | Distance={rawDistance}");
 				if (token.WaitHandle.WaitOne(RetryIntervalMilliseconds)) break;
 				bool persistentRetry = IsPersistentNearRetry(candidate);
-				// Tứ Tượng / Lục Đạo: give up after the first near attempt (owner rule 2026-10-09, see Finder.IsLowValueMaterial).
-				int nearAttemptLimit = Finder.IsLowValueMaterial(candidate) ? 1 : NearPickupAttemptLimit;
-				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= nearAttemptLimit && persistentRetry && ! retryPolicyLogged) {
+				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= NearPickupAttemptLimit && persistentRetry && ! retryPolicyLogged) {
 					retryPolicyLogged = true;
 					LogLootDiagnostic(context.DropLog, $"LOOT_RETRY_POLICY | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Persistent=True | Reason=VALUABLE_ITEM_EXCEPTION");
 				}
-				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= nearAttemptLimit && ! persistentRetry) {
+				if (rawDistance < NearRawDistance && pendingNearPickupAttempts >= NearPickupAttemptLimit && ! persistentRetry) {
 					AddFailedCoordinate(coordinate, DateTime.UtcNow.AddMilliseconds(FailedCoordinateCooldownMilliseconds));
 					outcome = "NEAR_RETRY_LIMIT_COOLDOWN";
 					break;
@@ -683,7 +698,7 @@ public sealed class Engine {
 	}
 
 	private static bool IsPersistentNearRetry(LootSnapshot item) {
-		if (Finder.IsLowValueMaterial(item)) return false;
+		if (Finder.IsSingleAttemptItem(item)) return false;
 		ItemClassification classification = ItemGroupClassifier.Classify(item);
 		if (classification.AttributeClass == 3) return true;
 		if (classification.Color is ItemColor.Green or ItemColor.Yellow) return true;

@@ -141,8 +141,9 @@ public static class AccountEngineCoordinator {
 			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
 			// Gồm cả lối tự động (LowHpEngine kích khi về thành hết thuốc), không chỉ nút bấm tay tab Debug.
 			bool doctorPurchaseActive = game.DoctorPurchaseAutomation.IsDebugRun || game.DoctorPurchaseAutomation.IsAutomaticRun;
-			// KhonTienRouteProbe walks only while the master switch is off; the early return below keeps every other engine idle.
-			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive || KhonTienRouteProbe.IsWalking(game.ProcessId));
+			// KhonTienRouteProbe and MonsterPathProbe move only while the master switch is off; the early return below keeps
+			// every other engine idle.
+			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive || KhonTienRouteProbe.IsWalking(game.ProcessId) || MonsterPathProbe.IsRunning(game.ProcessId));
 			// doctorPurchaseActive riêng: repair debug run VỐN ĐÃ không bật cờ này khi Auto tổng tắt (hành vi cũ, không đụng
 			// vào), nhưng thiếu nó thì DoctorPurchaseAutomation chạy thật (đã sửa 3 cổng phía dưới) mà mọi dòng log từng
 			// bước đều bị accountLog/CanLogProcess nuốt mất, không có gì để đối chiếu khi test.
@@ -165,6 +166,8 @@ public static class AccountEngineCoordinator {
 				game.ConfiguredTrainingMovementAutomation.Cancel();
 				game.AttackEngine.Stop();
 				game.LootEngine.Stop();
+				// Next master-on takes a fresh baseline instead of logging what was picked by hand meanwhile.
+				game.BagAttributeWatcher.Reset();
 				return;
 			}
 			Action<string> accountLog = text => DebugLog.AddForProcess(game.ProcessId, text);
@@ -368,6 +371,8 @@ public static class AccountEngineCoordinator {
 			}
 
 			ApplySnapshot(game, snapshot);
+			// Logs blue "Xuất chiêu" items once they are in the bag (self-throttled to one scan per second).
+			game.BagAttributeWatcher.Tick(game.ProcessId, accountDropLog);
 			game.LootSettings.CenterX = game.AttackSettings.CenterX;
 			game.LootSettings.CenterY = game.AttackSettings.CenterY;
 			game.LootSettings.UseCenterPosition = game.AttackSettings.UseCenterPosition;
@@ -611,6 +616,12 @@ public static class AccountEngineCoordinator {
 
 			if (attackEnabled) {
 				game.AttackEngine.Tick(snapshot, game, manualInputActive, accountLog, accountTargetLifecycleLog, accountTargetViolationLog, accountTargetMovementLog);
+				// Back in the area and fighting: drop the flagged route of Tự lên bãi / Sửa-Bán at once, otherwise the client
+				// keeps walking it and drags the character toward the flag between attacks (owner rule 2026-10-09).
+				if (game.FlaggedRouteActive && !manualInputActive && game.AttackEngine.HasRecentAttack(TimeSpan.FromSeconds(1)) && !IsOutsideTrainingArea(game, snapshot)) {
+					bool cleared = Auto.Movement.AutoFsMovementCommand.TryClearFlaggedRoute(game, out string clearResult);
+					accountLog($"FLAGGED_ROUTE_CLEARED | PID={game.ProcessId} | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | Sent={cleared} | {clearResult}");
+				}
 			} else {
 				attackPositionByWindow.TryRemove(game.Handle, out _);
 				game.AttackEngine.Stop();

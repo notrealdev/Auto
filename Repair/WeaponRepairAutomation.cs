@@ -397,9 +397,12 @@ public sealed class WeaponRepairAutomation {
 				bool arrivedAtTraining = returnOrderQueue.Tick(game, snapshot, returnMapId, returnRawX, returnRawY, out string returnDetail);
 				if (arrivedAtTraining) return Complete(game, log);
 				bool returnPortalRecovery = returnDetail.StartsWith("PortalRecovery20s=", StringComparison.Ordinal);
-				if (returnPortalRecovery || DateTime.UtcNow >= nextReturnLogUtc) {
-					nextReturnLogUtc = DateTime.UtcNow.AddSeconds(10);
-					log?.Invoke($"Sửa đồ | quay lại bãi | {returnDetail}");
+				// Diagnostic (2026-10-09, return stuck next to the doctor): log every resend and the position each second, to tell
+				// a character standing still, jittering in place, or never getting a resend.
+				bool returnCommandSent = !returnDetail.StartsWith("Active", StringComparison.Ordinal);
+				if (returnPortalRecovery || returnCommandSent || DateTime.UtcNow >= nextReturnLogUtc) {
+					nextReturnLogUtc = DateTime.UtcNow.AddSeconds(1);
+					log?.Invoke($"Sửa đồ | quay lại bãi | ViTri={snapshot.X}/{snapshot.Y} | {returnDetail}");
 				}
 				break;
 		}

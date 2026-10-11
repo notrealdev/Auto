@@ -65,8 +65,11 @@ public sealed class LoginAutomation {
 	// Hai RVA lấy từ Native/SystemUint/GameClientAddresses.h (LoginNoticeDialogRva / LoginVersionDialogRva) — nguồn
 	// chuẩn nằm ở đó, sửa bên đó thì phải sửa cả hai chỗ.
 	private const int DiagnoseDialogCommand = 294;
-	private const int NoticeDialogRva = 0x004FED14;
-	private const int VersionDialogRva = 0x004EECD0;
+	// Client 1.34 (2026-10-10), see GameClientAddresses.h.
+	private const int NoticeDialogRva = 0x00522D7C;
+	private const int VersionDialogRva = 0x00512D38;
+	// LoginServerDialogRva ("Chọn máy chủ"), used only to tell which screen a retried client is on.
+	private const int ServerDialogRva = 0x005287E4;
 	private const int DialogAliveResult = 3;
 	private const int DialogGoneResult = -2;
 	private const int StatusMessageMaxLength = 128;
@@ -100,12 +103,16 @@ public sealed class LoginAutomation {
 
 	private readonly AutoFsAttackTransport transport = new(new AutoFsActionGate());
 
-	// Chạy lần lượt từng account. Trả về số account đã gửi xong chuỗi lệnh đăng nhập.
+	// Logs every account in at the same time (owner request 2026-10-10): each account runs TryLoginOne on its own task,
+	// and the next client is launched 500 + DelayLogin ms after the previous one without waiting for that login to finish.
+	// Safe to overlap because TryLoginOne only talks to the HWND of the process it started, the credential buffers live in
+	// the native DLL of that game process, and the shared pieces (TryEnsureReceiver, AccountCharacterMap, DebugLog) lock.
+	// Returns the number of accounts that reached the game world.
 	//
 	// KHÔNG khẳng định "đăng nhập thành công": chưa đọc được trạng thái đăng nhập của client nên chỉ biết lệnh đã
 	// gửi đi, không biết client nhận hay từ chối. Log ghi đúng như vậy.
 	public int Run(Settings settings, Action<string> log, CancellationToken token) {
-		int dispatched = 0;
+		List<Task<bool>> logins = [];
 		for (int index = 0; index < settings.Accounts.Count; index++) {
 			if (token.IsCancellationRequested) break;
 			LoginAccount account = settings.Accounts[index];
@@ -113,19 +120,104 @@ public sealed class LoginAutomation {
 				log($"ĐĂNG NHẬP BỎ QUA | #{index + 1} | User rỗng.");
 				continue;
 			}
-			if (TryLoginOne(settings, account, index, log, token)) dispatched++;
+			int accountIndex = index;
+			logins.Add(Task.Run(() => TryLoginWithRetries(settings, account, accountIndex, log, token)));
 			// StoreOptions.cs:129 — AutoFS chờ Thread.Sleep(500 + AutoLogin_Model.DelayLogin) giữa hai account.
-			// DelayLogin là MILI GIÂY cộng thẳng vào 500, không phải giây. Trước đó tôi viết * 1000 là sai.
+			// DelayLogin là MILI GIÂY cộng thẳng vào 500, không phải giây. Now the gap between two client launches only.
 			if (index < settings.Accounts.Count - 1) {
 				token.WaitHandle.WaitOne(500 + settings.DelayLogin);
 			}
 		}
+		Task.WaitAll(logins);
+		int dispatched = logins.Count(login => login.Result);
 		log($"ĐĂNG NHẬP XONG LƯỢT | Đã gửi chuỗi lệnh cho {dispatched}/{settings.Accounts.Count} account.");
 		return dispatched;
 	}
 
-	private bool TryLoginOne(Settings settings, LoginAccount account, int index, Action<string> log, CancellationToken token) {
-		int stepDelay = 100 + settings.Speed * 200;
+	// One first attempt plus settings.LoginRetryCount retries ("Số lần thử login lại").
+	//
+	// OWNER RULE (2026-10-10): a retry must NOT close the client. It keeps the same window, carries on from the screen the
+	// client is on, clears both credential fields and types them again. The client is closed and a new one opened only
+	// when it crashed (process exited) or hung (window not responding / never created). A failed last attempt leaves the
+	// client open too. A credential rejection is not retried: the same user/password gets the same answer.
+	private bool TryLoginWithRetries(Settings settings, LoginAccount account, int index, Action<string> log, CancellationToken token) {
+		int maximumAttempts = 1 + Math.Max(0, settings.LoginRetryCount);
+		Process? process = null;
+		IntPtr windowHandle = IntPtr.Zero;
+		for (int attemptNumber = 1; attemptNumber <= maximumAttempts && ! token.IsCancellationRequested; attemptNumber++) {
+			bool resume = false;
+			string unusableReason = "";
+			if (attemptNumber > 1) log($"ĐĂNG NHẬP THỬ LẠI | #{index + 1} | {account.User} | Lần={attemptNumber}/{maximumAttempts}");
+			if (process != null && IsClientUsable(process, windowHandle, out unusableReason)) {
+				resume = true;
+				log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Giữ client PID={process.Id}, đi tiếp từ màn hình hiện tại.");
+			} else {
+				if (process != null) {
+					log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Client PID={process.Id} {unusableReason}, đóng và mở client mới.");
+					CloseClient(process, account, index, log);
+				}
+				if (! TryLaunchClient(settings, account, index, log, token, out process, out windowHandle)) continue;
+			}
+			LoginAttempt attempt = new();
+			if (RunLoginSteps(settings, account, index, log, token, process!, windowHandle, resume, attempt)) return true;
+			if (attempt.CredentialsRejected) return false;
+		}
+		return false;
+	}
+
+	// Crash = the process exited. Hang = no main window, or the window does not answer (Process.Responding sends a
+	// message with a 5 s timeout).
+	private static bool IsClientUsable(Process process, IntPtr windowHandle, out string reason) {
+		reason = "";
+		try {
+			process.Refresh();
+			if (process.HasExited) {
+				reason = $"đã thoát (crash, ExitCode={process.ExitCode})";
+				return false;
+			}
+			if (windowHandle == IntPtr.Zero) {
+				reason = "không có cửa sổ chính (đơ)";
+				return false;
+			}
+			if (! process.Responding) {
+				reason = "không phản hồi (đơ)";
+				return false;
+			}
+			return true;
+		} catch (Exception ex) {
+			reason = $"không kiểm tra được ({ex.GetType().Name}: {ex.Message})";
+			return false;
+		}
+	}
+
+	private static void CloseClient(Process process, LoginAccount account, int index, Action<string> log) {
+		try {
+			if (! process.HasExited) {
+				process.Kill();
+				process.WaitForExit(10000);
+			}
+			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Đã đóng client PID={process.Id}.");
+		} catch (Exception ex) {
+			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Không đóng được client PID={process.Id} | {ex.GetType().Name}: {ex.Message}");
+		}
+	}
+
+	private sealed class LoginAttempt {
+		public bool CredentialsRejected;
+	}
+
+	// 294 on a dialog slot: 3 = the dialog object is alive.
+	private bool IsDialogAlive(IntPtr windowHandle, int dialogRva) =>
+		transport.TrySendLoginCommand(windowHandle, DiagnoseDialogCommand, dialogRva, out long state, out string _) && state == DialogAliveResult;
+
+	// 314 returns -1 while the credential screen does not exist yet, 0/1 once it does.
+	private bool IsOnCredentialScreen(IntPtr windowHandle) =>
+		transport.TrySendLoginCommand(windowHandle, ReadAgreeTermsCommand, 0, out long state, out string _) && state != -1;
+
+	private bool TryLaunchClient(Settings settings, LoginAccount account, int index, Action<string> log, CancellationToken token,
+		out Process? launched, out IntPtr windowHandle) {
+		launched = null;
+		windowHandle = IntPtr.Zero;
 		Process process = new();
 		// Giữ nguyên hai thứ của AutoFS: truyền TÊN FILE exe làm tham số dòng lệnh, và UseShellExecute = true.
 		process.StartInfo.Arguments = Path.GetFileName(settings.ExeLink);
@@ -139,12 +231,13 @@ public sealed class LoginAutomation {
 		try {
 			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Đang khởi động {process.StartInfo.FileName}...");
 			process.Start();
+			launched = process;
 		} catch (Exception ex) {
 			log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | Không khởi động được client | {ex.GetType().Name}: {ex.Message}");
 			return false;
 		}
 
-		if (! TryWaitForMainWindow(process, token, out IntPtr windowHandle, out string waitFailure)) {
+		if (! TryWaitForMainWindow(process, token, out windowHandle, out string waitFailure)) {
 			log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | {waitFailure}");
 			return false;
 		}
@@ -162,10 +255,38 @@ public sealed class LoginAutomation {
 			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Chờ {settings.WaitBeforeLogin}ms cho client dựng xong màn hình rồi mới gửi lệnh.");
 			token.WaitHandle.WaitOne(settings.WaitBeforeLogin);
 		}
+		return true;
+	}
+
+	// The login steps on an open client. resume = a retry on the same client: steps whose screen is already behind are
+	// skipped, decided by what the client shows now, never by what the previous attempt logged.
+	private bool RunLoginSteps(Settings settings, LoginAccount account, int index, Action<string> log, CancellationToken token,
+		Process process, IntPtr windowHandle, bool resume, LoginAttempt attempt) {
+		int stepDelay = 100 + settings.Speed * 200;
+		if (resume) {
+			GameSnapshot inGame = GameMemory.ReadSnapshot(process.Id);
+			if (inGame.Success && inGame.CharacterName.Length > 0) {
+				log($"ĐĂNG NHẬP VÀO GAME | #{index + 1} | {account.User} | PID={process.Id} | NhânVật={inGame.CharacterName} | Client đã vào game từ lần trước.");
+				AccountCharacterMap.Learn(account.User, inGame.CharacterName, log);
+				return true;
+			}
+			bool beforeCredentialScreen = IsDialogAlive(windowHandle, NoticeDialogRva) || IsDialogAlive(windowHandle, VersionDialogRva)
+				|| IsDialogAlive(windowHandle, ServerDialogRva) || IsOnCredentialScreen(windowHandle);
+			// None of the login screens is up and the character is not in the world yet: past the start button, i.e. on
+			// the character select screen, so only the Enter step is left.
+			if (! beforeCredentialScreen) {
+				log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Không còn màn đăng nhập nào, coi như đang ở màn chọn nhân vật.");
+				return TryEnterWorld(process.Id, windowHandle, settings, token, log, index, account);
+			}
+		}
 		// Ba hộp thoại chỉ xuất hiện lần lượt, mỗi cái sau khi cái trước đóng. Xác nhận bằng TRẠNG THÁI của chính đối
 		// tượng hộp thoại, không bằng giá trị trả về của lệnh.
-		if (! TrySendUntilDialogClosed(windowHandle, BeginLoginCommand, NoticeDialogRva, "hộp Khuyến cáo", settings, token, log, index, account)) return false;
-		if (! TrySendUntilDialogClosed(windowHandle, PrepareLoginCommand, VersionDialogRva, "hộp Thông tin phiên bản", settings, token, log, index, account)) return false;
+		if (! resume || IsDialogAlive(windowHandle, NoticeDialogRva)) {
+			if (! TrySendUntilDialogClosed(windowHandle, BeginLoginCommand, NoticeDialogRva, "hộp Khuyến cáo", settings, token, log, index, account)) return false;
+		}
+		if (! resume || IsDialogAlive(windowHandle, VersionDialogRva)) {
+			if (! TrySendUntilDialogClosed(windowHandle, PrepareLoginCommand, VersionDialogRva, "hộp Thông tin phiên bản", settings, token, log, index, account)) return false;
+		}
 		// Lệnh 282 KHÔNG dùng TrySendUntilAccepted được: nó làm client đi kết nối mạng nên cửa sổ bận lâu hơn mọi
 		// timeout hợp lý, và SendMessageTimeoutA trả 0 dù lệnh đã chạy xong (đo trên PID 1284 ngày 2026-09-16: trả 0
 		// nhưng ảnh chụp cho thấy client đã sang bước sau và hiện popup "Máy chủ đã đầy hoặc đang bảo trì !").
@@ -174,12 +295,22 @@ public sealed class LoginAutomation {
 		// Nên xác nhận bằng TRẠNG THÁI thay vì bằng giá trị trả về: lệnh 314 trả -1 khi hộp thoại đăng nhập chưa tồn
 		// tại và trả 0/1 khi đã tồn tại. Đo được cả hai phía: PID 1284 (chưa tới màn đăng nhập) trả -1;
 		// PID 17128 và 33808 (đang ở màn đăng nhập) trả 0 rồi 1.
-		if (! TryReachLoginScreen(windowHandle, account, settings, token, log, index)) return false;
+		if (! resume || ! IsOnCredentialScreen(windowHandle)) {
+			if (! TryReachLoginScreen(windowHandle, account, settings, token, log, index)) return false;
+		}
 		token.WaitHandle.WaitOne(stepDelay);
 
-		// Bơm từng ký tự vào hai vùng đệm của native, rồi ghi CẢ HAI vào hai ô nhập trên giao diện bằng đúng hàm
-		// SetText của client. SetText ghi đè nên không cần xoá giá trị cũ còn sót trong ô tài khoản.
+		// Clear both fields first (owner rule 2026-10-10: a retry clears the fields and types again): 316 empties the
+		// native buffers and 315 writes those empty buffers into both fields through the client's SetText.
 		if (! TrySend(windowHandle, ClearPendingCredentialsCommand, 0, log, index, account)) return false;
+		if (! TrySend(windowHandle, WriteCredentialFieldsCommand, 0, log, index, account)) return false;
+		if (transport.TrySendLoginCommand(windowHandle, ReadCredentialFieldLengthCommand, UserFieldIndex, out long clearedUserLength, out string _)
+			&& transport.TrySendLoginCommand(windowHandle, ReadCredentialFieldLengthCommand, PasswordFieldIndex, out long clearedPasswordLength, out string _)) {
+			log($"ĐĂNG NHẬP | #{index + 1} | {account.User} | Đã xoá hai ô trước khi nhập | ĐộDàiÔTàiKhoản={clearedUserLength} | ĐộDàiÔMậtKhẩu={clearedPasswordLength}");
+		}
+
+		// Bơm từng ký tự vào hai vùng đệm của native, rồi ghi CẢ HAI vào hai ô nhập trên giao diện bằng đúng hàm
+		// SetText của client.
 		foreach (char character in account.User) {
 			if (! TrySend(windowHandle, TypeCharacterCommand, Pack(UserFieldIndex, character), log, index, account)) return false;
 		}
@@ -232,6 +363,7 @@ public sealed class LoginAutomation {
 		// rồi Auto vẫn bấm Enter 30 lần trong 60000ms và mới kết luận hỏng. Một phút lãng phí cho mỗi account,
 		// và dòng "Lý do cuối: StatsPointerFailed" che mất lý do thật là máy chủ từ chối.
 		if (IsCredentialRejectedMessage(statusMessage)) {
+			attempt.CredentialsRejected = true;
 			log($"ĐĂNG NHẬP HỎNG | #{index + 1} | {account.User} | PID={process.Id} | Máy chủ từ chối tài khoản/mật khẩu, không vào màn chọn nhân vật nên bỏ qua bước bấm Enter.");
 			return false;
 		}

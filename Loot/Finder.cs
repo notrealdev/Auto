@@ -161,17 +161,22 @@ public sealed class Finder {
 	// "Item có giá trị": the near-retry exception set (AttributeClass 3, green/yellow, skill book) plus artifacts (Pháp Bảo)
 	// and Bá Lạc Nhãn (owner, 2026-09-17: high value). Picked first and allowed past the sale threshold.
 	public static bool IsValuable(LootSnapshot item) {
-		if (IsLowValueMaterial(item)) return false;
+		if (IsSingleAttemptItem(item)) return false;
 		ItemClassification classification = ItemGroupClassifier.Classify(item);
 		if (classification.AttributeClass == 3) return true;
 		if (classification.Color is ItemColor.Green or ItemColor.Yellow) return true;
 		return AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) is AutoFsSpecialItemCategory.SkillBook or AutoFsSpecialItemCategory.Artifact or AutoFsSpecialItemCategory.MountUpgrade;
 	}
 
-	// Tứ Tượng and Lục Đạo are low-value materials (owner rule 2026-10-09): never "valuable", even when their AttributeClass
-	// is 3 like gems. One near pickup attempt, then skip; no chase, no standing still until it is picked. Before this a Tứ
-	// Tượng "Phong Lệ" took 194 pickup attempts and a chase out of the area (loot-scan.log 2026-10-09 10:49:51, PID 24284).
-	public static bool IsLowValueMaterial(LootSnapshot item) => AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) is AutoFsSpecialItemCategory.FourSymbols or AutoFsSpecialItemCategory.SixPaths;
+	// Tứ Tượng, Lục Đạo and Dược Phẩm are low-value (owner rules 2026-10-09): never "valuable", even when their
+	// AttributeClass is 3 like gems. Exactly one pickup command, no approach move and no repeated command that walks the
+	// character after the item; skip it if that one command does not land. Before this a Tứ Tượng "Phong Lệ" took 194
+	// pickup attempts and a chase out of the area (loot-scan.log 2026-10-09 10:49:51, PID 24284).
+	// Dược Phẩm = AttributeClass 1, the same test as Loot.Engine.IsRoutinePickup and the potion counting.
+	public static bool IsSingleAttemptItem(LootSnapshot item) {
+		if (AutoFsSpecialItemClassifier.Classify(item.ItemNameRaw) is AutoFsSpecialItemCategory.FourSymbols or AutoFsSpecialItemCategory.SixPaths) return true;
+		return ItemGroupClassifier.Classify(item).AttributeClass == 1;
+	}
 
 	// Áp dụng category đã biết trước item riêng để checkbox category luôn có quyền quyết định
 	private bool ShouldPick(LootSnapshot snapshot, ItemClassification item) {

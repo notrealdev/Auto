@@ -12,6 +12,10 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolMapTransition = "Ghi chuyển map (bấm Chạy để bắt đầu / dừng)";
 	// Hai probe chẩn đoán popup NPC. Đã bị xoá nhầm lúc dọn probe 2026-09-07 rồi khôi phục 2026-09-08 khi luồng
 	// Sửa đồ với NPC dạng popup xác nhận hỏng mà không còn công cụ nào đọc được vtable thật của popup.
+	// Wall between character and monster: does a flagless move go around it like the flagged route move does?
+	private const string ToolMonsterPathfind = "Tới quái gần nhất: TÌM ĐƯỜNG, có cờ (lệnh 0/5) - bấm Chạy để bắt đầu / dừng";
+	private const string ToolMonsterRouteNoFlag = "Tới quái gần nhất: TÌM ĐƯỜNG KHÔNG CỜ, thử (lệnh 331) - bấm Chạy để bắt đầu / dừng";
+	private const string ToolMonsterWalk = "Tới quái gần nhất: ĐI THẲNG, không cờ (lệnh 321) - bấm Chạy để bắt đầu / dừng";
 	private const string ToolKhonTienRoute = "Đi thử Diêu Trì -> Khổn Tiên Tầng 5 (GỬI LỆNH THẬT, bấm Chạy để bắt đầu / dừng)";
 	private const string ToolModalVtable = "Thông tin popup (vtable)";
 	private const string ToolNpcMenuCapture = "Thông tin menu NPC";
@@ -38,7 +42,7 @@ public sealed class DebugViewModel : ViewModelBase {
 
 	public DebugViewModel(GameWindow? game) {
 		this.game = game;
-		selectedTool = ToolKhonTienRoute;
+		selectedTool = ToolMonsterRouteNoFlag;
 		RunToolCommand = new RelayCommand(_ => RunTool());
 		ClearOutputCommand = new RelayCommand(_ => AccountInfoText = "");
 	}
@@ -52,6 +56,9 @@ public sealed class DebugViewModel : ViewModelBase {
 	}
 
 	public ObservableCollection<string> Tools { get; } = [
+		ToolMonsterRouteNoFlag,
+		ToolMonsterPathfind,
+		ToolMonsterWalk,
 		ToolKhonTienRoute,
 		ToolMapTransition,
 		ToolModalVtable,
@@ -80,6 +87,15 @@ public sealed class DebugViewModel : ViewModelBase {
 	// Khớp DEV\UI\Debug.cs.RunTool: chọn công cụ theo dropdown rồi chạy đúng 1 nút "Chạy" chung.
 	private void RunTool() {
 		switch (selectedTool) {
+			case ToolMonsterPathfind:
+				ToggleMonsterPath(MonsterPathProbe.Mode.Pathfind);
+				return;
+			case ToolMonsterRouteNoFlag:
+				ToggleMonsterPath(MonsterPathProbe.Mode.RouteNoFlag);
+				return;
+			case ToolMonsterWalk:
+				ToggleMonsterPath(MonsterPathProbe.Mode.Walk);
+				return;
 			case ToolKhonTienRoute:
 				ToggleKhonTienRoute();
 				return;
@@ -111,6 +127,22 @@ public sealed class DebugViewModel : ViewModelBase {
 				AccountInfoText = $"Không nhận diện được công cụ: {selectedTool}";
 				return;
 		}
+	}
+
+	// Walks to the nearest live monster with one movement primitive; run again to stop.
+	private void ToggleMonsterPath(MonsterPathProbe.Mode mode) {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		if (MonsterPathProbe.IsRunning(game.ProcessId)) {
+			AccountInfoText = MonsterPathProbe.Stop(game.ProcessId);
+			return;
+		}
+		AccountInfoText = MonsterPathProbe.Start(game, mode) + "\r\n\r\n"
+			+ "Auto tổng phải TẮT. Đứng sao cho có tường giữa nhân vật và con quái gần nhất.\r\n"
+			+ "Nhân vật tự đi tới vị trí con quái (không đánh), dừng khi cách dưới 1 ô, quái chết/mất, hoặc sau 30 giây.\r\n"
+			+ "Chạy lần lượt cả hai công cụ TÌM ĐƯỜNG và ĐI THẲNG ở cùng một chỗ để so sánh. Kết quả ở map-transition.log (MONSTER_PATH_*).";
 	}
 
 	// Walks the recorded Khổn Tiên portal chain with the quest's movement queue; run again to stop.

@@ -38,7 +38,6 @@ public static class DebugLog {
 	private static readonly string profileLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "profile.log");
 	private static readonly string mapTransitionLogPath = Path.Combine(AppContext.BaseDirectory, AppVersion.DiagnosticsDirectoryName, "map-transition.log");
 	private const int MaximumFlushCharacters = 64000;
-	private const long MaximumLogBytes = 5L * 1024L * 1024L;
 	private static readonly ConcurrentQueue<RuntimeLogEntry> pendingRuntimeLines = new();
 	private static readonly ConcurrentDictionary<int, byte> enabledProcessLogs = new();
 	private static readonly ConcurrentDictionary<int, string> processNames = new();
@@ -336,7 +335,7 @@ public static class DebugLog {
 		try {
 			lock (runtimeLogLock) {
 				Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-				RotateLogIfNeeded(path, Encoding.UTF8.GetByteCount(text));
+				// No size cap (owner 2026-10-10): every log keeps growing in its one file, nothing is rolled over.
 				File.AppendAllText(path, text, Encoding.UTF8);
 			}
 		} catch (Exception ex) {
@@ -352,23 +351,10 @@ public static class DebugLog {
 			string emergencyPath = Path.Combine(diagnosticsDirectory, "log-writer-errors.log");
 			string preview = failedText.Length <= 500 ? failedText : failedText[..500] + "...";
 			string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] LOG_WRITE_FAILURE | Path={failedPath} | Characters={failedText.Length} | Exception={exception.GetType().Name}: {exception.Message} | Preview={preview.Replace("\r", "\\r").Replace("\n", "\\n")}\r\n";
-			lock (runtimeLogLock) {
-				RotateLogIfNeeded(emergencyPath, Encoding.UTF8.GetByteCount(line));
-				File.AppendAllText(emergencyPath, line, Encoding.UTF8);
-			}
+			lock (runtimeLogLock) File.AppendAllText(emergencyPath, line, Encoding.UTF8);
 		} catch (Exception emergencyException) {
 			System.Diagnostics.Trace.WriteLine($"LOG_WRITE_FAILURE | Primary={exception} | Emergency={emergencyException}");
 		}
-	}
-
-	private static void RotateLogIfNeeded(string path, int incomingBytes) {
-		if (!File.Exists(path) || new FileInfo(path).Length + incomingBytes <= MaximumLogBytes) return;
-		string directory = Path.GetDirectoryName(path)!;
-		string name = Path.GetFileNameWithoutExtension(path);
-		string extension = Path.GetExtension(path);
-		string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss-fff");
-		string archivePath = Path.Combine(directory, $"{name}_{timestamp}{extension}");
-		File.Move(path, archivePath);
 	}
 
 	private readonly record struct RuntimeLogEntry(string Path, string Line);
