@@ -415,6 +415,17 @@ public sealed class WeaponRepairAutomation {
 	// quả thật (2026-09-12, PID=22824): chuyến về bãi bị xoá sạch lúc ~09:43:54 mà repair.log không có dấu vết, phải
 	// dò chéo sang buff.log mới thấy "BUFF_CAST_CONFIRMED | Exclusive=True" lúc 09:43:53.836 rồi "Sửa đồ bắt đầu"
 	// lúc 09:43:54.051 — cách nhau 215ms.
+	// Automatic trip walking back to the training area (the Debug tab run is excluded: it is the owner's own command).
+	public bool IsReturningAutomatically => state == RepairState.Returning && !debugMode;
+
+	// Ends the walk back early as a completed trip once the character is inside the training area (owner rule 2026-10-11:
+	// no flagged route inside the area), and the caller clears the client route.
+	public void FinishReturnAtTraining(GameWindow game, Action<string>? log, string reason) {
+		if (!IsReturningAutomatically) return;
+		log?.Invoke($"Sửa đồ | dừng quay lại bãi sớm | {reason}");
+		Complete(game, log);
+	}
+
 	public void Cancel(GameWindow game, Action<string>? log, string reason) {
 		if (!IsBusy) return;
 		// Chuyến ĐÃ sửa xong mà bị huỷ trên đường về vẫn phải báo cho monitor.

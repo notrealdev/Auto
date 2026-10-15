@@ -25,8 +25,8 @@ internal static class GroundItemRecordDumpProbe {
 	private const int MaximumDumpedItems = 6;
 	private const int DwordsPerLine = 6;
 	// Vùng chữ tên nằm ở 0x7C..0x9F, đổ hex ra chỉ thành rác. Bỏ qua, tên đã in ở dòng đầu.
-	private const int NameRegionStart = 0x7C;
-	private const int NameRegionEnd = 0xA0;
+	private const int NameRegionStart = GameAddresses.Item.GroundName;
+	private const int NameRegionEnd = GameAddresses.Item.GroundQualityCodeA;
 
 	public static string Run(int processId) {
 		StringBuilder output = new();

@@ -96,7 +96,11 @@ public static class AutoFsSpecialItemClassifier {
 		"Tụ Tiên phủ",
 		"Tuyệt Tiên phủ",
 		"Hỗn Thiên phủ",
-		"Diệt Thần phủ"
+		"Diệt Thần phủ",
+		// Added 2026-10-11 (owner): a blue one was picked but never reached the UI feed, because only listed names count as
+		// a blue weapon there. loot-drops.log 2026-10-11 10:05:13 PID=16164: "Ly Cung phủ | AutoFsCategory=None | Color=Blue".
+		"Ly Cung phủ"
+		// "Trường Sinh Phủ" is left out on purpose (owner 2026-10-11): too low level to be worth it.
 	};
 
 	// Ba nhóm dưới đây TRƯỚC 2026-09-17 nhận diện bằng Contains trên một mẩu chuỗi, nên bắt nhầm hàng loạt món

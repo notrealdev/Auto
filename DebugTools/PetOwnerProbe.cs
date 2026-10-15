@@ -21,8 +21,8 @@ using Auto.Utils;
 public static class PetOwnerProbe {
 	private const string BuildStamp = "PET-OWNER-20260908-06";
 	private const int PetEntityType = 6;
-	private const int OwnerCharacterId = 0x0008;
-	private const int PetOwnerCharacterId = 0x429C;
+	private const int OwnerCharacterId = GameAddresses.Entity.OwnerCharacterId;
+	private const int PetOwnerCharacterId = GameAddresses.Entity.PetOwnerCharacterId;
 
 	public static string Run(int processId) {
 		StringBuilder output = new();

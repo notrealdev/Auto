@@ -14,6 +14,10 @@ public sealed class ReturnToTrainingAutomation {
 	private DateTime nextProgressLogUtc;
 
 	public bool IsBusy => state != ReturnToTrainingState.Idle;
+	public int DestinationMapId => destinationMapId;
+	// Death prepares the trip while still on the training map, so the destination map counts as reached only after the
+	// trip was seen on another map (town).
+	public bool HasLeftDestinationMap { get; private set; }
 
 	// Ghi nhớ chính xác bãi đang dùng trước khi xử lý trạng thái chết
 	public void Prepare(GameWindow game, GameSnapshot snapshot, Action<string>? log) {
@@ -37,6 +41,7 @@ public sealed class ReturnToTrainingAutomation {
 			return false;
 		}
 		if (!snapshot.Success) return true;
+		if (game.LastObservedMapId > 0 && game.LastObservedMapId != destinationMapId) HasLeftDestinationMap = true;
 		if (manualInputActive) {
 			orderQueue.InvalidateActiveCommand();
 			return true;
@@ -81,6 +86,7 @@ public sealed class ReturnToTrainingAutomation {
 		destinationRawX = 0;
 		destinationRawY = 0;
 		destinationName = "";
+		HasLeftDestinationMap = false;
 		nextProgressLogUtc = DateTime.MinValue;
 		orderQueue.Reset();
 	}

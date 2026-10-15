@@ -39,10 +39,10 @@ public static class NpcShopReader {
 			int shopId = reader.ReadInt32(IntPtr.Add(inventoryRoot, GameAddresses.Inventory.OpenShopId));
 			IntPtr catalog = IntPtr.Add(moduleBase, GameAddresses.Globals.ShopCatalog);
 			IntPtr rows = reader.ReadPointer32(catalog);
-			IntPtr records = reader.ReadPointer32(IntPtr.Add(catalog, 4));
-			int positionsPerRow = reader.ReadInt32(IntPtr.Add(catalog, 8));
-			int rowCount = reader.ReadInt32(IntPtr.Add(catalog, 0xC));
-			int recordCount = reader.ReadInt32(IntPtr.Add(catalog, 0x10));
+			IntPtr records = reader.ReadPointer32(IntPtr.Add(catalog, GameAddresses.Shop.CatalogRecords));
+			int positionsPerRow = reader.ReadInt32(IntPtr.Add(catalog, GameAddresses.Shop.CatalogPositionsPerRow));
+			int rowCount = reader.ReadInt32(IntPtr.Add(catalog, GameAddresses.Shop.CatalogRowCount));
+			int recordCount = reader.ReadInt32(IntPtr.Add(catalog, GameAddresses.Shop.CatalogRecordCount));
 			if (rows == IntPtr.Zero || records == IntPtr.Zero || rowCount <= 0 || rowCount > MaximumRows || positionsPerRow <= 0 || positionsPerRow > MaximumPositions) {
 				return Fail($"Bảng cửa hàng không hợp lệ | Rows={rowCount} | PerRow={positionsPerRow}.", out detail);
 			}

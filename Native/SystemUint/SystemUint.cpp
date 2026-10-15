@@ -121,10 +121,12 @@ namespace {
 	// lúc đang hiện hộp "Khuyến cáo" thì ô của hộp "Thông tin phiên bản" đã khác 0, và sau khi lệnh 282 chạy xong
 	// (màn hình đã sang trang đăng nhập, có ảnh chụp) ô của hộp "Chọn máy chủ" vẫn khác 0. Ba ô này KHÔNG loại trừ
 	// nhau nên không dùng làm chỉ báo bước được. Xem ghi chú ở Login/LoginAutomation.cs về hệ quả còn lại.
-	constexpr int NativeBuildStamp = 99990017;
+	constexpr int NativeBuildStamp = 99990018;
 	constexpr int AuditEntryCount = 35;
 	constexpr uint16_t AttackTargetType = 0x87;
-	constexpr size_t MaximumScriptLength = 199;
+	// The client chat input box allows 400 bytes (field 0x190 next to the current length, PID 4832 2026-10-13); two item
+	// links (152 bytes each) and a map link (32 bytes) do not fit in the old AutoFS limit of 199.
+	constexpr size_t MaximumScriptLength = 400;
 
 	HMODULE moduleHandle = nullptr;
 	HHOOK injectionHook = nullptr;

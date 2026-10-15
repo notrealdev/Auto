@@ -10,7 +10,7 @@ using Auto.Utils;
 // và xác nhận đúng số thật của cả 4 loại dược phẩm. Đọc int32 thì byte cao là rác nên phải dùng u16.
 //
 // Đếm trên cả 3 container: túi chính, ô trang bị nhanh và rương thứ 2. Offset của hai container sau đã được
-// sửa lại ngày 2026-09-07 theo tool Debug "Probe dò container túi" - xem chú thích ở GameAddresses.Inventory.
+// sửa lại ngày 2026-09-07 theo tool Debug "Probe dò container túi" - xem nhóm Inventory trong Utils/GameAddresses.md.
 // Log POTION_COUNT_BREAKDOWN in số ô đếm được theo từng container để phát hiện sớm nếu client lại đổi layout.
 internal sealed class InventoryPotionCounter {
 	private const int MaximumNameLength = 64;

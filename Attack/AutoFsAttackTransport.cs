@@ -2,6 +2,7 @@ namespace Auto.Attack;
 
 using System.IO;
 using System.Runtime.InteropServices;
+using Auto.Market;
 
 internal sealed class AutoFsAttackTransport {
 	private const string SourceLibraryName = "SystemUint.Source.dll";
@@ -304,7 +305,7 @@ internal sealed class AutoFsAttackTransport {
 			error = "Master automation switch is disabled.";
 			return false;
 		}
-		if (message.Length == 0 || message.Length > 199) {
+		if (message.Length == 0 || message.Length > ChatEngine.MaximumMessageLength) {
 			error = $"Invalid message length: {message.Length}.";
 			return false;
 		}

@@ -42,6 +42,8 @@ public static class AccountEngineCoordinator {
 	private static readonly ConcurrentDictionary<IntPtr, DateTime> nextHeartbeatByWindow = new();
 	// Chống lặp dòng FAIL của lệnh 38: chỉ ghi lại khi nội dung lỗi đổi.
 	private static readonly ConcurrentDictionary<IntPtr, string> deathSendFailureByWindow = new();
+	// Master switch of the previous tick, to run the release steps exactly once on the on->off edge.
+	private static readonly ConcurrentDictionary<IntPtr, bool> masterEnabledByWindow = new();
 
 	// Ngưỡng đứng im trước khi khôi phục. Hạ từ 20 xuống 10 giây theo yêu cầu phản ứng nhanh khi nhân vật kẹt ngoài bãi.
 	private const int StationaryRestartSeconds = 10;
@@ -59,7 +61,8 @@ public static class AccountEngineCoordinator {
 	// bình thường đều dưới 1 phút. Chỉ 8 quãng đạt 2 phút trở lên, và 5 trong số đó là Player=0/0 tức lỗi đọc
 	// snapshot. Hai quãng đứng im thật là 135 phút và 89 phút, đều của chính vụ kẹt này. Lấy 5 phút: trên xa mọi
 	// quãng hợp lệ đo được, dưới xa mọi quãng kẹt thật.
-	private const int StuckSupervisorMinutes = 5;
+	// Owner 2026-10-13: lowered to 60 s; selling and repairing at an NPC never take 30 s.
+	private const int StuckSupervisorSeconds = 60;
 	// Coi là "vẫn đứng nguyên chỗ" nếu chưa rời khỏi bán kính này. Không so khớp toạ độ tuyệt đối như
 	// ShouldRestartStationaryAttack: trong vụ 22824 nhân vật trôi 14 raw (0,05 ô) nên phép so tuyệt đối cắt quãng kẹt
 	// 219 phút thành hai mảnh 135 và 89 — đủ để một bộ đếm dựa trên so khớp tuyệt đối bị reset oan.
@@ -78,15 +81,10 @@ public static class AccountEngineCoordinator {
 	private static readonly ConcurrentDictionary<IntPtr, StuckAnchor> stuckAnchorByWindow = new();
 	// Máu của nhịp trước, để phân biệt "đang hồi máu" với "đang bị đánh" — xem chỗ dùng trong lớp giám sát đứng im.
 	private static readonly ConcurrentDictionary<IntPtr, int> lastStuckHpByWindow = new();
+	// Bag check for HP potions while walking from town to the area (RequestDoctorWhenOutOfHp).
+	private const int ReturnPotionCheckSeconds = 2;
+	private static readonly ConcurrentDictionary<IntPtr, DateTime> nextReturnPotionCheckByWindow = new();
 
-	// Trốn boss bị KẸT: đang trốn mà vị trí xê dịch không quá EliteRetreatStuckRadius trong EliteRetreatStuckSeconds.
-	// Chỉ lúc đó Buff mới được heal trong vùng cấm (chủ dự án chốt 2026-09-24). Số đo từ movement.log PID=2228: chạy
-	// bình thường ~495 raw trong 1,7 giây (23:14:27 -> 23:14:28), kẹt thật chỉ xê dịch ~16 raw trong 5 giây
-	// (23:14:52 -> 23:14:57, 63941/92762 -> 63939/92746) — 64 raw trong 3 giây tách được hai ca.
-	private const int EliteRetreatStuckSeconds = 3;
-	private const int EliteRetreatStuckRadius = 64;
-	private static readonly ConcurrentDictionary<IntPtr, AttackPositionState> eliteRetreatAnchorByWindow = new();
-	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatStuckLoggedByWindow = new();
 	// Mốc bắt đầu đợt trốn boss hiện tại, dùng RIÊNG cho việc chặn ANTI_AFK.
 	private static readonly ConcurrentDictionary<IntPtr, DateTime> eliteRetreatAntiAfkSinceByWindow = new();
 	// Trốn boss được miễn ANTI_AFK trong bấy nhiêu lâu. Dài hơn hẳn StationaryRestartSeconds (10s) vì một chặng trốn
@@ -94,7 +92,13 @@ public static class AccountEngineCoordinator {
 	// được đập worker như cũ.
 	private const int EliteRetreatAntiAfkGraceSeconds = 60;
 
+	// Diagnostic only (owner 2026-10-15: "Đệ chết mà nhân vật đứng im"). No flow waits on the pet in code, and the stationary
+	// time in ANTI_AFK lines is not reliable, so while the pet is missing log which flow holds the character every few seconds.
+	private const int PetAbsenceLogSeconds = 5;
+	private static readonly ConcurrentDictionary<IntPtr, PetAbsenceState> petAbsenceByWindow = new();
+
 	private readonly record struct AttackPositionState(int X, int Y, DateTime SinceUtc);
+	private readonly record struct PetAbsenceState(DateTime NextCheckUtc, DateTime AbsentSinceUtc, bool Logged);
 
 	// Dọn toàn bộ trạng thái theo cửa sổ khi cửa sổ game biến mất.
 	//
@@ -118,15 +122,15 @@ public static class AccountEngineCoordinator {
 		deathUndetectedLoggedByWindow.TryRemove(handle, out _);
 		addressAuditRanByWindow.TryRemove(handle, out _);
 		attackEnabledByWindow.TryRemove(handle, out _);
+		masterEnabledByWindow.TryRemove(handle, out _);
 		lastReturnRequestFailureByWindow.TryRemove(handle, out _);
 		nextHeartbeatByWindow.TryRemove(handle, out _);
 		deathSendFailureByWindow.TryRemove(handle, out _);
 		stuckAnchorByWindow.TryRemove(handle, out _);
 		lastStuckHpByWindow.TryRemove(handle, out _);
 		eliteRetreatAntiAfkSinceByWindow.TryRemove(handle, out _);
-		eliteRetreatAnchorByWindow.TryRemove(handle, out _);
-		eliteRetreatStuckLoggedByWindow.TryRemove(handle, out _);
 		outsideAreaSinceByWindow.TryRemove(handle, out _);
+		nextReturnPotionCheckByWindow.TryRemove(handle, out _);
 	}
 
 	public static void TickOne(GameWindow game) {
@@ -139,8 +143,13 @@ public static class AccountEngineCoordinator {
 			// thứ mà công cụ chẩn đoán phải tránh. Mở cổng ở đây an toàn vì khi Auto tổng tắt thì không engine nào
 			// khác được tick, chỉ luồng sửa đồ chạy tay là gửi lệnh.
 			bool debugRepairRun = game.WeaponRepairAutomation.IsDebugRun;
-			// Gồm cả lối tự động (LowHpEngine kích khi về thành hết thuốc), không chỉ nút bấm tay tab Debug.
-			bool doctorPurchaseActive = game.DoctorPurchaseAutomation.IsDebugRun || game.DoctorPurchaseAutomation.IsAutomaticRun;
+			// Must run before SetAutomationEnabled below closes the command gate: clearing the client route is a command.
+			bool masterWasEnabled = masterEnabledByWindow.TryGetValue(game.Handle, out bool previousMasterEnabled) && previousMasterEnabled;
+			masterEnabledByWindow[game.Handle] = masterEnabled;
+			if (masterWasEnabled && !masterEnabled) ReleaseClientOnMasterOff(game);
+			// The automatic trip (LowHpEngine, back in town without potions) counts only while the master switch is on (owner
+			// 2026-10-11: master off stops it at once); the Debug tab button runs either way.
+			bool doctorPurchaseActive = game.DoctorPurchaseAutomation.IsDebugRun || (masterEnabled && game.DoctorPurchaseAutomation.IsAutomaticRun);
 			// KhonTienRouteProbe and MonsterPathProbe move only while the master switch is off; the early return below keeps
 			// every other engine idle.
 			game.AutoFsActionGate.SetAutomationEnabled(masterEnabled || debugRepairRun || doctorPurchaseActive || KhonTienRouteProbe.IsWalking(game.ProcessId) || MonsterPathProbe.IsRunning(game.ProcessId));
@@ -176,6 +185,8 @@ public static class AccountEngineCoordinator {
 			Action<string> accountTargetViolationLog = text => DebugLog.AddTargetViolationForProcess(game.ProcessId, text);
 			Action<string> accountTargetMovementLog = text => DebugLog.AddTargetMovementForProcess(game.ProcessId, text);
 			RefreshMapState(game, accountLog);
+			// Here, before every early return below, so incoming chat keeps reaching the chat box while Buff, death or a trip holds control.
+			game.ChatInbox.Tick(game, accountLog);
 
 			bool attackEnabled = game.AttackSettings.Enabled;
 			// Giữ riêng giá trị ô checkbox: attackEnabled bên dưới bị AND thêm layout.AttackReady, nên dùng nó để
@@ -256,7 +267,9 @@ public static class AccountEngineCoordinator {
 			// Hồi thành phù, Về thành, Sửa đồ, Buff... đều không chặn được nó. Chỉ gửi một lệnh mua, không giữ quyền điều khiển.
 			// Hồi phục (dùng thuốc khi HP/MP dưới ngưỡng) cùng vị trí và cùng lý do với mua nhanh: không luồng nào được chặn nó.
 			if (masterEnabled && layout.PlayerReady && layout.InventoryReady) game.RecoveryEngine.Tick(game.ProcessId, game.Handle, snapshot, accountLog);
-			if (masterEnabled && layout.PlayerReady && layout.InventoryReady) game.QuickBuyEngine.Tick(game.ProcessId, game.Handle, accountLog);
+			// Except inside a town, where it does not work (BốCủaPhiDương 2026-10-15 16:01-16:03: three QUICK_BUY_NO_INCREASE on
+			// map 20, QUICK_BUY_OK again right after reaching map 22). Nothing else stops it: it never moves the character (owner).
+			if (masterEnabled && layout.PlayerReady && layout.InventoryReady && !IsInTown(game)) game.QuickBuyEngine.Tick(game.ProcessId, game.Handle, accountLog);
 
 			// Đặt NGAY ĐÂY, trước mọi nhánh return của từng luồng. Mọi nhánh bên dưới đều có đường thoát sớm
 			// (Hồi thành phù, tắt Auto tổng, chết, Buff, Tự lên bãi, Di chuyển bãi), nên đặt sau bất kỳ nhánh nào
@@ -300,6 +313,13 @@ public static class AccountEngineCoordinator {
 					accountLog($"LOW_HP_RETURN_TO_TRAINING_REQUESTED | Hp={snapshot.Hp}/{snapshot.MaxHp} | MapId={game.LastObservedMapId}");
 					game.ReturnToTrainingAutomation.Prepare(game, snapshot, accountLog);
 				}
+			}
+			// The check above looks at the bag once, on arrival in town. BốCủaPhiDương 2026-10-15: one HP potion quick-bought at
+			// 16:01:08 was still there at 16:01:12.715, so the trip went straight to the area, the potion was used at 16:01:13
+			// and the character stood in Tây Kỳ with an empty bag until the owner moved it by hand. Keep checking until the
+			// trip reaches the area map; DoctorPurchaseAutomation then takes control (the doctorPurchaseActive branch cancels the trip).
+			if (game.ReturnToTrainingAutomation.IsBusy && game.LastObservedMapId != game.ReturnToTrainingAutomation.DestinationMapId) {
+				RequestDoctorWhenOutOfHp(game, snapshot, layout, accountLog);
 			}
 
 			// Monitor độ bền tắt theo ô Đánh: luật là "bật Đánh -> đồ hỏng -> đi sửa", nên tắt Đánh thì không có gì để
@@ -440,23 +460,23 @@ public static class AccountEngineCoordinator {
 			// (movement.log + buff.log, PID=2228 ZALO0988777666): 23:14:57.459 ELITE_RETREAT_BUFF_BLOCK_EXPIRED khi
 			// Distance=121; 23:15:16.747 ELITE_DETECTED ToPlayer=376 mà cùng lúc BUFF_CAST_CONFIRMED Target=Owner
 			// Exclusive=True, heal đứng im tới 23:15:20. Cả ngày 2026-09-24 có 58 lần Buff giành quyền kiểu này.
-			// Ngoại lệ DUY NHẤT: trốn bị kẹt (xem EliteRetreatStuckSeconds) thì cho Buff heal tại chỗ, vì đứng im cạnh boss
-			// mà không heal thì chắc chết. Đường heal này đã chạy được lúc trốn: buff.log PID=2228 23:15:16-23:15:20 HP
-			// 101 -> 418 với Target=Owner Exclusive=True.
-			bool eliteRetreatStuck = IsEliteRetreatStuck(game, snapshot, eliteRetreatActive, accountLog);
+			// No exception any more (owner 2026-10-13: "thấy boss xung quanh là phải chạy"). The old "retreat stuck 3 s ->
+			// Buff heals in place" branch stopped AttackEngine, i.e. the retreat worker itself, and left the character
+			// standing next to the boss: 265 ELITE_RETREAT_STUCK_HEAL_ALLOWED in movement.log 16:47-18:35. A blocked retreat
+			// now turns to another direction inside Attack/Engine.cs instead; low HP is still covered by LowHpEngine.
 			// Đệ không được làm nhân vật đứng im (chủ dự án chốt 2026-09-25): đang trốn boss, sửa đồ (đang chạy hoặc đang chờ),
 			// tự lên bãi hay di chuyển bãi thì KHÔNG heal Đệ. Heal Đệ giữ quyền điều khiển độc quyền nên nhánh bên dưới sẽ huỷ
 			// đúng các luồng đó và dừng Đánh. Heal Chủ không bị ảnh hưởng.
 			bool petHealAllowed = !eliteRetreatActive
 				&& !game.WeaponRepairAutomation.IsBusy && !(game.WeaponRepairMonitor.HasPendingRepairRequest && layout.RepairReady)
 				&& !game.ReturnToTrainingAutomation.IsBusy && !game.ConfiguredTrainingMovementAutomation.IsBusy;
-			if (eliteRetreatActive && !eliteRetreatStuck) {
+			game.AutoFsActionGate.SetLootPausedForElite(eliteRetreatActive);
+			if (eliteRetreatActive) {
 				game.SupportEngine.ReleaseForHigherPriority();
 			} else if (! game.SupportEngine.Tick(game.ProcessId, game.Handle, snapshot, attackEnabled, AreSkillsAllowedHere(game), petHealAllowed, (int rawX, int rawY, out string result) => AutoFsMovementCommand.TryWalkTo(game, rawX, rawY, out result), accountLog)) {
-				// Buff không cần giữ quyền (heal xong hoặc máu còn đủ): trả luồng trốn thêm một lượt 3 giây để thử đi
-				// tiếp, thay vì nhịp sau lại coi là kẹt ngay vì mốc vị trí đã cũ.
-				if (eliteRetreatStuck) eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, DateTime.UtcNow);
+				// Buff does not need control (healed, or HP high enough).
 			} else {
+				LogPetAbsence(game, snapshot, attackEnabled, eliteRetreatActive, true, accountLog);
 				game.ReturnToTrainingAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.ConfiguredTrainingMovementAutomation.Cancel(accountLog, "Buff hỗ trợ giữ quyền điều khiển");
 				game.WeaponRepairAutomation.Cancel(game, accountLog, "Buff hỗ trợ giữ quyền điều khiển");
@@ -467,6 +487,8 @@ public static class AccountEngineCoordinator {
 				game.LootEngine.Stop();
 				return;
 			}
+			LogPetAbsence(game, snapshot, attackEnabled, eliteRetreatActive, false, accountLog);
+			if (attackEnabled && !manualInputActive) HandOverReturnInsideArea(game, snapshot, accountLog);
 			game.ChatEngine.Tick(game.ProcessId, game.Handle, accountLog);
 
 			// Chuyến mua ở Đại Phu (chạy tay HOẶC tự động từ LowHpEngine) giữ quyền độc quyền: huỷ mọi luồng di chuyển/sửa
@@ -518,7 +540,7 @@ public static class AccountEngineCoordinator {
 				// đó (Mục 4 CLAUDE.md). Ghi thêm trạng thái Đệ ngay tại đúng thời điểm coordinator xác nhận đứng im,
 				// để lần sau đối chiếu trực tiếp thay vì suy luận gián tiếp qua buff.log như lần này.
 				Auto.Support.PetHealthReading petReading = Auto.Support.PetHealthReader.Read(game.ProcessId);
-				string reason = $"ANTI_AFK_POSITION_UNCHANGED_{StationaryRestartSeconds}_SECONDS | StationaryMilliseconds={stationaryMilliseconds} | Position={snapshot.X}/{snapshot.Y} | RecentAttack={recentAttack} | MovementBusy={movementRecoveryPending} | Đệ={(petReading.Success ? (petReading.Present ? "CÓ" : "KHÔNG_CÓ") : "KHÔNG_ĐỌC_ĐƯỢC")}";
+				string reason = $"ANTI_AFK_POSITION_UNCHANGED_{StationaryRestartSeconds}_SECONDS | StationaryMilliseconds={stationaryMilliseconds} | Position={snapshot.X}/{snapshot.Y} | RecentAttack={recentAttack} | MovementBusy={movementRecoveryPending} | Đệ={(petReading.Success ? (petReading.Present ? "CÓ" : "KHÔNG_CÓ") : "KHÔNG_ĐỌC_ĐƯỢC")} | ĐíchClient={snapshot.MoveTargetX}/{snapshot.MoveTargetY} | TúiCònHP={DoctorPurchaseAutomation.BagHasPotion(game.ProcessId, DoctorPurchaseAutomation.ResolveHpPotionName(game.BasicSettings))}";
 				string recoveredFlow;
 				if (game.ReturnToTrainingAutomation.IsBusy) {
 					game.ReturnToTrainingAutomation.Recover(accountLog, reason);
@@ -534,6 +556,9 @@ public static class AccountEngineCoordinator {
 					game.AttackEngine.Stop();
 					recoveredFlow = "RETURN_TO_TRAINING_CENTER";
 				} else {
+					// Inside the area nothing walks the character back to the center (owner rule 2026-10-11): the unflagged
+					// navigator route 331 tried here showed the flag too and did not get 1đêm2nháy out of the pocket at
+					// 61854/90300 (anti-afk.log 17:41:06-17:42:36, three HẾT_GIỜ without moving).
 					game.AttackEngine.Stop();
 					recoveredFlow = "AUTO_ATTACK";
 				}
@@ -710,7 +735,7 @@ public static class AccountEngineCoordinator {
 			return;
 		}
 		double stuckMinutes = (now - anchor.SinceUtc).TotalMinutes;
-		if (stuckMinutes < StuckSupervisorMinutes) return;
+		if ((now - anchor.SinceUtc).TotalSeconds < StuckSupervisorSeconds) return;
 
 		// Đặt lại mốc TRƯỚC khi cứu, để nếu vẫn kẹt thì lần cứu sau cách đúng một chu kỳ nữa chứ không bắn mỗi nhịp.
 		stuckAnchorByWindow[game.Handle] = new StuckAnchor(snapshot.X, snapshot.Y, now);
@@ -788,35 +813,31 @@ public static class AccountEngineCoordinator {
 		log($"HEARTBEAT_RUNTIME_LAYOUT | Fingerprint={layout.Fingerprint} | Player={layout.PlayerReady} | Attack={layout.AttackReady} | Movement={layout.MovementReady} | Loot={layout.LootReady} | Sale={layout.SaleReady} | Repair={layout.RepairReady} | Gate={state}");
 	}
 
+	// The master-off gate only stops Auto's own engines; orders already handed to the client keep running. Command 300 leaves
+	// +0xD7A0 = 1 and the client chases its target until it dies (ClientAttackCanceller), and a flagged route 32/0/5 keeps
+	// walking in the client navigator. Clear both once, while the command gate is still open,
+	// and drop the trips that would otherwise resume or keep ticking (repair/sale, automatic doctor purchase).
+	// Logged through AddDebugForProcess: the account's own log is switched off together with the master switch.
+	private static void ReleaseClientOnMasterOff(GameWindow game) {
+		Action<string> log = text => DebugLog.AddDebugForProcess(game.ProcessId, text);
+		string reason = "Tắt Auto tổng";
+		string attack = ClientAttackCanceller.Cancel(game);
+		bool routeOwned = game.FlaggedRouteActive
+			|| game.ReturnToTrainingAutomation.IsBusy || game.ConfiguredTrainingMovementAutomation.IsBusy
+			|| game.WeaponRepairAutomation.IsBusy || game.DoctorPurchaseAutomation.IsBusy;
+		string route = "KHÔNG_CẦN";
+		if (routeOwned) route = Auto.Movement.AutoFsMovementCommand.TryClearFlaggedRoute(game, out string clearResult) ? clearResult : $"LỖI({clearResult})";
+		bool repairBusy = game.WeaponRepairAutomation.IsBusy && !game.WeaponRepairAutomation.IsDebugRun;
+		if (repairBusy) game.WeaponRepairAutomation.Cancel(game, log, reason);
+		bool doctorCancelled = game.DoctorPurchaseAutomation.CancelAutomatic(log, reason);
+		log($"MASTER_OFF_RELEASE | PID={game.ProcessId} | {attack} | XoáTuyến={route} | SửaĐồ={(repairBusy ? "Huỷ" : "KHÔNG_BẬN")} | ĐạiPhu={(doctorCancelled ? "Huỷ" : "KHÔNG_BẬN")} | Map={game.LastObservedMapId}");
+	}
+
 	private static void LogAutoGate(GameWindow game, bool masterEnabled, bool attackEnabled, bool lootEnabled, bool repairEnabled, bool saleEnabled) {
 		string gate = $"Master={masterEnabled} | Attack={attackEnabled} | Loot={lootEnabled} | Repair={repairEnabled} | Sale={saleEnabled}";
 		if (lastAutoGateByWindow.TryGetValue(game.Handle, out string? previousGate) && previousGate == gate) return;
 		lastAutoGateByWindow[game.Handle] = gate;
 		DebugLog.AddForProcess(game.ProcessId, "Auto chưa chạy | " + gate + " | Cần bật Auto tổng và ít nhất một module.");
-	}
-
-	// Trốn boss có đang bị kẹt không. Mốc vị trí dời theo nhân vật mỗi khi nó đi được quá EliteRetreatStuckRadius, nên
-	// "kẹt" nghĩa là đứng trong vòng đó liên tục EliteRetreatStuckSeconds. Ghi log một lần lúc bắt đầu kẹt.
-	private static bool IsEliteRetreatStuck(GameWindow game, GameSnapshot snapshot, bool retreatActive, Action<string> accountLog) {
-		if (! retreatActive) {
-			eliteRetreatAnchorByWindow.TryRemove(game.Handle, out _);
-			return false;
-		}
-		DateTime now = DateTime.UtcNow;
-		AttackPositionState anchor = eliteRetreatAnchorByWindow.GetOrAdd(game.Handle, new AttackPositionState(snapshot.X, snapshot.Y, now));
-		long dx = snapshot.X - anchor.X;
-		long dy = snapshot.Y - anchor.Y;
-		if (dx * dx + dy * dy > (long)EliteRetreatStuckRadius * EliteRetreatStuckRadius) {
-			eliteRetreatAnchorByWindow[game.Handle] = new AttackPositionState(snapshot.X, snapshot.Y, now);
-			return false;
-		}
-		double stuckSeconds = (now - anchor.SinceUtc).TotalSeconds;
-		if (stuckSeconds < EliteRetreatStuckSeconds) return false;
-		// Mốc mới (nhân vật đi được hoặc hết đợt trốn) thì SinceUtc đổi, nên so với mốc đã log là biết đợt kẹt mới.
-		if (eliteRetreatStuckLoggedByWindow.TryGetValue(game.Handle, out DateTime loggedSince) && loggedSince == anchor.SinceUtc) return true;
-		eliteRetreatStuckLoggedByWindow[game.Handle] = anchor.SinceUtc;
-		accountLog($"ELITE_RETREAT_STUCK_HEAL_ALLOWED | PID={game.ProcessId} | Player={snapshot.X}/{snapshot.Y} | Seconds={stuckSeconds:F1} | Radius={EliteRetreatStuckRadius} | Action=Trốn boss bị kẹt, cho Buff heal tại chỗ");
-		return true;
 	}
 
 	// Đợt trốn boss này còn trong thời gian được miễn ANTI_AFK hay không.
@@ -872,6 +893,80 @@ public static class AccountEngineCoordinator {
 		DebugLog.AddClientEvent($"ACCOUNT_BACK_IN_WORLD | PID={game.ProcessId} | {game.CharacterName} | Đã ở ngoài game {minutes:F1} phút rồi vào lại");
 	}
 
+	// Same training point IsOutsideTrainingArea measures against: Mê cung / Thành thị / Tân thủ first, then "Quanh điểm".
+	private static bool TryGetTrainingPoint(GameWindow game, out int mapId, out int rawX, out int rawY) {
+		if (ConfiguredTrainingMovementAutomation.TryResolveTrainingPoint(game, out mapId, out rawX, out rawY)) return true;
+		Settings settings = game.AttackSettings;
+		mapId = settings.CenterMapId;
+		rawX = settings.CenterX;
+		rawY = settings.CenterY;
+		return settings.UseCenterPosition && rawX > 0 && rawY > 0;
+	}
+
+	// Walking back to the training center (sale/repair, doctor purchase, Tự lên bãi, Di chuyển bãi): once the character is
+	// inside the training area, end the walk and clear the client route at once. Owner rules 2026-10-11: the flagged route
+	// is never used inside the area, and a route left running keeps dragging the character toward the flag while it fights.
+	// Before, these flows held control until they reached the center itself, and the route was cleared only after that.
+	// The first version of this check also waited for a monster in the area; that left the flag up whenever none was there.
+	private static void HandOverReturnInsideArea(GameWindow game, GameSnapshot snapshot, Action<string> log) {
+		bool repairReturning = game.WeaponRepairAutomation.IsReturningAutomatically;
+		bool doctorReturning = game.DoctorPurchaseAutomation.IsReturningAutomatically;
+		bool returnToTraining = game.ReturnToTrainingAutomation.IsBusy;
+		bool trainingMovement = game.ConfiguredTrainingMovementAutomation.IsBusy;
+		if (!repairReturning && !doctorReturning && !returnToTraining && !trainingMovement) return;
+		if (!TryGetTrainingPoint(game, out int centerMapId, out int centerX, out int centerY)) {
+			// No training area ("Quanh điểm" off, no training mode): "Tự lên bãi" only brings the character onto the saved
+			// training map and stops there, never walks it to a point (owner 2026-10-14). Without this it kept the flagged
+			// route all the way to the saved position inside the area.
+			int returnMapId = game.ReturnToTrainingAutomation.DestinationMapId;
+			if (!returnToTraining || returnMapId <= 0 || game.LastObservedMapId != returnMapId || !game.ReturnToTrainingAutomation.HasLeftDestinationMap) return;
+			game.ReturnToTrainingAutomation.Cancel(log, "Đã vào map bãi, Quanh điểm tắt");
+			string mapRouteClear = Auto.Movement.AutoFsMovementCommand.TryClearFlaggedRoute(game, out string mapClearResult) ? mapClearResult : $"LỖI({mapClearResult})";
+			log($"RETURN_HANDOVER_INSIDE_AREA | PID={game.ProcessId} | Luồng=TựLênBãi | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | Lý do=Đã vào map bãi, Quanh điểm tắt | XoáTuyến={mapRouteClear}");
+			return;
+		}
+		if (centerMapId > 0 && game.LastObservedMapId != centerMapId) return;
+		double distanceToCenter = GetRawDistance(centerX, centerY, snapshot.X, snapshot.Y);
+		if (distanceToCenter > Math.Max(game.AttackSettings.Range, 1)) return;
+		string reason = $"Đã vào bãi, cách tâm {distanceToCenter:F0}";
+		if (repairReturning) game.WeaponRepairAutomation.FinishReturnAtTraining(game, log, reason);
+		if (doctorReturning) game.DoctorPurchaseAutomation.FinishReturnAtTraining(game, log, reason);
+		if (returnToTraining) game.ReturnToTrainingAutomation.Cancel(log, reason);
+		if (trainingMovement) game.ConfiguredTrainingMovementAutomation.Cancel(log, reason);
+		string routeClear = Auto.Movement.AutoFsMovementCommand.TryClearFlaggedRoute(game, out string clearResult) ? clearResult : $"LỖI({clearResult})";
+		string flows = string.Join(",", new[] { repairReturning ? "SửaBán" : "", doctorReturning ? "ĐạiPhu" : "", returnToTraining ? "TựLênBãi" : "", trainingMovement ? "DiChuyểnBãi" : "" }.Where(flow => flow.Length > 0));
+		log($"RETURN_HANDOVER_INSIDE_AREA | PID={game.ProcessId} | Luồng={flows} | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | Tâm={centerX}/{centerY} | CáchTâm={distanceToCenter:F0} | Range={game.AttackSettings.Range} | XoáTuyến={routeClear}");
+	}
+
+	// Every PetAbsenceLogSeconds: when the pet has been missing since the previous check, log what the character is doing.
+	// Only a successful read without the pet counts; a failed read changes nothing.
+	private static void LogPetAbsence(GameWindow game, GameSnapshot snapshot, bool attackEnabled, bool eliteRetreatActive, bool buffHolding, Action<string> log) {
+		if (! attackEnabled) {
+			petAbsenceByWindow.TryRemove(game.Handle, out _);
+			return;
+		}
+		DateTime now = DateTime.UtcNow;
+		PetAbsenceState state = petAbsenceByWindow.GetOrAdd(game.Handle, new PetAbsenceState(DateTime.MinValue, DateTime.MinValue, false));
+		if (now < state.NextCheckUtc) return;
+		DateTime nextCheckUtc = now.AddSeconds(PetAbsenceLogSeconds);
+		Auto.Support.PetHealthReading pet = Auto.Support.PetHealthReader.Read(game.ProcessId);
+		if (! pet.Success) {
+			petAbsenceByWindow[game.Handle] = state with { NextCheckUtc = nextCheckUtc };
+			return;
+		}
+		if (pet.Present) {
+			if (state.Logged) log($"PET_ABSENT_END | PID={game.ProcessId} | KhôngCóĐệ={(now - state.AbsentSinceUtc).TotalSeconds:F0}s | ĐệHp={pet.CurrentHp}/{pet.MaximumHp} | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y}");
+			petAbsenceByWindow[game.Handle] = new PetAbsenceState(nextCheckUtc, DateTime.MinValue, false);
+			return;
+		}
+		if (state.AbsentSinceUtc == DateTime.MinValue) {
+			petAbsenceByWindow[game.Handle] = new PetAbsenceState(nextCheckUtc, now, false);
+			return;
+		}
+		petAbsenceByWindow[game.Handle] = new PetAbsenceState(nextCheckUtc, state.AbsentSinceUtc, true);
+		log($"PET_ABSENT_STATE | PID={game.ProcessId} | KhôngCóĐệ={(now - state.AbsentSinceUtc).TotalSeconds:F0}s | ViTri=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y} | HP={snapshot.Hp}/{snapshot.MaxHp} | ĐánhGầnĐây={game.AttackEngine.HasRecentAttack(TimeSpan.FromSeconds(5))} | TránhBoss={eliteRetreatActive} | BuffGiữQuyền={buffHolding} | VềBãi={game.ReturnToTrainingAutomation.IsBusy} | DiChuyểnBãi={game.ConfiguredTrainingMovementAutomation.IsBusy} | SửaĐồ={game.WeaponRepairAutomation.IsBusy} | AttackState={game.AttackEngine.GetDiagnosticState()} | ĐệChiTiết={pet.Detail}");
+	}
+
 	private static bool ShouldRestartStationaryAttack(IntPtr gameWindow, GameSnapshot snapshot, out int stationaryMilliseconds) {
 		stationaryMilliseconds = 0;
 		DateTime now = DateTime.UtcNow;
@@ -913,6 +1008,29 @@ public static class AccountEngineCoordinator {
 	// Giao cho ReturnToTrainingAutomation đưa nhân vật về đúng bãi đã lưu: nó đi một chuyến rồi tự dừng và đi được xuyên map.
 	// Prepare tự chặn khi đang bận nên không chồng lệnh. Nếu không giải được đích thì ghi rõ lý do (chỉ một lần cho tới khi
 	// nội dung đổi) thay vì im lặng để nhân vật kẹt như trước.
+	// Town maps as listed by the owner 2026-10-15: the first seven entries of the Di ngoại phù menu (TalismanDestinationCatalog)
+	// — Phong Thần đài, Diêu Trì, Tây Kỳ, Triều Ca, Sùng Thành Doanh, Ngọc Hư Cung, Xi Vưu Mộ. Plus whatever map the talisman
+	// took this character to in this run.
+	private static readonly HashSet<int> TownMapIds = [1, 52, 20, 21, 2, 3, 4];
+
+	private static bool IsInTown(GameWindow game) {
+		int mapId = game.LastObservedMapId;
+		return mapId > 0 && (TownMapIds.Contains(mapId) || mapId == game.LowHpEngine.TownMapId);
+	}
+
+	// Same conditions as the arrival check (LOW_HP_DOCTOR_PURCHASE_REQUESTED), read every ReturnPotionCheckSeconds: each read
+	// snapshots the whole bag.
+	private static void RequestDoctorWhenOutOfHp(GameWindow game, GameSnapshot snapshot, RuntimeLayout layout, Action<string> log) {
+		DateTime now = DateTime.UtcNow;
+		if (nextReturnPotionCheckByWindow.TryGetValue(game.Handle, out DateTime nextCheckUtc) && now < nextCheckUtc) return;
+		nextReturnPotionCheckByWindow[game.Handle] = now.AddSeconds(ReturnPotionCheckSeconds);
+		if (!game.BasicSettings.EnableQuickBuyAtDoctor || !layout.RepairReady || game.DoctorPurchaseAutomation.IsBusy || game.DoctorPurchaseAutomation.IsOnFailureCooldown) return;
+		string hpPotion = DoctorPurchaseAutomation.ResolveHpPotionName(game.BasicSettings);
+		if (DoctorPurchaseAutomation.BagHasPotion(game.ProcessId, hpPotion)) return;
+		string doctorStatus = game.DoctorPurchaseAutomation.RequestAutomaticRun();
+		log($"RETURN_NO_HP_DOCTOR_PURCHASE_REQUESTED | Hp={snapshot.Hp}/{snapshot.MaxHp} | Map={game.LastObservedMapId} | MapBãi={game.ReturnToTrainingAutomation.DestinationMapId} | Thuốc={hpPotion} | {doctorStatus}");
+	}
+
 	private static void RequestReturnToTrainingCenter(GameWindow game, GameSnapshot snapshot, Action<string> log, string reason) {
 		if (game.ReturnToTrainingAutomation.IsBusy) return;
 		game.ReturnToTrainingAutomation.Prepare(game, snapshot, log);
@@ -971,7 +1089,10 @@ public static class AccountEngineCoordinator {
 			areaRawX = settings.CenterX;
 			areaRawY = settings.CenterY;
 		} else {
-			return false;
+			// No training area ("Quanh điểm" off): the whole saved training map is the area, so only another map is outside.
+			// Without this a character in town counted as inside, and nothing ever started "Tự lên bãi": PhâyKer stood in
+			// town map 20 from 01:52 to 08:07 on 2026-10-14 after a talisman, with MASTER_REARM NgoàiBãi=False every minute.
+			return game.SavedTrainingMapId > 0 && game.LastObservedMapId > 0 && game.LastObservedMapId != game.SavedTrainingMapId;
 		}
 		// Khác map bãi là chắc chắn ngoài bãi. Không xét map thì toạ độ của hai map khác nhau bị đem trừ nhau, cho kết quả vô nghĩa.
 		if (areaMapId > 0 && game.LastObservedMapId > 0 && game.LastObservedMapId != areaMapId) return true;

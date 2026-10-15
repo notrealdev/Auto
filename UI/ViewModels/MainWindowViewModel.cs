@@ -19,6 +19,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 	private ViewModelBase selectedTabContent;
 	private string statusBarText = "Loading...";
 	private string lootFeedText = "";
+	private string chatFeedText = "";
 
 	public MainWindowViewModel() {
 		AttackViewModel  attackTab  = new();
@@ -74,6 +75,8 @@ public sealed class MainWindowViewModel : ViewModelBase {
 
 		LootFeed.Changed += OnLootFeedChanged;
 		LootFeedText = LootFeed.Text;
+		ChatFeed.Changed += OnChatFeedChanged;
+		ChatFeedText = ChatFeed.Text;
 	}
 
 	// Tải của chính tiến trình Auto.
@@ -95,6 +98,16 @@ public sealed class MainWindowViewModel : ViewModelBase {
 
 	private void OnLootFeedChanged() {
 		Application.Current?.Dispatcher.BeginInvoke(() => LootFeedText = LootFeed.Text);
+	}
+
+	// Incoming chat of every account, same threading rule as LootFeedText.
+	public string ChatFeedText {
+		get => chatFeedText;
+		private set => SetField(ref chatFeedText, value);
+	}
+
+	private void OnChatFeedChanged() {
+		Application.Current?.Dispatcher.BeginInvoke(() => ChatFeedText = ChatFeed.Text);
 	}
 
 	private void RefreshStatusBar() {
@@ -168,7 +181,7 @@ public sealed class MainWindowViewModel : ViewModelBase {
 		QuestViewModel   newQuestTab   = selected != null ? new QuestViewModel(selected.QuestSettings) : new QuestViewModel();
 		BasicViewModel   newBasicTab   = selected != null ? new BasicViewModel(selected.BasicSettings) : new BasicViewModel();
 		SupportViewModel newSupportTab = selected != null ? new SupportViewModel(selected.SupportSettings) : new SupportViewModel();
-		MarketViewModel  newMarketTab  = selected != null ? new MarketViewModel(selected.MarketSettings) : new MarketViewModel();
+		MarketViewModel  newMarketTab  = selected != null ? new MarketViewModel(selected.MarketSettings, selected) : new MarketViewModel();
 		InfoViewModel    newInfoTab    = new(selected);
 		DebugViewModel   newDebugTab   = new(selected);
 

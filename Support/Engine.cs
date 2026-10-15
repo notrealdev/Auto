@@ -17,7 +17,7 @@ internal sealed class Engine {
 	// luôn đầy máu 100% nên không có gì để heal, và mọi trạng thái heal cũ (đếm cast, nghỉ, chuỗi bỏ cuộc) bị xoá theo con Đệ cũ.
 	// Đánh đổi đã biết: mỗi nhịp 100ms lại quét bảng entity tìm Đệ khi tài khoản không có Đệ (trước đây khoá 5 giây để tiết kiệm CPU).
 	// Nhánh Đệ: luật 2026-09-26 "không trần cast, heal tới đầy máu" đã được chủ dự án thay ngày 2026-10-10 bằng trần
-	// MaximumPetHealCasts mỗi đợt (xem chỗ khai báo hằng số). Trần 4 cast + nghỉ 5->60 giây ngày 2026-09-25 khác ở chỗ có thời
+	// MaximumPetHealSessionMilliseconds mỗi đợt (xem chỗ khai báo hằng số). Trần 4 cast + nghỉ 5->60 giây ngày 2026-09-25 khác ở chỗ có thời
 	// gian nghỉ cố định; nó bị bỏ vì làm Buff Đệ gần như tắt: buff.log 2026-09-26 11:10-16:09 có 754 lần bỏ cuộc.
 	// Trần cast của nhánh Chủ, bổ sung 2026-09-10.
 	// Bằng chứng từ Release/Diagnostics/buff.log: PID=34032 cast 395 lần liên tiếp 18:49:23 -> 18:53:00, HP đứng yên ở
@@ -26,18 +26,24 @@ internal sealed class Engine {
 	// Buff hỗ trợ giữ quyền điều khiển" -> nhân vật không lên lại được bãi.
 	private const int MaximumOwnerHealCasts = 10;
 	private const int OwnerHealGiveUpCooldownMilliseconds = 5000;
-	// Two pet heals in a row without the pet's HP rising means the heal is not landing (owner 2026-09-27: pet far away while
-	// the character kept casting in place). Then walk to the pet before the next cast. The settle time gives the walk a
-	// moment before casting again; it is an assumption, not measured.
+	// The pet's HP not rising for this long means the heal is not landing (owner 2026-09-27: pet far away while the character
+	// kept casting in place). Then walk to the pet before the next cast. The settle time gives the walk a moment before
+	// casting again; it is an assumption, not measured.
 	// The walk happens at any distance (owner 2026-10-10): the pet's position can lag, so a pet that reads as close may not be.
-	// The 300 raw distance guard added 2026-10-08 was dropped with it; the 5-cast cap below bounds the walk pauses instead.
-	private const int PetNoGainCastsBeforeApproach = 2;
+	// Time based since 2026-10-15 (owner's choice). The old "2 casts without a rise" fired after about 1 s, while the pet's HP
+	// only rises about every 2 s: buff.log 2026-10-15 00-06h, 257 of 488 gaps between rises were 2 s, and 1248 of 1574 heal
+	// sessions walked to the pet. Why the HP moves in 2 s steps (skill cooldown or client refresh) is not verified.
+	private const int PetNoGainApproachMilliseconds = 2500;
 	private const int PetApproachSettleMilliseconds = 1000;
-	// Pet heal cap per session (owner 2026-10-10, replaces the 2026-09-26 "no cap, heal until full" rule): after 5 casts,
-	// full HP or not, release control. A new session starts only after the pet's HP has been above the threshold and falls
-	// to it again. Evidence: buff.log 2026-10-10 11:11-11:18 PID 15468 cast 642 times with the pet stuck at 21/70, and the
-	// exclusive hold kept Auto Đánh stopped the whole time.
-	private const int MaximumPetHealCasts = 5;
+	// Pet heal cap per session (owner 2026-10-10, replaces the 2026-09-26 "no cap, heal until full" rule): when the cap is
+	// reached, full HP or not, release control. Evidence: buff.log 2026-10-10 11:11-11:18 PID 15468 cast 642 times with the pet
+	// stuck at 21/70, and the exclusive hold kept Auto Đánh stopped the whole time. A 5-cast cap until 2026-10-15, now a time
+	// cap (owner's choice) so a session is not cut after 2.5 s when the HP only moves every 2 s.
+	private const int MaximumPetHealSessionMilliseconds = 5000;
+	// After the cap, Auto Đánh runs this long; a pet still under the threshold then gets a new session (owner 2026-10-11).
+	// The first version waited for the HP to rise above the threshold and fall again: buff.log 2026-10-11 17:29:15
+	// MaiAnhNhe gave up at 33/432 (7%) and never healed again until the pet died at 17:29:48.
+	private const int PetHealRestMilliseconds = 3000;
 	private readonly Settings settings;
 	private readonly AutoFsAttackTransport transport;
 	private DateTime nextOwnerHealUtc;
@@ -50,12 +56,13 @@ internal sealed class Engine {
 	private int ownerBestHp;
 	private DateTime ownerHealCooldownUntilUtc;
 	private int petReadFailureStreak;
-	// Pet HP at the previous pet cast of this heal session (0 = no cast yet) and how many casts in a row did not raise it.
-	private int petLastCastHp;
-	private int petNoGainStreak;
+	// Highest pet HP of this heal session, since when it has not risen, and when the session started.
+	private int petBestHp;
+	private DateTime petNoGainSinceUtc;
+	private DateTime petHealSessionStartUtc;
 	private int petHealCastCount;
-	// False after a session hit MaximumPetHealCasts; true again once the pet's HP is read above the threshold.
-	private bool petHealArmed = true;
+	// Set when a session hit MaximumPetHealSessionMilliseconds; no new session before it.
+	private DateTime petHealRestUntilUtc = DateTime.MinValue;
 	private int ownerReadFailureStreak;
 	private int exceptionStreak;
 	private string lastCastRejectionLine = "";
@@ -235,7 +242,7 @@ internal sealed class Engine {
 					petHealingActive = false;
 					nextPetHealUtc = DateTime.MinValue;
 					petReadFailureStreak = 0;
-					petHealArmed = true;
+					petHealRestUntilUtc = DateTime.MinValue;
 					return false;
 				}
 				// Đọc LỖI (PetHealthReader.Fail) thì có thể chỉ thoáng qua, giữ quyền thêm vài nhịp rồi nhả — cùng cách
@@ -264,46 +271,68 @@ internal sealed class Engine {
 				return false;
 			}
 			bool petBelowThreshold = (long)pet.CurrentHp * 100 <= (long)pet.MaximumHp * settings.HealPetHpPercent;
-			if (!petBelowThreshold) petHealArmed = true;
-			if (!petHealingActive && petHealArmed && petBelowThreshold) {
+			DateTime now = DateTime.UtcNow;
+			if (!petHealingActive && now >= petHealRestUntilUtc && petBelowThreshold) {
 				petHealingActive = true;
-				petLastCastHp = 0;
-				petNoGainStreak = 0;
+				petBestHp = pet.CurrentHp;
+				petNoGainSinceUtc = now;
+				petHealSessionStartUtc = now;
 				petHealCastCount = 0;
 			}
 			if (!petHealingActive) return false;
-			if (DateTime.UtcNow < nextPetHealUtc) return true;
+			if (now < nextPetHealUtc) return true;
 
-			if (petLastCastHp > 0) petNoGainStreak = pet.CurrentHp > petLastCastHp ? 0 : petNoGainStreak + 1;
-			int distance = (int)Math.Sqrt(Math.Pow((double)pet.RawX - ownerSnapshot.X, 2) + Math.Pow((double)pet.RawY - ownerSnapshot.Y, 2));
-			if (petNoGainStreak >= PetNoGainCastsBeforeApproach) {
-				petNoGainStreak = 0;
-				petLastCastHp = 0;
-				nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(PetApproachSettleMilliseconds);
+			int sessionMilliseconds = (int)(now - petHealSessionStartUtc).TotalMilliseconds;
+			PetHealStep step = NextPetHealStep(pet.CurrentHp, now, out int noGainMilliseconds);
+			if (step == PetHealStep.GiveUp) {
+				log($"BUFF_PET_HEAL_GIVE_UP | ĐợtMs={sessionMilliseconds} | SốCast={petHealCastCount} | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | RestMs={PetHealRestMilliseconds} | Action=Nhả quyền điều khiển, hết thời gian nghỉ mà Đệ vẫn dưới ngưỡng thì heal đợt mới");
+				return false;
+			}
+			if (step == PetHealStep.Approach) {
+				int distance = (int)Math.Sqrt(Math.Pow((double)pet.RawX - ownerSnapshot.X, 2) + Math.Pow((double)pet.RawY - ownerSnapshot.Y, 2));
 				bool walked = walkTo(pet.RawX, pet.RawY, out string walkResult);
-				log($"BUFF_PET_APPROACH | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | NoGainCasts={PetNoGainCastsBeforeApproach} | Player={ownerSnapshot.X}/{ownerSnapshot.Y} | Pet={pet.RawX}/{pet.RawY} | Distance={distance} | Walked={walked} | {walkResult} | Action=Đi tới gần Đệ rồi heal tiếp");
+				log($"BUFF_PET_APPROACH | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | KhôngNhíchMs={noGainMilliseconds} | ĐợtMs={sessionMilliseconds} | Player={ownerSnapshot.X}/{ownerSnapshot.Y} | Pet={pet.RawX}/{pet.RawY} | Distance={distance} | Walked={walked} | {walkResult} | Action=Đi tới gần Đệ rồi heal tiếp");
 				return true;
 			}
 
-			nextPetHealUtc = DateTime.UtcNow.AddMilliseconds(HealRepeatDelayMilliseconds);
 			if (!transport.TrySendConfirmedCommand(gameWindow, CastSkillCommand, HealSkillId, out string petCastError)) {
 				return HoldOrReleaseAfterRejection(log, "Pet", petCastError);
 			}
 			lastCastRejectionLine = "";
 			castRejectionStreak = 0;
-			petLastCastHp = pet.CurrentHp;
 			petHealCastCount++;
-			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Cast={petHealCastCount}/{MaximumPetHealCasts} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
-			if (petHealCastCount >= MaximumPetHealCasts) {
-				petHealingActive = false;
-				petHealArmed = false;
-				petHealCastCount = 0;
-				nextPetHealUtc = DateTime.MinValue;
-				log($"BUFF_PET_HEAL_GIVE_UP | Casts={MaximumPetHealCasts} | EntityIndex={pet.EntityIndex} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | Action=Nhả quyền điều khiển, chờ máu Đệ lên trên ngưỡng rồi xuống lại mới heal tiếp");
-				return false;
-			}
+			log($"BUFF_CAST_CONFIRMED | Target=Pet | EntityIndex={pet.EntityIndex} | SkillId={HealSkillId} | HP={pet.CurrentHp}/{pet.MaximumHp} | HpPercent={pet.CurrentHp * 100 / pet.MaximumHp} | ThresholdPercent={settings.HealPetHpPercent} | Cast={petHealCastCount} | ĐợtMs={sessionMilliseconds}/{MaximumPetHealSessionMilliseconds} | Exclusive=True | Transport=Direct | Source=CURRENT_ENTITY_TYPE_6 | RepeatDelayMs={HealRepeatDelayMilliseconds}");
 			return true;
 		}
+	}
+
+	private enum PetHealStep {
+		Cast,
+		Approach,
+		GiveUp
+	}
+
+	// Timing of one pet heal session, kept free of memory reads so it can be exercised offline. Updates the session state and
+	// the next action time, and says what this tick does.
+	private PetHealStep NextPetHealStep(int petHp, DateTime now, out int noGainMilliseconds) {
+		if (petHp > petBestHp) {
+			petBestHp = petHp;
+			petNoGainSinceUtc = now;
+		}
+		noGainMilliseconds = (int)(now - petNoGainSinceUtc).TotalMilliseconds;
+		if ((now - petHealSessionStartUtc).TotalMilliseconds >= MaximumPetHealSessionMilliseconds) {
+			petHealingActive = false;
+			petHealRestUntilUtc = now.AddMilliseconds(PetHealRestMilliseconds);
+			nextPetHealUtc = DateTime.MinValue;
+			return PetHealStep.GiveUp;
+		}
+		if (noGainMilliseconds >= PetNoGainApproachMilliseconds) {
+			petNoGainSinceUtc = now;
+			nextPetHealUtc = now.AddMilliseconds(PetApproachSettleMilliseconds);
+			return PetHealStep.Approach;
+		}
+		nextPetHealUtc = now.AddMilliseconds(HealRepeatDelayMilliseconds);
+		return PetHealStep.Cast;
 	}
 
 	// Khi native liên tục từ chối lệnh cast thì HP không bao giờ hồi, mà khối heal lại giữ quyền điều khiển độc quyền
@@ -346,6 +375,6 @@ internal sealed class Engine {
 		ownerHealCastCount = 0;
 		ownerHealCooldownUntilUtc = DateTime.MinValue;
 		petHealCastCount = 0;
-		petHealArmed = true;
+		petHealRestUntilUtc = DateTime.MinValue;
 	}
 }

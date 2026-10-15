@@ -9,35 +9,111 @@
 	d:DataContext="{d:DesignInstance Type=vm:MarketViewModel}"
 	mc:Ignorable="d">
 
+	<UserControl.Resources>
+		<!-- Hint text over an empty ComboBox (the shared ComboBox style has none). Tag = the ComboBox it belongs to. -->
+		<Style x:Key="ComboPlaceholder" TargetType="TextBlock">
+			<Setter Property="Margin" Value="9,0,24,0" />
+			<Setter Property="VerticalAlignment" Value="Center" />
+			<Setter Property="Foreground" Value="{StaticResource Brush.TextSecondary}" />
+			<Setter Property="IsHitTestVisible" Value="False" />
+			<Setter Property="TextTrimming" Value="CharacterEllipsis" />
+			<Setter Property="Visibility" Value="Collapsed" />
+			<Style.Triggers>
+				<DataTrigger Binding="{Binding Tag.SelectedItem, RelativeSource={RelativeSource Self}}" Value="{x:Null}">
+					<Setter Property="Visibility" Value="Visible" />
+				</DataTrigger>
+			</Style.Triggers>
+		</Style>
+	</UserControl.Resources>
+
 	<Border Style="{StaticResource CardBorder}">
 		<StackPanel>
 			<CheckBox Margin="0,0,0,10" Content="Tự Rao" IsChecked="{Binding AutoAdvertise}" />
 
+			<!-- Owner choice 2026-10-13: the lists sit on one row; picking a line inserts it and the list goes back to empty. -->
 			<Grid Margin="0,0,0,10">
 				<Grid.ColumnDefinitions>
 					<ColumnDefinition Width="*" />
-					<ColumnDefinition Width="Auto" />
+					<ColumnDefinition Width="6" />
+					<ColumnDefinition Width="*" />
+					<ColumnDefinition Width="6" />
+					<ColumnDefinition Width="*" />
+					<ColumnDefinition Width="6" />
+					<ColumnDefinition Width="*" />
 				</Grid.ColumnDefinitions>
 				<ComboBox
+					x:Name="TemplateComboBox"
 					Grid.Column="0"
-					Margin="0,0,6,0"
 					ItemsSource="{x:Static vm:MarketViewModel.Templates}"
-					SelectedItem="{Binding SelectedTemplate}" />
-				<Button Grid.Column="1" Padding="10,4" Command="{Binding InsertTemplateCommand}" Content="Chèn" />
+					SelectionChanged="TemplateComboBox_SelectionChanged" />
+				<TextBlock
+					Grid.Column="0"
+					Style="{StaticResource ComboPlaceholder}"
+					Tag="{Binding ElementName=TemplateComboBox}"
+					Text="Mẫu câu" />
+				<ComboBox
+					x:Name="ItemComboBox"
+					Grid.Column="2"
+					DisplayMemberPath="Display"
+					DropDownOpened="ItemComboBox_DropDownOpened"
+					ItemsSource="{Binding ItemOptions}"
+					SelectionChanged="ItemComboBox_SelectionChanged" />
+				<TextBlock
+					Grid.Column="2"
+					Style="{StaticResource ComboPlaceholder}"
+					Tag="{Binding ElementName=ItemComboBox}"
+					Text="Vật phẩm" />
+				<ComboBox
+					x:Name="MapComboBox"
+					Grid.Column="4"
+					DisplayMemberPath="Name"
+					ItemsSource="{x:Static vm:MarketViewModel.MapOptions}"
+					SelectionChanged="MapComboBox_SelectionChanged" />
+				<TextBlock
+					Grid.Column="4"
+					Style="{StaticResource ComboPlaceholder}"
+					Tag="{Binding ElementName=MapComboBox}"
+					Text="Tọa độ" />
+				<ComboBox
+					x:Name="HistoryComboBox"
+					Grid.Column="6"
+					DropDownOpened="HistoryComboBox_DropDownOpened"
+					ItemsSource="{Binding HistoryOptions}"
+					SelectionChanged="HistoryComboBox_SelectionChanged" />
+				<TextBlock
+					Grid.Column="6"
+					Style="{StaticResource ComboPlaceholder}"
+					Tag="{Binding ElementName=HistoryComboBox}"
+					Text="Lịch sử" />
 			</Grid>
 
-			<TextBox
-				Height="72"
-				Margin="0,0,0,10"
-				Padding="3,3"
-				AcceptsReturn="True"
-				MaxLength="180"
-				Style="{StaticResource NumericTextBox}"
-				Text="{Binding AdvertiseText, UpdateSourceTrigger=PropertyChanged}"
-				TextAlignment="Left"
-				TextWrapping="Wrap"
-				VerticalContentAlignment="Top"
-				VerticalScrollBarVisibility="Auto" />
+			<Grid Margin="0,0,0,10">
+				<TextBox
+					Height="72"
+					Padding="3,3,26,3"
+					AcceptsReturn="True"
+					MaxLength="400"
+					Style="{StaticResource NumericTextBox}"
+					Text="{Binding AdvertiseText, UpdateSourceTrigger=PropertyChanged}"
+					TextAlignment="Left"
+					TextWrapping="Wrap"
+					VerticalContentAlignment="Top"
+					VerticalScrollBarVisibility="Auto" />
+				<Button
+					Margin="0,6,8,0"
+					HorizontalAlignment="Right"
+					VerticalAlignment="Top"
+					Command="{Binding ClearAdvertiseTextCommand}"
+					Style="{StaticResource OverlayIconButton}"
+					ToolTip="Xoá nội dung chat">
+					<Path
+						Data="{StaticResource Icon.Trash}"
+						Stroke="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}"
+						StrokeEndLineCap="Round"
+						StrokeStartLineCap="Round"
+						StrokeThickness="1.2" />
+				</Button>
+			</Grid>
 
 			<Grid Margin="0,0,0,6">
 				<Grid.ColumnDefinitions>

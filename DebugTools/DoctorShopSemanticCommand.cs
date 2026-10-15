@@ -9,10 +9,10 @@ public static class DoctorShopSemanticCommand {
 	// nhận diện popup khác nhau. Sửa 0x469E34 -> 0x46AF3C ngày 2026-09-08, xem bằng chứng ở header đó.
 	// Cập nhật lại sau bản update 2026-09-29: 0x46AF3C -> 0x48CF3C, xem GameClientAddresses.h::NpcConfirmModalVtableRva
 	// cho đầy đủ bằng chứng (context-byte 14/14 + bắt sống object thật khớp tuyệt đối).
-	private const int ExpectedDialogVtableRva = 0x48CF3C;
+	private const int ExpectedDialogVtableRva = GameAddresses.Vtables.DoctorConfirmModal;
 	private const int DialogOptionCommand = 7;
-	private const int CurrentMenuTextOffset = 0x7EC;
-	private const int CurrentMenuOptionStride = 0x69C;
+	private const int CurrentMenuTextOffset = GameAddresses.NpcMenu.TextOffset;
+	private const int CurrentMenuOptionStride = GameAddresses.NpcMenu.OptionStride;
 	private const int CurrentMenuOptionCount = 8;
 	private const int MaximumMenuTextLength = 128;
 

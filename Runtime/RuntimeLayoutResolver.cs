@@ -73,8 +73,8 @@ public static class RuntimeLayoutResolver {
 				if (ValidatePlayer(processId, candidate, out _)) validated.Add((int)rva);
 			}
 			if (validated.Count == 0 && IsCurrentRecoveryClient(image)) {
-				RuntimeLayout recoveryCandidate = CreatePlayerCandidate(fingerprint, states, 0x95DF40);
-				if (ValidatePlayer(processId, recoveryCandidate, out _)) validated.Add(0x95DF40);
+				RuntimeLayout recoveryCandidate = CreatePlayerCandidate(fingerprint, states, GameAddresses.LegacyClients.RecoveryEntityTable);
+				if (ValidatePlayer(processId, recoveryCandidate, out _)) validated.Add(GameAddresses.LegacyClients.RecoveryEntityTable);
 			}
 			// Client cập nhật 2026-08-28: chữ ký cũ không còn khớp ở đâu trong toàn bộ image, EntityTable xác nhận bằng BSim + decompile chéo với PICKUP/RESET_PICKUP mới.
 			if (validated.Count == 0 && IsCurrentUpdateClient(image)) {
@@ -103,10 +103,10 @@ public static class RuntimeLayoutResolver {
 		// [V+0x48]==0x6D1440) trong toàn ảnh 33MB new dump chỉ ra DUY NHẤT 1 vị trí: vtable RVA 0x499988. Xác nhận
 		// managerRva bằng cách đọc sống trên PID 18996: [0x5066C8]=0x8F06A8 (con trỏ manager), [0x8F06A8+0]=0x899988
 		// = ExpectedManagerVtableRva mới (0x400000+0x499988) — khớp tuyệt đối, không phải suy đoán.
-		int managerRva = updateClient ? 0x5066C8 : recoveryClient ? 0x4E0640 : 0x4DF600;
-		int expectedManagerVtableRva = updateClient ? 0x499988 : recoveryClient ? 0x476618 : 0x4755F8;
-		const int attackMethodVtableOffset = 0x40;
-		const int coordinateDispatcherMethodVtableOffset = 0x10;
+		int managerRva = updateClient ? GameAddresses.Functions.AttackManagerPointer : recoveryClient ? GameAddresses.LegacyClients.RecoveryAttackManagerPointer : GameAddresses.LegacyClients.OldAttackManagerPointer;
+		int expectedManagerVtableRva = updateClient ? GameAddresses.Vtables.AttackManager : recoveryClient ? GameAddresses.LegacyClients.RecoveryAttackManagerVtable : GameAddresses.LegacyClients.OldAttackManagerVtable;
+		const int attackMethodVtableOffset = GameAddresses.Vtables.AttackMethodSlot;
+		const int coordinateDispatcherMethodVtableOffset = GameAddresses.Vtables.CoordinateDispatcherMethodSlot;
 
 		IntPtr manager = reader.ReadPointer32(IntPtr.Add(moduleBase, managerRva));
 		IntPtr managerVtable = manager == IntPtr.Zero ? IntPtr.Zero : reader.ReadPointer32(manager);
@@ -152,7 +152,7 @@ public static class RuntimeLayoutResolver {
 		}
 		// Cập nhật sau bản game 2026-08-28: xác nhận bằng BSim (similarity 1.0) + byte thật khớp gần tuyệt đối với chữ ký cũ.
 		// Cập nhật lại sau bản update 2026-09-29 bằng Ghidra headless + BSim (xem RepairConfirmationSignature ở trên).
-		const int repairConfirmationRva = 0x297D60;
+		const int repairConfirmationRva = GameAddresses.Functions.RepairConfirmation;
 		if (MatchesAt(image, repairConfirmationRva, RepairConfirmationSignature)) states[RuntimeSubsystem.RepairTransport] = RuntimeSubsystemState.Confirmed($"Validated current-client repair confirmation function and AutoFS-equivalent arguments | Rva=0x{repairConfirmationRva:X} | Arguments=0/0/2/0");
 		else states[RuntimeSubsystem.RepairTransport] = RuntimeSubsystemState.Unavailable($"Current-client repair confirmation signature did not match | ExpectedRva=0x{repairConfirmationRva:X}");
 		states[RuntimeSubsystem.ArrangeTransport] = RuntimeSubsystemState.Unavailable("Current-client native handler for AutoFS command 24 has not been confirmed or implemented.");
@@ -174,8 +174,8 @@ public static class RuntimeLayoutResolver {
 			if (record.Length == GameAddresses.Item.GroundInternalY + sizeof(int)) validatedGroundGlobals.Add((int)rva);
 		}
 		if (recoveryClient) {
-			IntPtr recoveryTable = reader.ReadPointer32(IntPtr.Add(moduleBase, 0x54BCA0));
-			if (recoveryTable != IntPtr.Zero) validatedGroundGlobals.Add(0x54BCA0);
+			IntPtr recoveryTable = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.LegacyClients.RecoveryGroundRecordTablePointer));
+			if (recoveryTable != IntPtr.Zero) validatedGroundGlobals.Add(GameAddresses.LegacyClients.RecoveryGroundRecordTablePointer);
 		}
 		// Client cập nhật 2026-08-28: GROUND_TABLE xác nhận bằng BSim + decompile, hàm command 78 mới gọi đúng CONVERTER/MOVEMENT/PICKUP mới với cùng field offset.
 		// Cập nhật lại sau bản update 2026-09-29: dùng thẳng GameAddresses.Item.GroundRecordTablePointer (đã sửa cùng
@@ -185,7 +185,7 @@ public static class RuntimeLayoutResolver {
 			IntPtr updateTable = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Item.GroundRecordTablePointer));
 			if (updateTable != IntPtr.Zero) validatedGroundGlobals.Add(GameAddresses.Item.GroundRecordTablePointer);
 		}
-		int expectedGroundRva = updateClient ? GameAddresses.Item.GroundRecordTablePointer : recoveryClient ? 0x54BCA0 : GameAddresses.Item.GroundRecordTablePointer;
+		int expectedGroundRva = updateClient ? GameAddresses.Item.GroundRecordTablePointer : recoveryClient ? GameAddresses.LegacyClients.RecoveryGroundRecordTablePointer : GameAddresses.Item.GroundRecordTablePointer;
 		if (validatedGroundGlobals.Distinct().Count() == 1 && validatedGroundGlobals[0] == expectedGroundRva) {
 			states[RuntimeSubsystem.Ground] = RuntimeSubsystemState.Confirmed($"Validated ground-table signature and current-client record layout | PointerRva=0x{validatedGroundGlobals[0]:X} | Stride=0x{GameAddresses.Item.GroundRecordStride:X} | State=+0x{GameAddresses.Item.GroundRecordKind:X} | InternalCoordinate=+0x{GameAddresses.Item.GroundInternalX:X}/+0x{GameAddresses.Item.GroundInternalY:X}");
 		}
@@ -198,9 +198,9 @@ public static class RuntimeLayoutResolver {
 		// trong dump mới (Similarity=1.0, Significance=124). Đối chứng thêm bằng byte thật: cả hai hàm cùng nhúng
 		// literal InventoryRoot VA ở cùng vị trí lệnh (cũ 0x00E7FE24, mới 0x00EA3E84) — khớp đúng InventoryRoot đã
 		// xác nhận sống trước đó. RVA mới = 0x7B1510 - 0x400000 = 0x3B1510.
-		int coordinateConverterRva = updateClient ? 0x300E10 : recoveryClient ? 0x2F9E00 : 0x2F9DA0;
-		int movementRva = updateClient ? 0x324240 : recoveryClient ? 0x31CE80 : 0x31CDE0;
-		int pickupRva = updateClient ? 0x3B1510 : recoveryClient ? 0x3AA0F0 : 0x3A9C50;
+		int coordinateConverterRva = updateClient ? GameAddresses.Functions.GroundCoordinateConverter : recoveryClient ? GameAddresses.LegacyClients.RecoveryGroundCoordinateConverter : GameAddresses.LegacyClients.OldGroundCoordinateConverter;
+		int movementRva = updateClient ? GameAddresses.Functions.Movement : recoveryClient ? GameAddresses.LegacyClients.RecoveryMovement : GameAddresses.LegacyClients.OldMovement;
+		int pickupRva = updateClient ? GameAddresses.Functions.Pickup : recoveryClient ? GameAddresses.LegacyClients.RecoveryPickup : GameAddresses.LegacyClients.OldPickup;
 		bool coordinateConverterValid = MatchesAt(image, coordinateConverterRva, GroundCoordinateConverterSignature);
 		bool movementValid = MatchesAt(image, movementRva, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 		bool pickupValid = MatchesAt(image, pickupRva, new byte[] { 0x55, 0x8B, 0xEC, 0x8B, 0x0D });
@@ -211,7 +211,7 @@ public static class RuntimeLayoutResolver {
 	}
 
 	private static bool IsCurrentRecoveryClient(byte[] image) {
-		return image.Length >= 0x1FC0000 && MatchesAt(image, 0x2F9E00, GroundCoordinateConverterSignature) && MatchesAt(image, 0x31CE80, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
+		return image.Length >= GameAddresses.LegacyClients.RecoveryMinimumImageSize && MatchesAt(image, GameAddresses.LegacyClients.RecoveryGroundCoordinateConverter, GroundCoordinateConverterSignature) && MatchesAt(image, GameAddresses.LegacyClients.RecoveryMovement, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 	}
 
 	// Nhận diện client sau bản update 2026-09-29 (server "toang", SizeOfImage đo được 0x1FA7000). Hai RVA chữ ký dưới
@@ -219,7 +219,7 @@ public static class RuntimeLayoutResolver {
 	// cũ lẫn mới) di chuyển 0x2FBC30 -> 0x300E10; chữ ký movement 9 byte cũng DUY NHẤT trong cả hai bản, di chuyển
 	// 0x31EF70 -> 0x324240. Bản trước bản update này (0x1F83000) đã đổi tên hằng số bên dưới, không còn dùng nữa.
 	private static bool IsCurrentUpdateClient(byte[] image) {
-		return image.Length == 0x1FA7000 && MatchesAt(image, 0x300E10, GroundCoordinateConverterSignature) && MatchesAt(image, 0x324240, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
+		return image.Length == GameAddresses.ModuleMaximumSize && MatchesAt(image, GameAddresses.Functions.GroundCoordinateConverter, GroundCoordinateConverterSignature) && MatchesAt(image, GameAddresses.Functions.Movement, new byte[] { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x04, 0x00, 0x00 });
 	}
 
 	private static bool MatchesAt(byte[] image, int offset, byte[] signature) {
@@ -268,11 +268,11 @@ public static class RuntimeLayoutResolver {
 	//   PID=3380  (đang kẹt):    Raw đổi — 62887/90871 -> 62798/91277 -> 62780/91233 -> 62590/90695,
 	//                            còn Legacy VÀ Mirror đứng nguyên 61822/90548 cả 4 mẫu.
 	// Tức khi hai nguồn bất đồng thì Raw là nguồn còn sống, đúng nguồn mà luồng Đánh/Di chuyển vẫn dùng và chạy được.
-	// Đây là câu trả lời cho ghi chú "chưa xác định được cặp nào mới là vị trí thật" ở GameAddresses.Entity.RawXLegacy.
+	// Đây là câu trả lời cho ghi chú "chưa xác định được cặp nào mới là vị trí thật" ở Entity.RawXLegacy trong Utils/GameAddresses.md.
 	//
 	// CHƯA VERIFY runtime: mới chứng minh nguồn nào còn cập nhật, chưa chạy lại Auto để xem báo ĐứngYên/ANTI_AFK có hết.
 	private static RuntimeLayout CreatePlayerCandidate(string fingerprint, IReadOnlyDictionary<RuntimeSubsystem, RuntimeSubsystemState> states, int entityTableRva) {
-		return new RuntimeLayout(fingerprint, states, entityTableRva, 0xD87C, 0xD87C, 0x24, 0x27D0, 0x27D4, 0x27DC, 0x27E0, 0x2D70, GameAddresses.Entity.RawX, GameAddresses.Entity.RawY);
+		return new RuntimeLayout(fingerprint, states, entityTableRva, GameAddresses.Entity.Stride, GameAddresses.Entity.Stride * GameAddresses.Entity.PlayerIndex, GameAddresses.Entity.Level, GameAddresses.Entity.Hp, GameAddresses.Entity.MaxHp, GameAddresses.Entity.Mp, GameAddresses.Entity.MaxMp, GameAddresses.Entity.Name, GameAddresses.Entity.RawX, GameAddresses.Entity.RawY);
 	}
 
 	private static RuntimeLayout CreateUnavailable(string fingerprint, Dictionary<RuntimeSubsystem, RuntimeSubsystemState> states, string reason) {

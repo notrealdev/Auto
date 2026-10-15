@@ -75,8 +75,8 @@ public static class TalismanDestinationCatalog {
 	//
 	// Khổn Tiên Cung 47-51 is reached from Diêu Trì (52): portal lines 52->47->48->49->50->51 were recorded by
 	// MapTransitionRecorder on 2026-10-09 (map-transition.log, PID 4452), so this returns menu index 1 for them.
-	// ScoutQuestAutomation does not call this (talisman only when the target itself is in the menu); the quest reaches
-	// 47-51 through TransitGateDestinationCatalog.TryGetNearestOptionIndex instead (Triều Ca gate, option 5 -> Map52).
+	// ScoutQuestAutomation uses this when the target is not in the menu, only if the jump leaves fewer transitions than
+	// walking from the current map (owner decided 2026-10-14).
 	public static bool TryGetNearestMenuIndex(int destinationMapId, out int menuIndex, out int hubMapId, out int transitionCount) {
 		menuIndex = -1;
 		hubMapId = 0;

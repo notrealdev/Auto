@@ -1,7 +1,7 @@
 namespace Auto.Utils;
 
 // Đọc số tiền trong túi đồ (đơn vị xu). Dùng để HIỂN THỊ trên dòng account, không dùng để quyết định gì.
-// Đường đọc và bằng chứng dò ra: xem GameAddresses.Inventory.LoginMoney.
+// Đường đọc và bằng chứng dò ra: xem Inventory.LoginMoney trong Utils/GameAddresses.md.
 public static class InventoryMoneyReader {
 	// 1 vạn = 10.000 xu; dòng account hiển thị theo vạn.
 	public const int CoinsPerTenThousand = 10_000;

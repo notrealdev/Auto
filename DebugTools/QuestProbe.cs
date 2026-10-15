@@ -22,8 +22,8 @@ public static class QuestProbe {
 	private const int MaximumNameLength = 64;
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	// Bố cục menu NPC của client hiện tại, cùng bộ hằng số DoctorShopSemanticCommand đang dùng.
-	private const int MenuTextOffset = 0x7EC;
-	private const int MenuOptionStride = 0x69C;
+	private const int MenuTextOffset = GameAddresses.NpcMenu.TextOffset;
+	private const int MenuOptionStride = GameAddresses.NpcMenu.OptionStride;
 	private const int MenuOptionCount = 8;
 	private const int MaximumMenuTextLength = 128;
 	private const int MinimumOptionLetters = 2;
@@ -34,7 +34,7 @@ public static class QuestProbe {
 	private const int MaximumDumpedStrings = 150;
 	// Phải khớp DoctorShopSemanticCommand.ExpectedDialogVtableRva.
 	// Cập nhật lại sau bản update 2026-09-29: 0x46AF3C -> 0x48CF3C, xem GameClientAddresses.h::NpcConfirmModalVtableRva.
-	private const int DoctorConfirmModalVtableRva = 0x48CF3C;
+	private const int DoctorConfirmModalVtableRva = GameAddresses.Vtables.DoctorConfirmModal;
 	private const int RawWindowLeadBytes = 0x80;
 	private const int RawWindowLength = 0x300;
 	private const int RawWindowBytesPerLine = 32;

@@ -83,7 +83,8 @@ internal sealed class AutoFsEntityScanner {
 		bool configuredTrainingMode = HasConfiguredTrainingMode(settings);
 		(int centerX, int centerY) = GetCenter(settings, playerX, playerY);
 		List<AutoFsEntity> entities = new();
-		List<(int X, int Y)> elitePositions = new();
+		// Each elite with the radius around it inside which ordinary monsters are not attacked (see the filter below).
+		List<(int X, int Y, int Radius)> elitePositions = new();
 		// Một buffer duy nhất cho cả lượt quét, cấp phát ở đây (biến cục bộ) thay vì field để không phải lo hai luồng
 		// dùng chung: ngoài worker Đánh còn có đường liệt kê ComboBox gọi Scan từ luồng giao diện.
 		byte[] header = new byte[EntityHeaderSize];
@@ -145,7 +146,7 @@ internal sealed class AutoFsEntityScanner {
 				double eliteToCenter = GetMapDistance(centerX, centerY, x, y);
 				// Nới rộng hơn Range để thấy cả con vừa ra khỏi bãi mà vùng cấm của nó còn liếm vào trong bãi.
 				if (eliteToCenter <= Math.Max(settings.Range, 1) + Math.Max(settings.EliteAvoidRadius, 0)) {
-					elitePositions.Add((x, y));
+					elitePositions.Add((x, y, GetMonsterAvoidRadius(settings, nameBytes)));
 					if (eliteCollector != null) {
 						// level đã đọc chung với type ở trên, chỉ còn phải đọc thêm hp.
 						int eliteHp = reader.ReadInt32(IntPtr.Add(entityBase, AutoFsClientProfile.Hp));
@@ -213,15 +214,10 @@ internal sealed class AutoFsEntityScanner {
 		// riêng con thủ lĩnh thì auto vẫn bị đám quái thường đứng sát nó kéo thẳng vào ổ.
 		// Bật/tắt bằng chính ô "Không đánh Boss" (chốt với chủ dự án 2026-09-07), không có công tắc riêng.
 		// includeAllTargetTypes là đường liệt kê cho ComboBox nên không lọc.
-		// KHÔNG loại con ĐANG ĐÁNH DỞ: vùng cấm chỉ dùng để CHỌN mục tiêu mới, không dùng để bỏ mục tiêu đang đánh.
-		//
-		// Bản trước loại cả nó. Vùng cấm tính theo khoảng cách QUÁI-tới-BOSS chứ không phải nhân vật-tới-boss, nên
-		// boss đi ngang qua con quái đang đánh là con đó biến khỏi danh sách ngay giữa trận, kể cả khi nhân vật đứng
-		// rất xa boss. Khối sắp xếp ngay bên dưới cố giữ IsCurrentTarget nhưng vô nghĩa vì RemoveAll chạy trước.
-		// Chủ dự án báo 2026-09-11: "đôi khi ngoài phạm vi của boss nhưng tao vẫn thấy nhân vật tự chuyển target".
-		// Miễn trừ chỉ có hiệu lực khi NHÂN VẬT đang ở ngoài vùng an toàn của chính nó. Tránh boss là ưu tiên số 1
-		// (chủ dự án chốt 2026-09-11): khi nhân vật đã bị kéo vào trong bán kính, con đang đánh dở cũng bị bỏ, nếu
-		// không thì trốn xong lại quay vào đúng con đó rồi lại trốn — giằng co vô hạn.
+		// Con ĐANG ĐÁNH DỞ cũng bị loại (2026-10-13). Từ 2026-09-11 nó được miễn khi nhân vật còn ngoài vùng cấm, vì chủ
+		// dự án báo "đôi khi ngoài phạm vi của boss nhưng tao vẫn thấy nhân vật tự chuyển target" khi boss đi ngang con
+		// đang đánh. Đổi lại miễn trừ đó cho 179 lần (log 2026-10-13) nhân vật bị kéo vào trong bán kính để đánh tiếp
+		// con đang target rồi lại phải trốn. Tránh boss là ưu tiên số 1 (chủ dự án chốt 2026-09-11), nên bỏ miễn trừ.
 		if (!includeAllTargetTypes && settings.DoNotAttackBoss && settings.EliteAvoidRadius > 0 && elitePositions.Count > 0) {
 			// BẤT BIẾN: con quái được phép đánh phải NẰM Ở CHỖ NHÂN VẬT ĐƯỢC PHÉP ĐỨNG.
 			//
@@ -233,11 +229,14 @@ internal sealed class AutoFsEntityScanner {
 			//
 			// Lấy sàn bằng bán kính cấm đứng thì dải mâu thuẫn biến mất. Vẫn cho phép đặt EliteAvoidRadius LỚN hơn
 			// nếu muốn né rộng hơn nữa; chỉ chặn không cho nhỏ hơn.
-			int monsterAvoidRadius = Math.Max(settings.EliteAvoidRadius, Math.Max(settings.ElitePlayerRetreatRadius, 0));
-			bool playerInsideRetreatZone = EliteAvoidance.IsNearAnyElite(playerX, playerY, elitePositions, settings.ElitePlayerRetreatRadius);
+			//
+			// The floor is now radius + RetreatMarginRaw, and the current target is no longer exempt. movement.log 2026-10-13:
+			// 1170 of 2361 retreats (50%) restarted within 5 s of leaving the zone, and at those restarts the client was
+			// heading to a monster 768-900 from the elite in 823 of 1578 cases (52%), 179 more inside 768 (the exempt
+			// current target): reaching a monster standing just outside the radius puts the character back inside it.
+			// Each elite carries its own radius (GetMonsterAvoidRadius): bosses and enhanced monsters differ.
 			entities.RemoveAll(entity => entity.Type == AutoFsClientProfile.MonsterType
-				&& (playerInsideRetreatZone || !entity.IsCurrentTarget)
-				&& EliteAvoidance.IsNearAnyElite(entity.RawX, entity.RawY, elitePositions, monsterAvoidRadius));
+				&& EliteAvoidance.IsNearAnyElite(entity.RawX, entity.RawY, elitePositions));
 		}
 
 		// Giữ nguyên quái đang target (game tự báo qua CurrentTargetIndex) cho tới khi nó chết/rời danh sách ứng viên,
@@ -295,6 +294,19 @@ internal sealed class AutoFsEntityScanner {
 		long deltaX = (long)firstX - secondX;
 		long deltaY = (long)firstY - secondY;
 		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+	}
+
+	// Radius the character runs from (owner 2026-10-14): a "<c=" boss keeps Settings.ElitePlayerRetreatRadius (3 cells),
+	// a "(" enhanced monster only EnhancedMonsterRetreatRadiusRaw (1 cell).
+	internal static int GetPlayerRetreatRadius(Settings settings, byte[] nameBytes) => EliteAvoidance.IsColorTagBoss(nameBytes)
+		? Math.Max(settings.ElitePlayerRetreatRadius, 0)
+		: EliteAvoidance.EnhancedMonsterRetreatRadiusRaw;
+
+	// Ordinary monsters inside this radius of an elite are not attacked: the retreat radius plus one cell, so a monster the
+	// character may attack stands where the character may stand. A boss also keeps EliteAvoidRadius as a floor.
+	private static int GetMonsterAvoidRadius(Settings settings, byte[] nameBytes) {
+		int radius = GetPlayerRetreatRadius(settings, nameBytes) + EliteAvoidance.RetreatMarginRaw;
+		return EliteAvoidance.IsColorTagBoss(nameBytes) ? Math.Max(settings.EliteAvoidRadius, radius) : radius;
 	}
 
 	// Nội bộ (không private) để Loot\Engine.cs dùng lại đúng logic xác định tâm bãi khi cần đưa nhân vật về sau khi nhặt.

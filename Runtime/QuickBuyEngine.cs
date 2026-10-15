@@ -126,7 +126,7 @@ internal sealed class QuickBuyEngine {
 			if (moduleBase == IntPtr.Zero) return null;
 			IntPtr inventoryRoot = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Globals.InventoryRoot));
 			if (inventoryRoot == IntPtr.Zero) return null;
-			return reader.ReadInt32(IntPtr.Add(inventoryRoot, 0x4B79C));
+			return reader.ReadInt32(IntPtr.Add(inventoryRoot, GameAddresses.Inventory.QuickBuyBlockFlag));
 		} catch {
 			return null;
 		}

@@ -7,7 +7,7 @@ namespace Auto.Utils;
 // chết hẳn — chỉ còn nhánh "số ô > ngưỡng" chạy được, và log REPAIR_SALE_TRIGGER luôn ghi
 // RemainingStrength=UNAVAILABLE. Bản DEV cũng là stub y hệt nên đây không phải thụt lùi, mà là chưa từng làm.
 //
-// Đường đọc và bằng chứng dò ra: xem GameAddresses.Inventory.LoginMaximumStrength.
+// Đường đọc và bằng chứng dò ra: xem Inventory.LoginMaximumStrength trong Utils/GameAddresses.md.
 public static class InventoryStrengthReader {
 	private const int MaximumPackedItemId = 0x001FFFFF;
 	private const int MaximumTypeLength = 16;

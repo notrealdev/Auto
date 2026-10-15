@@ -7,7 +7,7 @@ public static class MemoryLayout {
 
 	// Tạm hardcode theo kết quả reverse hiện tại.
 	// Sau này khi tìm được PlayerIndex tự động thì thay phần này.
-	public const int PlayerIndex = 0x353B;
+	public const int PlayerIndex = GameAddresses.Entity.ReversedPlayerIndex;
 
 	public const int HpOffset = GameAddresses.Entity.Hp;
 	public const int MaxHpOffset = GameAddresses.Entity.MaxHp;

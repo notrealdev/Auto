@@ -11,9 +11,9 @@
 	Title="{x:Static app:AppVersion.Title}"
 	Icon="/app.ico"
 	Width="420"
-	Height="900"
+	Height="1028"
 	MinWidth="420"
-	MinHeight="900"
+	MinHeight="1028"
 	Background="{StaticResource Brush.Background}"
 	WindowStyle="None"
 	AllowsTransparency="False"
@@ -173,6 +173,7 @@
 			<RowDefinition Height="*" />
 			<RowDefinition Height="Auto" />
 			<RowDefinition Height="Auto" />
+			<RowDefinition Height="Auto" />
 		</Grid.RowDefinitions>
 
 		<Border
@@ -275,12 +276,56 @@
 			</Grid>
 		</Grid>
 
+		<!--  Incoming chat of every account (owner 2026-10-15), placed above the loot box with the same frame.
+		      Source: ChatFeed. Text is pushed from code-behind like the loot box, see ChatFeed_Changed.  -->
+		<Border
+			Grid.Row="2"
+			Margin="14,0,14,8"
+			Padding="2"
+			Background="{StaticResource Brush.Surface}"
+			BorderBrush="{StaticResource Brush.Border}"
+			BorderThickness="1"
+			CornerRadius="4">
+			<Grid>
+				<TextBox
+					x:Name="ChatFeedBox"
+					Height="110"
+					Padding="6,4,28,4"
+					Background="Transparent"
+					BorderThickness="0"
+					FontFamily="Consolas"
+					FontSize="11"
+					Foreground="{StaticResource Brush.TextPrimary}"
+					IsReadOnly="True"
+					LostKeyboardFocus="ChatFeed_LostKeyboardFocus"
+					SelectionChanged="ChatFeed_SelectionChanged"
+					TextWrapping="NoWrap"
+					VerticalContentAlignment="Top"
+					VerticalScrollBarVisibility="Auto"
+					HorizontalScrollBarVisibility="Auto" />
+				<Button
+					Margin="0,6,8,0"
+					HorizontalAlignment="Right"
+					VerticalAlignment="Top"
+					Click="ClearChatFeed_Click"
+					Style="{StaticResource OverlayIconButton}"
+					ToolTip="Xoá ô chat (không đụng tới file log)">
+					<Path
+						Data="{StaticResource Icon.Trash}"
+						Stroke="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}"
+						StrokeEndLineCap="Round"
+						StrokeStartLineCap="Round"
+						StrokeThickness="1.2" />
+				</Button>
+			</Grid>
+		</Border>
+
 		<!--  Ô theo dõi vật phẩm nhặt được của MỌI account, gộp chung theo thứ tự thời gian.
 		      Nguồn: LootFeed, nhận đúng những lượt nhặt vào loot-drops.log (nhãn LOOT_PICKED_UP), bỏ nhóm nhặt
 		      thường xuyên đã tách sang loot-scan.log.
 		      Dùng TextBox chỉ-đọc thay vì TextBlock để chủ dự án bôi đen copy được tên vật phẩm.  -->
 		<Border
-			Grid.Row="2"
+			Grid.Row="3"
 			Margin="14,0,14,8"
 			Padding="2"
 			Background="{StaticResource Brush.Surface}"
@@ -333,7 +378,7 @@
 		<!--  Thanh trạng thái: tải của chính Auto. "Mức tải" là ước lượng của Auto theo %CPU, KHÔNG phải cột
 		      Power usage của Windows (giá trị đó không có API công khai để đọc).  -->
 		<Border
-			Grid.Row="3"
+			Grid.Row="4"
 			Margin="{StaticResource Size.StatusBarMargin}"
 			Padding="10,6"
 			Background="{StaticResource Brush.CheckboxChecked}"

@@ -5,6 +5,10 @@ public sealed class Settings {
 
 	public string AdvertiseText { get; set; } = "";
 
+	// Links taken from the client's sent-message history, "KEY=base64;..." (ChatHistoryReader.FormatCaptured), sent byte
+	// for byte wherever AdvertiseText holds "{link:KEY:label}".
+	public string CapturedLinks { get; set; } = "";
+
 	public bool NearbyEnabled { get; set; }
 
 	public int NearbyDelaySeconds { get; set; } = 10;

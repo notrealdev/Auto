@@ -11,7 +11,7 @@ public sealed class SpriteItemScanner {
 	private const int MemCommit = 0x1000;
 	private const int PageNoAccess = 0x01;
 	private const int PageGuard = 0x100;
-	private const int CoordinateOffsetBeforeSprite = 0x20;
+	private const int CoordinateOffsetBeforeSprite = GameAddresses.Item.SpriteCoordinateBeforeSprite;
 	private const int ItemNameOffsetFromCoordinate = GameAddresses.Item.GroundName - GameAddresses.Item.GroundInternalX;
 	private const int QualityCodeOffsetA = GameAddresses.Item.GroundQualityCodeA - GameAddresses.Item.GroundInternalX;
 	private const int QualityCodeOffsetB = GameAddresses.Item.GroundQualityCodeB - GameAddresses.Item.GroundInternalX;
@@ -237,7 +237,7 @@ public sealed class SpriteItemScanner {
 			ItemNameRaw = LegacyVietnameseText.Decode(itemNameBytes),
 			QualityCodeA = ReadInt32(bytes, coordinateOffset + QualityCodeOffsetA),
 			QualityCodeB = ReadInt32(bytes, coordinateOffset + QualityCodeOffsetB),
-			GroundType = unchecked((uint)ReadInt32(bytes, coordinateOffset - 0x29C)),
+			GroundType = unchecked((uint)ReadInt32(bytes, coordinateOffset - GameAddresses.Item.SpriteGroundTypeBeforeCoordinate)),
 			MemoryFingerprint = ComputeFingerprint(bytes, coordinateOffset, FingerprintBytesBeforeSprite + FingerprintBytesAfterSprite),
 			DistanceToCenter = GetMapDistance(rawX, rawY, centerRawX, centerRawY),
 			DistanceToPlayer = GetMapDistance(rawX, rawY, centerRawX, centerRawY),

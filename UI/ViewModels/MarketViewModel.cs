@@ -1,6 +1,8 @@
 namespace Auto.UI.ViewModels;
 
+using System.Collections.ObjectModel;
 using Auto.Market;
+using Auto.Runtime;
 using Auto.UI.Models;
 
 public sealed class MarketViewModel : ViewModelBase {
@@ -14,13 +16,44 @@ public sealed class MarketViewModel : ViewModelBase {
 	];
 
 	private readonly Settings settings;
-	private AdvertiseTemplateOption selectedTemplate = Templates[0];
+	// Selected client, read when the item list opens; null when no account is selected.
+	private readonly GameWindow? game;
 
-	public MarketViewModel() : this(new Settings()) { }
+	public MarketViewModel() : this(new Settings(), null) { }
 
-	public MarketViewModel(Settings settings) {
+	public MarketViewModel(Settings settings, GameWindow? game) {
 		this.settings = settings;
-		InsertTemplateCommand = new RelayCommand(_ => AdvertiseText += SelectedTemplate.Content);
+		this.game = game;
+		InsertTemplateCommand = new RelayCommand(parameter => {
+			if (parameter is AdvertiseTemplateOption template) AdvertiseText += template.Content;
+		});
+		RequestItemOptionsCommand = new RelayCommand(_ => RequestItemOptions());
+		InsertItemCommand = new RelayCommand(parameter => {
+			if (parameter is ChatItemOption item) AdvertiseText += ChatItemLink.ToPlaceholder(item.UniqueId, item.Name);
+		});
+		InsertMapCommand = new RelayCommand(parameter => {
+			if (parameter is ChatMapOption map) AdvertiseText += ChatItemLink.ToMapPlaceholder(map);
+		});
+		RequestHistoryOptionsCommand = new RelayCommand(_ => RequestHistoryOptions());
+		InsertHistoryCommand = new RelayCommand(parameter => {
+			if (parameter is ChatHistoryOption option) InsertHistory(option);
+		});
+		ClearAdvertiseTextCommand = new RelayCommand(_ => AdvertiseText = "");
+	}
+
+	public static IReadOnlyList<ChatMapOption> MapOptions => ChatItemLink.MapOptions;
+
+	public ObservableCollection<ChatItemOption> ItemOptions { get; } = [];
+
+	// Re-read when the list opens: the bag changes all the time.
+	private void RequestItemOptions() {
+		ItemOptions.Clear();
+		if (game == null) return;
+		try {
+			foreach (ChatItemOption item in ChatItemLink.ListItems(game.ProcessId)) ItemOptions.Add(item);
+		} catch {
+			// A failed read leaves the list empty; the next opening reads again.
+		}
 	}
 
 	public bool AutoAdvertise {
@@ -32,15 +65,10 @@ public sealed class MarketViewModel : ViewModelBase {
 		}
 	}
 
-	public AdvertiseTemplateOption SelectedTemplate {
-		get => selectedTemplate;
-		set => SetField(ref selectedTemplate, value);
-	}
-
 	public string AdvertiseText {
 		get => settings.AdvertiseText;
 		set {
-			string clamped = value.Length > 180 ? value[..180] : value;
+			string clamped = value.Length > ChatEngine.MaximumMessageLength ? value[..ChatEngine.MaximumMessageLength] : value;
 			if (settings.AdvertiseText == clamped) return;
 			settings.AdvertiseText = clamped;
 			OnPropertyChanged();
@@ -124,4 +152,71 @@ public sealed class MarketViewModel : ViewModelBase {
 	}
 
 	public RelayCommand InsertTemplateCommand { get; }
+	public RelayCommand RequestItemOptionsCommand { get; }
+	public RelayCommand InsertItemCommand { get; }
+	public RelayCommand InsertMapCommand { get; }
+	public RelayCommand RequestHistoryOptionsCommand { get; }
+	public RelayCommand InsertHistoryCommand { get; }
+	public RelayCommand ClearAdvertiseTextCommand { get; }
+
+	public ObservableCollection<ChatHistoryOption> HistoryOptions { get; } = [];
+
+	// Re-read when the list opens: every message the player sends changes the client's history.
+	private void RequestHistoryOptions() {
+		HistoryOptions.Clear();
+		if (game == null) return;
+		try {
+			IReadOnlyList<byte[]> entries = ChatHistoryReader.ReadEntries(game.ProcessId);
+			IReadOnlyList<ChatItemOption> items = entries.Count > 0 ? ChatItemLink.ListItems(game.ProcessId) : [];
+			for (int index = 0; index < entries.Count; index++) {
+				string preview = string.Concat(Describe(entries[index], items).Select(part => part.IsLink ? $"[{part.Label}]" : part.Label));
+				HistoryOptions.Add(new ChatHistoryOption(index + 1, $"{index + 1}. {preview}", entries[index]));
+			}
+		} catch {
+			// A failed read leaves the list empty; the next opening reads again.
+		}
+	}
+
+	// Inserts the whole message: text as editable text, every link as "{link:KEY:label}" whose bytes are kept in
+	// CapturedLinks exactly as the client sent them.
+	private void InsertHistory(ChatHistoryOption option) {
+		IReadOnlyList<ChatItemOption> items = [];
+		try {
+			if (game != null) items = ChatItemLink.ListItems(game.ProcessId);
+		} catch {
+			// Without the bag an item link is labelled "Vật phẩm"; its bytes are unaffected.
+		}
+		Dictionary<string, byte[]> captured = ChatHistoryReader.ParseCaptured(settings.CapturedLinks);
+		System.Text.StringBuilder text = new();
+		foreach (ChatHistorySegment part in Describe(option.Message, items)) {
+			if (! part.IsLink) {
+				text.Append(part.Label);
+				continue;
+			}
+			string key = ChatHistoryReader.KeyOf(part.Bytes);
+			captured[key] = part.Bytes;
+			text.Append(ChatHistoryReader.ToPlaceholder(key, part.Label));
+		}
+		AdvertiseText += text.ToString();
+		// Keep only the links the content still uses, so deleted placeholders do not pile up in the profile.
+		HashSet<string> used = ChatItemLink.PlaceholderPattern().Matches(AdvertiseText)
+			.Where(match => match.Groups[6].Success)
+			.Select(match => match.Groups[6].Value)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		settings.CapturedLinks = ChatHistoryReader.FormatCaptured(captured.Where(pair => used.Contains(pair.Key)).ToDictionary());
+	}
+
+	// Splits a history message and names its item links after the bag item with the same id (link bytes 31-34 = record
+	// +0xA58, ChatItemLink); the id is not unique, so the name is only a label and never decides what is sent.
+	private static IEnumerable<ChatHistorySegment> Describe(byte[] message, IReadOnlyList<ChatItemOption> items) {
+		foreach (ChatHistorySegment part in ChatHistoryReader.Split(message)) {
+			if (part.IsLink && part.Bytes[0] == 0x0B && part.Bytes.Length == ChatItemLink.Length) {
+				uint uniqueId = BitConverter.ToUInt32(part.Bytes, 31);
+				ChatItemOption? item = items.FirstOrDefault(candidate => candidate.UniqueId == uniqueId);
+				yield return item == null ? part : part with { Label = item.Name };
+				continue;
+			}
+			yield return part;
+		}
+	}
 }

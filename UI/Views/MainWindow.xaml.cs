@@ -17,8 +17,10 @@ public partial class MainWindow : Window {
 		// Ô theo dõi vật phẩm không bind Text nữa nên phải tự nghe: xem lý do ở LootFeed_Changed.
 		viewModel.PropertyChanged += (_, args) => {
 			if (args.PropertyName == nameof(MainWindowViewModel.LootFeedText)) LootFeed_Changed(viewModel.LootFeedText);
+			if (args.PropertyName == nameof(MainWindowViewModel.ChatFeedText)) ChatFeed_Changed(viewModel.ChatFeedText);
 		};
 		LootFeedBox.Text = viewModel.LootFeedText;
+		ChatFeedBox.Text = viewModel.ChatFeedText;
 		// Phím tắt Ctrl+A tắt Tự động đánh mà không có tín hiệu nào -> xem ShakeWhenAttackDisabledByHotkey.
 		viewModel.AccountList.AttackToggledExternally += ShakeWhenAttackDisabledByHotkey;
 
@@ -160,6 +162,42 @@ public partial class MainWindow : Window {
 		hasPendingLootFeedText = false;
 		pendingLootFeedText = "";
 		LootFeed.Clear();
+	}
+
+	// Incoming chat box: same rules as the loot box above (keep a selection alive, scroll to the newest line).
+	private string pendingChatFeedText = "";
+	private bool hasPendingChatFeedText;
+
+	private bool IsUserSelectingChatFeed => ChatFeedBox.IsKeyboardFocusWithin && ChatFeedBox.SelectionLength > 0;
+
+	private void ChatFeed_Changed(string text) {
+		if (IsUserSelectingChatFeed) {
+			pendingChatFeedText = text;
+			hasPendingChatFeedText = true;
+			return;
+		}
+		ApplyChatFeedText(text);
+	}
+
+	private void ChatFeed_SelectionChanged(object sender, RoutedEventArgs e) => FlushPendingChatFeedText();
+
+	private void ChatFeed_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => FlushPendingChatFeedText();
+
+	private void FlushPendingChatFeedText() {
+		if (!hasPendingChatFeedText || IsUserSelectingChatFeed) return;
+		hasPendingChatFeedText = false;
+		ApplyChatFeedText(pendingChatFeedText);
+	}
+
+	private void ApplyChatFeedText(string text) {
+		ChatFeedBox.Text = text;
+		ChatFeedBox.ScrollToEnd();
+	}
+
+	private void ClearChatFeed_Click(object sender, RoutedEventArgs e) {
+		hasPendingChatFeedText = false;
+		pendingChatFeedText = "";
+		ChatFeed.Clear();
 	}
 
 	// RUNG CỬA SỔ KHI PHÍM TẮT Ctrl+A TẮT "Tự động đánh".

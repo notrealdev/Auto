@@ -28,11 +28,22 @@ public static class EliteAvoidance {
 		return false;
 	}
 
+	// Owner 2026-10-14: only a "<c=" colour-tagged name is a real boss; a "(" name is just an enhanced monster and is kept
+	// at a much shorter distance (EnhancedMonsterRetreatRadiusRaw instead of Settings.ElitePlayerRetreatRadius).
+	public static bool IsColorTagBoss(ReadOnlySpan<byte> nameBytes) => nameBytes.IndexOf(ColorTagMarker) >= 0;
+
+	// One cell: an enhanced "(" monster is run from inside it, and the retreat aims one more cell (RetreatMarginRaw) out.
+	public const int EnhancedMonsterRetreatRadiusRaw = 256;
+
 	// 1 ô hiển thị = 256 raw trục X nhưng 512 raw trục Y. Không quy đổi thì "bán kính 500" hoá ra hình elip dẹt:
 	// gần 2 ô theo chiều ngang nhưng chưa tới 1 ô theo chiều dọc. Quy Y về đơn vị X rồi mới Euclid để vùng cấm
 	// tròn đều theo ô. Cố tình KHÁC AutoFsEntityScanner.GetMapDistance (Euclid thô, bám AutoFS) mà Range đang dùng:
 	// đây là metric mới của tính năng này, AutoFS không có tính năng tương ứng nên không có gì để lệch.
 	public const double RawYToRawXScale = 0.5;
+
+	// How far past the forbidden radius a retreat aims (Engine) and how far from an elite a monster must stand to be
+	// attacked (AutoFsEntityScanner). One cell = 256 raw.
+	public const int RetreatMarginRaw = 256;
 
 	// Số hướng quét thử khi tìm đích trốn. 16 hướng = mỗi 22,5 độ, đủ mịn để không bỏ sót khe giữa ba boss mà vẫn
 	// chỉ là 16 phép tính số học cho mỗi lượt cần trốn (không đọc bộ nhớ, không gửi lệnh nào).
@@ -44,12 +55,19 @@ public static class EliteAvoidance {
 		return Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
 	}
 
-	public static bool IsNearAnyElite(int x, int y, IReadOnlyList<(int X, int Y)> elites, int radius) {
-		if (radius <= 0) return false;
-		foreach ((int eliteX, int eliteY) in elites) {
-			if (Distance(x, y, eliteX, eliteY) <= radius) return true;
+	// Each zone carries its own radius (boss or enhanced monster). extraRaw widens every zone by the same amount.
+	public static bool IsNearAnyElite(int x, int y, IReadOnlyList<(int X, int Y, int Radius)> zones, int extraRaw = 0) {
+		foreach ((int eliteX, int eliteY, int radius) in zones) {
+			if (radius > 0 && Distance(x, y, eliteX, eliteY) <= radius + extraRaw) return true;
 		}
 		return false;
+	}
+
+	// Smallest "distance minus that zone's radius"; negative inside a zone, +infinity when the list is empty.
+	public static double NearestEliteClearance(int x, int y, IReadOnlyList<(int X, int Y, int Radius)> zones) {
+		double nearest = double.PositiveInfinity;
+		foreach ((int eliteX, int eliteY, int radius) in zones) nearest = Math.Min(nearest, Distance(x, y, eliteX, eliteY) - radius);
+		return nearest;
 	}
 
 	// Thứ tự góc BẮT BUỘC khớp Engine.TryWanderTrainingCorners: 0=(-,-) 1=(+,+) 2=(-,+) 3=(+,-).
@@ -73,16 +91,17 @@ public static class EliteAvoidance {
 
 	// Chỗ SÁT THỦ LĨNH NHẤT trên cả quãng đường đi, không phải chỉ ở điểm đích. Đây là thứ phân biệt "chạy ra xa"
 	// với "chạy vòng qua ngay trước mặt boss rồi dừng ở chỗ thoáng bên kia".
-	public static double NearestEliteAlongPath(int fromX, int fromY, int toX, int toY, IReadOnlyList<(int X, int Y)> elites) {
+	// Clearance (distance minus the zone's radius) at the closest point of the path.
+	public static double NearestEliteAlongPath(int fromX, int fromY, int toX, int toY, IReadOnlyList<(int X, int Y, int Radius)> zones) {
 		double nearest = double.PositiveInfinity;
-		foreach ((int eliteX, int eliteY) in elites) nearest = Math.Min(nearest, SegmentDistance(eliteX, eliteY, fromX, fromY, toX, toY));
+		foreach ((int eliteX, int eliteY, int radius) in zones) nearest = Math.Min(nearest, SegmentDistance(eliteX, eliteY, fromX, fromY, toX, toY) - radius);
 		return nearest;
 	}
 
 	// Khoảng cách tới thủ lĩnh gần nhất; +vô cùng khi danh sách rỗng.
-	public static double NearestEliteDistance(int x, int y, IReadOnlyList<(int X, int Y)> elites) {
+	public static double NearestEliteDistance(int x, int y, IReadOnlyList<(int X, int Y, int Radius)> zones) {
 		double nearest = double.PositiveInfinity;
-		foreach ((int eliteX, int eliteY) in elites) nearest = Math.Min(nearest, Distance(x, y, eliteX, eliteY));
+		foreach ((int eliteX, int eliteY, _) in zones) nearest = Math.Min(nearest, Distance(x, y, eliteX, eliteY));
 		return nearest;
 	}
 
@@ -99,21 +118,54 @@ public static class EliteAvoidance {
 	// Boss đuổi theo thì mỗi lượt quét lại cho ra đích mới xa hơn, nhân vật chạy tiếp, không có trạng thái "đứng im".
 	//
 	// Toàn bộ tính trong hệ đã quy đổi Y (RawYToRawXScale) cho tròn đều theo ô, rồi mới đổi ngược về raw.
+	//
+	// blockedDirections: directions (scaled-Y space, any length) the character could not walk along, usually a wall
+	// (Engine: the held retreat destination did not move the character). Candidates within 45 degrees of any of them are
+	// skipped; if that leaves none, the search runs again without them so there is always an answer.
+	// cleanInsideField: some direction both leaves the forbidden zone and stays inside Range around the center, walls
+	// ignored. false means the bosses cover the whole training area (owner 2026-10-13: then drop "Quanh điểm").
+	// Each zone has its own radius (owner 2026-10-14: bosses and enhanced monsters differ); every comparison works on the
+	// clearance "distance minus that zone's radius", which with one common radius ranks exactly as the plain distance did.
 	public static bool TryGetRetreatDestination(int playerX, int playerY, int centerX, int centerY, int range,
-		IReadOnlyList<(int X, int Y)> elites, int radius, int margin, out int destinationX, out int destinationY) {
+		IReadOnlyList<(int X, int Y, int Radius)> elites, int margin, out int destinationX, out int destinationY,
+		out bool cleanInsideField, IReadOnlyList<(double X, double Y)>? blockedDirections = null) {
+		bool found = TryGetRetreatDestinationCore(playerX, playerY, centerX, centerY, range, elites, margin, [], out destinationX, out destinationY, out cleanInsideField);
+		if (blockedDirections == null || blockedDirections.Count == 0) return found;
+		List<(double X, double Y)> units = [];
+		foreach ((double blockedX, double blockedY) in blockedDirections) {
+			double length = Math.Sqrt(blockedX * blockedX + blockedY * blockedY);
+			if (length >= 1e-6) units.Add((blockedX / length, blockedY / length));
+		}
+		if (units.Count > 0 && TryGetRetreatDestinationCore(playerX, playerY, centerX, centerY, range, elites, margin, units, out int openX, out int openY, out _)) {
+			destinationX = openX;
+			destinationY = openY;
+			return true;
+		}
+		return found;
+	}
+
+	// Cosine of 45 degrees: a candidate this close to a blocked direction would walk into the same wall.
+	private const double BlockedDirectionCosine = 0.7071;
+
+	private static bool TryGetRetreatDestinationCore(int playerX, int playerY, int centerX, int centerY, int range,
+		IReadOnlyList<(int X, int Y, int Radius)> elites, int margin, IReadOnlyList<(double X, double Y)> blockedUnits,
+		out int destinationX, out int destinationY, out bool cleanInsideField) {
+		cleanInsideField = false;
 		destinationX = 0;
 		destinationY = 0;
-		if (radius <= 0 || elites.Count == 0) return false;
+		if (elites.Count == 0) return false;
 
 		double playerScaledY = playerY * RawYToRawXScale;
 		double pushX = 0;
 		double pushY = 0;
+		// Clearance, not distance: distance minus that zone's radius.
 		double nearest = double.PositiveInfinity;
-		foreach ((int eliteX, int eliteY) in elites) {
+		foreach ((int eliteX, int eliteY, int radius) in elites) {
+			if (radius <= 0) continue;
 			double deltaX = playerX - (double)eliteX;
 			double deltaY = playerScaledY - eliteY * RawYToRawXScale;
 			double distance = Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
-			nearest = Math.Min(nearest, distance);
+			nearest = Math.Min(nearest, distance - radius);
 			if (distance > radius) continue;
 			// Đứng trùng toạ độ boss thì không có hướng nào để lấy; đẩy sang +X cho có một hướng xác định.
 			if (distance < 1) {
@@ -125,7 +177,8 @@ public static class EliteAvoidance {
 			pushY += deltaY / distance * weight;
 		}
 
-		double needed = radius + margin - nearest;
+		if (double.IsPositiveInfinity(nearest)) return false;
+		double needed = margin - nearest;
 		if (needed < margin) needed = margin;
 
 		// CHẤM ĐIỂM NHIỀU HƯỚNG thay vì tin một hướng đẩy duy nhất (chủ dự án báo 2026-09-15: ba boss đứng ba góc,
@@ -172,9 +225,19 @@ public static class EliteAvoidance {
 		//   3. đường đi thoáng hơn, rồi tới đích thoáng hơn
 		void Evaluate(int candidateX, int candidateY, bool insideField) {
 			if (candidateX <= 0 || candidateY <= 0) return;
+			if (blockedUnits.Count > 0) {
+				double towardX = candidateX - (double)playerX;
+				double towardY = (candidateY - (double)playerY) * RawYToRawXScale;
+				double towardLength = Math.Sqrt(towardX * towardX + towardY * towardY);
+				if (towardLength >= 1) {
+					foreach ((double unitX, double unitY) in blockedUnits) {
+						if ((towardX * unitX + towardY * unitY) / towardLength > BlockedDirectionCosine) return;
+					}
+				}
+			}
 			double pathScore = NearestEliteAlongPath(playerX, playerY, candidateX, candidateY, elites);
-			double endScore = NearestEliteDistance(candidateX, candidateY, elites);
-			bool clean = endScore >= radius && pathScore >= nearest - ScoreTieEpsilon;
+			double endScore = NearestEliteClearance(candidateX, candidateY, elites);
+			bool clean = endScore >= 0 && pathScore >= nearest - ScoreTieEpsilon;
 
 			bool better;
 			if (clean != bestClean) better = clean;
@@ -230,6 +293,8 @@ public static class EliteAvoidance {
 		if (! found) return false;
 		destinationX = bestX;
 		destinationY = bestY;
+		// The ranking puts "clean and inside the field" first, so the best one has both flags whenever any candidate does.
+		cleanInsideField = bestClean && bestInsideField;
 		return true;
 	}
 }

@@ -43,11 +43,26 @@ Gọi ứng dụng của dự án này là `Auto` (phân biệt với `DEV auto`
 * Build thành công vẫn KHÔNG phải bằng chứng chức năng chạy đúng — áp nguyên Mục 4 của rule global.
 * Khi cần kiểm tra XAML hợp lệ, có thể build project demo/scratchpad riêng thay vì build chính `Auto.csproj`, trừ khi chủ dự án yêu cầu build trực tiếp.
 
+## Địa chỉ game chỉ nằm trong `Utils/GameAddresses.cs` (chủ dự án chốt 2026-10-15)
+
+* Mọi địa chỉ của client phía C# PHẢI khai báo trong `Utils/GameAddresses.cs`: RVA, con trỏ toàn cục, địa chỉ hàm, vtable, offset trường, stride, đường con trỏ. Áp dụng cả code trong `DebugTools`.
+* Lý do: khi client update thì phải tìm lại gần như toàn bộ địa chỉ; gom về một file thì biết ngay cần dò lại những gì.
+* File khác chỉ được tham chiếu `GameAddresses.X.Y`. Cấm viết số địa chỉ thẳng trong code (kể cả `IntPtr.Add(x, 0x...)`) và cấm khai báo hằng địa chỉ riêng mang giá trị số trong file khác.
+* `Utils/GameAddresses.cs` không chứa comment, chỉ có hằng số, để dễ quan sát. Mọi chú thích (nguồn đo, ngày, bằng chứng, trạng thái xác nhận, kinh nghiệm dò lại khi update) ghi trong `Utils/GameAddresses.md`; thêm/sửa hằng nào thì cập nhật dòng tương ứng trong file .md đó cùng lượt.
+* Phía native vẫn ở `Native/SystemUint/GameClientAddresses.h` (C++ không đọc được file C#); giá trị trùng nhau giữa hai file phải sửa cả hai.
+* Không thuộc luật này: hằng Win32 (WM_, PROCESS_, PAGE_, MEM_), mã lệnh AutoFS, độ dài vùng đọc/quét, chữ ký byte dùng để dò.
+
 ## Luật đăng nhập (chủ dự án chốt 2026-10-10)
 
 * Thử login lại KHÔNG được tắt client: giữ nguyên cửa sổ, đi tiếp từ màn hình client đang đứng, xoá hai ô tài khoản/mật khẩu rồi nhập lại.
 * Chỉ khi client crash (tiến trình đã thoát) hoặc đơ (cửa sổ không phản hồi / không có cửa sổ) mới được tắt client đó và mở client mới.
 * Code: `Login/LoginAutomation.cs` → `TryLoginWithRetries`, `IsClientUsable`, `RunLoginSteps`.
+
+## Luật di chuyển trong bãi (chủ dự án chốt 2026-10-11)
+
+* Trong phạm vi bãi tuyệt đối không dùng di chuyển có gắn cờ (lệnh 32/0/5 hay bộ dẫn đường 331): các luồng quay lại bãi (sửa/bán, Đại Phu, Tự lên bãi, Di chuyển bãi) vừa vào bãi là dừng và xoá tuyến ngay.
+* Không kéo nhân vật về tâm bãi khi không có quái hoặc bị kẹt trong bãi; lệnh 331 đã thử và không thoát được kẹt tường (1đêm2nháy 17:41-17:42), còn hiện cờ.
+* Code: `Runtime/AccountEngineCoordinator.cs` → `HandOverReturnInsideArea`.
 
 ## Git Rules
 

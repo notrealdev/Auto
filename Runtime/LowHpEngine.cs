@@ -6,7 +6,9 @@ using Auto.Utils;
 internal sealed class LowHpEngine {
 	private const int MaximumNameLength = 64;
 	private const int MaximumPackedItemId = 0x001FFFFF;
-	private const int DispatchRetryMilliseconds = 1000;
+	// Measured map change after the hotkey: 1.06 s (PhâyKer 2026-10-13 15:25:23) and 1.76 s (XinLỗiEm 16:28:42). With the
+	// old 1000 ms the second talisman was pressed before the first one had landed.
+	private const int DispatchRetryMilliseconds = 3000;
 	private const int MaximumDispatchAttempts = 5;
 	// Về tới thành thì đợi đúng khoảng này rồi cho lên bãi, KHÔNG chờ thuốc hay HP (chủ dự án chốt 2026-09-26: 1000 bình mua nhanh/ngày
 	// dùng rất lâu mới hết, không có thuốc trong túi cũng không sao vì lên bãi là mua nhanh được; trong thành thì không mua được).
@@ -19,6 +21,8 @@ internal sealed class LowHpEngine {
 	private TalismanState state;
 	private int sourceMapId;
 	private int townMapId;
+	// Map the talisman took the character to in this run, 0 before the first use.
+	public int TownMapId => townMapId;
 	private DateTime nextDispatchUtc;
 	private int dispatchAttempts;
 	private DateTime arrivedInTownUtc;
@@ -42,7 +46,17 @@ internal sealed class LowHpEngine {
 	// Dùng Hồi thành phù khi HP chạm ngưỡng, xác nhận bằng đổi map, rồi đợi 2 giây ở thành trước khi cho lên bãi lại.
 	// isTraining: nhân vật đang ở bãi và đang train (không đang Tự lên bãi / Di chuyển bãi, không ở ngoài bãi) — coordinator tính.
 	public bool Tick(int processId, IntPtr gameWindowHandle, GameSnapshot snapshot, int mapId, bool isTraining, Action<string>? log) {
-		if (! settings.EnableLowHpReturnTalisman || ! snapshot.Success || snapshot.Hp <= 0 || snapshot.MaxHp <= 0) {
+		if (! settings.EnableLowHpReturnTalisman) {
+			Reset();
+			return false;
+		}
+		// The client is loading the new map right after the talisman: heartbeat showed Snapshot=False/NameReadFailed at
+		// 15:25:24.174 (PhâyKer 2026-10-13). Keep waiting for the map change instead of dropping the state.
+		// Only a failed read waits: HP 0 on a good read is death, and returning true here kept the coordinator from ever reaching
+		// HandleDeathPopup (BốCủaPhiDương 2026-10-15: talisman posted 16:30:22.113 at 37/274, died before the map changed, then
+		// stood dead with the revive popup open, no heartbeat and no death.log line until the owner stepped in).
+		if (! snapshot.Success || snapshot.Hp <= 0 || snapshot.MaxHp <= 0) {
+			if (state == TalismanState.WaitingMapChange && ! snapshot.Success) return true;
 			Reset();
 			return false;
 		}
@@ -80,6 +94,10 @@ internal sealed class LowHpEngine {
 				arrivedInTownUtc = now;
 				return true;
 			}
+			if (now < nextDispatchUtc) return true;
+			// HP is judged only once the wait is over. During the map load the snapshot read 296/561 and 288/542 (both ~53%)
+			// while the real HP was 77 and 68; aborting on that read let the talisman fire again inside town five times
+			// (PhâyKer 2026-10-13 15:25:24) or burned a second talisman (XinLỗiEm 16:28:43).
 			if (! belowThreshold) {
 				log?.Invoke($"LOW_HP_ABORTED_HP_RECOVERED | Hp={snapshot.Hp}/{snapshot.MaxHp} | HpPercent={hpPercent} | Threshold={settings.LowHpReturnTalismanThreshold} | SourceMapId={sourceMapId} | CurrentMapId={mapId} | Attempts={dispatchAttempts} | Reason=HP vượt ngưỡng trước khi map đổi");
 				// Keep townMapId: a plain Reset() here erased it and let the talisman fire inside town
@@ -87,7 +105,6 @@ internal sealed class LowHpEngine {
 				ResetKeepingTown();
 				return false;
 			}
-			if (now < nextDispatchUtc) return true;
 			if (dispatchAttempts >= MaximumDispatchAttempts) {
 				// No more "stand still until HP is full" (owner 2026-09-27): in town HP never regenerates and potions cannot be
 				// bought, so PhâyKer stood at 78/537 for ~2 hours. Hand over to return-to-training instead, same as a normal

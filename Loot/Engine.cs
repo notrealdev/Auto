@@ -18,6 +18,9 @@ public sealed class Engine {
 	private const int FailedCoordinateCooldownMilliseconds = 30000;
 	// How long the slot of a single-attempt item is watched after its one command 78 (no command is sent meanwhile).
 	private const int SingleAttemptObserveMilliseconds = 500;
+	// How long an item Auto gave up on is still watched for a pickup the client finishes late (CheckLatePickups). The case
+	// measured on 2026-10-13 left the ground within 8 s of Auto giving up.
+	private const int LatePickupWatchMilliseconds = 20000;
 	private readonly Settings settings;
 	private readonly Finder finder;
 	private readonly AutoFsAttackTransport transport;
@@ -26,6 +29,8 @@ public sealed class Engine {
 	// Khoá = MemoryFingerprint của món, giá trị = phán quyết lần ghi gần nhất. Xem LogFilterDecisions.
 	private readonly Dictionary<int, string> loggedFilterDecisions = new();
 	private readonly Dictionary<(int X, int Y), DateTime> failedCoordinates = new();
+	// Items Auto stopped trying to pick while still on the ground; only the worker thread touches it.
+	private readonly List<LatePickupWatch> latePickupWatches = [];
 	private CancellationTokenSource? workerCancellation;
 	private Task? worker;
 	private int processId;
@@ -155,6 +160,7 @@ public sealed class Engine {
 					context.Log?.Invoke($"Auto Nhặt AutoFS bắt đầu | PID={context.ProcessId} | Worker=DEDICATED | Synchronization=SHARED_MONITOR | Scan={ScanIntervalMilliseconds}ms | Commands={AutoFsSelectGroundItemCommand}/NearItemIndex,{AutoFsApproachCommand}/0,{AutoFsPickupCommand}/ItemIndex | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | TablePointer=Game.exe+0x{GameAddresses.Item.GroundRecordTablePointer:X} | Stride=0x{GameAddresses.Item.GroundRecordStride:X}");
 					startedLogged = true;
 				}
+				CheckLatePickups(context);
 				LootFindResult result = finder.Find(snapshot);
 				if (! result.Success) {
 					LogErrorOnce(context.Log, context.ProcessId, result.FailReason);
@@ -207,6 +213,7 @@ public sealed class Engine {
 					workerCancellation = null;
 					worker = null;
 					failedCoordinates.Clear();
+					latePickupWatches.Clear();
 				}
 			}
 		}
@@ -227,6 +234,10 @@ public sealed class Engine {
 				}
 				if (actionGate.IsLootSuspended) {
 					exitReason = $"SUSPENDED_{actionGate.GetLootSuspensionState()}";
+					break;
+				}
+				if (actionGate.LootPausedForElite) {
+					exitReason = "PAUSED_FOR_ELITE_RETREAT";
 					break;
 				}
 				if (IsManualInputActive()) {
@@ -304,6 +315,11 @@ public sealed class Engine {
 
 		try {
 			while (! token.IsCancellationRequested && settings.Enabled && ! IsManualInputActive()) {
+				// The pickup loop holds the action gate, and the boss retreat waits on it (AutoFsActionGate.SetLootPausedForElite).
+				if (actionGate.LootPausedForElite) {
+					outcome = "PAUSED_FOR_ELITE_RETREAT";
+					break;
+				}
 				GroundSlotReading slot = ReadGroundSlot(reader, moduleBase, groundTable, itemIndex, candidate);
 				LogLootDiagnostic(context.DropLog, $"LOOT_SLOT_RECHECK | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | AttemptNext={pendingPickupAttempts + 1} | ExpectedGroundId={candidate.GroundId} | CurrentGroundId={slot.GroundId} | ExpectedRaw={candidate.RawX}/{candidate.RawY} | CurrentRaw={slot.RawX}/{slot.RawY} | Matches={slot.Matches} | Reason={slot.Reason}");
 				if (! slot.Matches) {
@@ -397,28 +413,8 @@ public sealed class Engine {
 					? $"TúiTrước={inventoryCountBefore} | TúiSau={inventoryCountAfter}"
 					: $"TúiTrước={(inventoryCountReadable ? inventoryCountBefore.ToString() : "không đọc được")} | TúiSau={(afterReadable ? inventoryCountAfter.ToString() : "không đọc được")}";
 				if (inventoryCountReadable && afterReadable && inventoryCountAfter > inventoryCountBefore) {
-					// Dòng DUY NHẤT khẳng định một món đã vào túi account này. Tên lấy từ ô đất lúc lọc, còn số lượng
-					// lấy từ túi, nên nếu client nhặt nhầm món khác thì TúiSau của tên này sẽ KHÔNG tăng.
-					//
-					// Nhóm tiêu hao/nguyên liệu nhặt liên tục thì đổi sang nhãn LOOT_ROUTINE_PICKUP để rơi sang
-					// loot-scan.log, giữ loot-drops.log chỉ còn món đáng chú ý (chủ dự án chốt 2026-09-15).
-					// Đo trên chính loot-drops.log 2 tiếng ngày 14/09: 81/94 dòng là dược phẩm, 12/94 là Tứ Tượng.
-					// KHÔNG xoá hẳn — vẫn cần để truy khi nghi nhặt sai hoặc kiểm giới hạn số lượng dược phẩm.
-					AutoFsSpecialItemCategory category = AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw);
-					bool routinePickup = IsRoutinePickup(classification, category);
-					string marker = routinePickup ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
-					// Đẩy lên ô theo dõi trên giao diện ĐÚNG những lượt vào loot-drops.log, tức bỏ nhóm nhặt thường xuyên.
-					// Owner rule 2026-09-27 for EQUIPMENT and WEAPONS: white is always hidden; blue is hidden unless the name
-					// is in the "Vũ khí xanh" list; green and above always show. Everything that is not equipment always
-					// shows. The old rule hid every white/blue item, which also hid the skill book "Tam Đầu Lục Thủ"
-					// (Color=White, PhâyKer 2026-09-27 01:11:27). Equipment is AttributeClass == 0: in loot-scan.log
-					// 2026-09-27 every AttributeClass=0 item had GroundType 9-18 (weapons, armor, jewelry), while
-					// books/potions/Tứ Tượng had 7/1/3 on GroundType 38-39.
-					bool equipment = category is AutoFsSpecialItemCategory.None or AutoFsSpecialItemCategory.GreenWeapon && classification.AttributeClass == 0;
-					bool listedBlueWeapon = category == AutoFsSpecialItemCategory.GreenWeapon && classification.Color == ItemColor.Blue;
-					bool suppressUiFeed = equipment && classification.Color is ItemColor.White or ItemColor.Blue && ! listedBlueWeapon;
-					if (! routinePickup && ! suppressUiFeed) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
-					context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={pendingPickupAttempts} | Raw={coordinate.X}/{coordinate.Y}");
+					RecordPickup(context, itemIndex, candidate, classification, inventoryEvidence, pendingPickupAttempts, coordinate, "");
+					RaiseLateWatchBaseline(candidateKey, inventoryCountAfter);
 				} else if (! inventoryCountReadable || ! afterReadable) {
 					// Không đọc được túi thì KHÔNG được im lặng: im lặng ở đây sẽ giấu luôn cả lượt nhặt thật.
 					LogLootDiagnostic(context.DropLog, $"LOOT_PICKUP_UNVERIFIED | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | {inventoryEvidence} | Reason=INVENTORY_READ_FAILED");
@@ -454,8 +450,93 @@ public sealed class Engine {
 				}
 			} else {
 				LogLootDiagnostic(context.DropLog, $"LOOT_CANDIDATE_END | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Outcome={outcome} | Attempts={pendingPickupAttempts} | NearAttempts={pendingNearPickupAttempts} | Prepared={approachPrepared} | NativeFlow=GROUND_COORDINATE_CONVERTER_MOVE_PICKUP | Raw={coordinate.X}/{coordinate.Y}");
+				// Command 78 was sent but the item was still on the ground when the loop stopped: the client may still
+				// finish that pickup (PhâyKer 2026-10-13: "Ly Cung phủ" ended NEAR_RETRY_LIMIT_COOLDOWN at 21:00:29.734, left
+				// the ground before 21:00:37 while its coordinate was cooling down, and was in the bag with no pickup line).
+				if (pendingPickupAttempts > 0) {
+					WatchForLatePickup(reader, moduleBase, groundTable, itemIndex, candidate, classification, candidateKey, pendingPickupAttempts, coordinate, outcome, context.ProcessId);
+				}
 			}
 			ClearPending();
+		}
+	}
+
+	// Writes one confirmed pickup: the only line saying an item entered this account's bag. The name comes from the ground
+	// slot at filter time and the count from the bag, so a client that picked a different item does not raise this name.
+	// lateDetail is empty for a pickup seen inside ProcessCandidate and describes the delay for one seen by CheckLatePickups.
+	private static void RecordPickup(WorkerContext context, int itemIndex, LootSnapshot candidate, ItemClassification classification,
+		string inventoryEvidence, int attempts, (int X, int Y) coordinate, string lateDetail) {
+		// Nhóm tiêu hao/nguyên liệu nhặt liên tục thì đổi sang nhãn LOOT_ROUTINE_PICKUP để rơi sang
+		// loot-scan.log, giữ loot-drops.log chỉ còn món đáng chú ý (chủ dự án chốt 2026-09-15).
+		// Đo trên chính loot-drops.log 2 tiếng ngày 14/09: 81/94 dòng là dược phẩm, 12/94 là Tứ Tượng.
+		// KHÔNG xoá hẳn — vẫn cần để truy khi nghi nhặt sai hoặc kiểm giới hạn số lượng dược phẩm.
+		AutoFsSpecialItemCategory category = AutoFsSpecialItemClassifier.Classify(candidate.ItemNameRaw);
+		bool routinePickup = IsRoutinePickup(classification, category);
+		string marker = routinePickup ? "LOOT_ROUTINE_PICKUP" : "LOOT_PICKED_UP";
+		// Đẩy lên ô theo dõi trên giao diện ĐÚNG những lượt vào loot-drops.log, tức bỏ nhóm nhặt thường xuyên.
+		// Owner rule 2026-09-27 for EQUIPMENT and WEAPONS: white is always hidden; blue is hidden unless the name
+		// is in the "Vũ khí xanh" list; green and above always show. Everything that is not equipment always
+		// shows. The old rule hid every white/blue item, which also hid the skill book "Tam Đầu Lục Thủ"
+		// (Color=White, PhâyKer 2026-09-27 01:11:27). Equipment is AttributeClass == 0: in loot-scan.log
+		// 2026-09-27 every AttributeClass=0 item had GroundType 9-18 (weapons, armor, jewelry), while
+		// books/potions/Tứ Tượng had 7/1/3 on GroundType 38-39.
+		bool equipment = category is AutoFsSpecialItemCategory.None or AutoFsSpecialItemCategory.GreenWeapon && classification.AttributeClass == 0;
+		bool listedBlueWeapon = category == AutoFsSpecialItemCategory.GreenWeapon && classification.Color == ItemColor.Blue;
+		bool suppressUiFeed = equipment && classification.Color is ItemColor.White or ItemColor.Blue && ! listedBlueWeapon;
+		bool shownOnFeed = ! routinePickup && ! suppressUiFeed;
+		if (shownOnFeed) LootFeed.Add(context.ProcessId, candidate.ItemNameRaw);
+		PickupJournal.Record(context.ProcessId, candidate.ItemNameRaw, shownOnFeed);
+		context.DropLog?.Invoke($"{marker} | PID={context.ProcessId} | Index={itemIndex} | Name={candidate.ItemNameRaw} | Group={classification.Group} | AutoFsCategory={category} | Color={classification.Color} | {inventoryEvidence} | Attempts={attempts} | Raw={coordinate.X}/{coordinate.Y}{lateDetail}");
+	}
+
+	// Starts watching an item Auto stopped trying to pick while it was still on the ground. The bag count is taken now, with
+	// the item still on the ground, so a later rise of that name together with the slot emptying is this pickup.
+	private void WatchForLatePickup(MemoryReader reader, IntPtr moduleBase, long groundTable, int itemIndex, LootSnapshot candidate,
+		ItemClassification classification, string candidateKey, int attempts, (int X, int Y) coordinate, string outcome, int currentProcessId) {
+		if (! ReadGroundSlot(reader, moduleBase, groundTable, itemIndex, candidate).Matches) return;
+		if (! finder.TrySnapshotInventory(currentProcessId, out Dictionary<string, int> inventory)) return;
+		int countBefore = inventory.TryGetValue(candidateKey, out int count) ? count : 0;
+		latePickupWatches.RemoveAll(watch => watch.ItemIndex == itemIndex);
+		latePickupWatches.Add(new LatePickupWatch(itemIndex, candidate, classification, candidateKey, countBefore, attempts, coordinate, outcome,
+			DateTime.UtcNow));
+	}
+
+	// Another pickup of the same name was confirmed meanwhile: it must not be read as the watched item.
+	private void RaiseLateWatchBaseline(string candidateKey, int countAfter) {
+		for (int index = 0; index < latePickupWatches.Count; index++) {
+			LatePickupWatch watch = latePickupWatches[index];
+			if (watch.CandidateKey == candidateKey && watch.CountBefore < countAfter) latePickupWatches[index] = watch with { CountBefore = countAfter };
+		}
+	}
+
+	// Runs every scan: a watched item whose slot emptied while the bag count of its name rose was picked by this account
+	// after Auto gave up on it, and is logged and journaled like any pickup. A slot that emptied without the count rising
+	// was taken by someone else and stays silent, as in ProcessCandidate.
+	private void CheckLatePickups(WorkerContext context) {
+		if (latePickupWatches.Count == 0) return;
+		DateTime now = DateTime.UtcNow;
+		latePickupWatches.RemoveAll(watch => now - watch.SinceUtc > TimeSpan.FromMilliseconds(LatePickupWatchMilliseconds));
+		if (latePickupWatches.Count == 0) return;
+		try {
+			using MemoryReader reader = new(context.ProcessId);
+			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
+			if (moduleBase == IntPtr.Zero) return;
+			IntPtr groundTablePointer = reader.ReadPointer32(IntPtr.Add(moduleBase, GameAddresses.Item.GroundRecordTablePointer));
+			if (groundTablePointer == IntPtr.Zero) return;
+			Dictionary<string, int>? inventory = null;
+			foreach (LatePickupWatch watch in latePickupWatches.ToArray()) {
+				if (ReadGroundSlot(reader, moduleBase, groundTablePointer.ToInt64(), watch.ItemIndex, watch.Candidate).Matches) continue;
+				latePickupWatches.Remove(watch);
+				if (inventory == null && ! finder.TrySnapshotInventory(context.ProcessId, out inventory)) return;
+				int countAfter = inventory!.TryGetValue(watch.CandidateKey, out int count) ? count : 0;
+				if (countAfter <= watch.CountBefore) continue;
+				finder.InvalidatePotionCounts();
+				RecordPickup(context, watch.ItemIndex, watch.Candidate, watch.Classification, $"TúiTrước={watch.CountBefore} | TúiSau={countAfter}",
+					watch.Attempts, watch.Coordinate, $" | NhặtTrễ=True | SauKhiBỏCuộc={(int)(now - watch.SinceUtc).TotalMilliseconds}ms | OutcomeCũ={watch.Outcome}");
+				RaiseLateWatchBaseline(watch.CandidateKey, countAfter);
+			}
+		} catch {
+			// A failed read only skips this scan; the watch stays until it expires.
 		}
 	}
 
@@ -676,7 +757,10 @@ public sealed class Engine {
 	private void LogLootDiagnostic(Action<string>? currentDropLog, string message) {
 		if (!settings.LogCandidates || currentDropLog == null) return;
 		// Dòng nhặt THÀNH CÔNG không đi qua đây: nó gọi thẳng context.DropLog vì không mang từ khoá lỗi nào.
-		if (!message.Contains("FAIL", StringComparison.OrdinalIgnoreCase) &&
+		// LOOT_CANDIDATE_START/END always pass: their timestamps show how long one pickup held the action gate, which was
+		// the missing evidence for the 29 s retreat gap of PhâyKer 2026-10-13 22:18:13-22:18:42.
+		if (!message.StartsWith("LOOT_CANDIDATE_", StringComparison.Ordinal) &&
+			!message.Contains("FAIL", StringComparison.OrdinalIgnoreCase) &&
 			!message.Contains("REJECTED", StringComparison.OrdinalIgnoreCase) &&
 			!message.Contains("SKIPPED", StringComparison.OrdinalIgnoreCase) &&
 			!message.Contains("SLOT_LEFT", StringComparison.OrdinalIgnoreCase) &&
@@ -734,5 +818,8 @@ public sealed class Engine {
 	// Trước đây ReadGroundSlot có đọc tên hiện tại nhưng chỉ dùng để so rồi vứt đi, nên log chỉ nói được "ô đã đổi"
 	// mà không nói "đổi thành món gì". Đúng thứ đó mới chỉ ra được ô đất có bị món khác chiếm hay không — tức phân
 	// biệt "món tự biến mất" với kịch bản đua tranh tái sử dụng ô.
+	private sealed record LatePickupWatch(int ItemIndex, LootSnapshot Candidate, ItemClassification Classification, string CandidateKey,
+		int CountBefore, int Attempts, (int X, int Y) Coordinate, string Outcome, DateTime SinceUtc);
+
 	private readonly record struct GroundSlotReading(bool Matches, int GroundId, int RawX, int RawY, string Reason, string CurrentName = "");
 }

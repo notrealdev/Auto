@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Auto.Loot;
+using Auto.Utils;
 
 public static class FullMouseHandlerPickupCommand {
 	private const int ProcessVmOperation = 0x0008;
@@ -36,12 +37,12 @@ public static class FullMouseHandlerPickupCommand {
 	// phải suy đoán. HandlerRva xác nhận bằng BSim (VA cũ 0x5836D0 khớp DUY NHẤT FUN_00584530@0x584530,
 	// Similarity=1.0, Significance=357.3) VÀ đối chứng chéo độc lập: đọc trực tiếp slot vtable mới tại +0x10 ra đúng
 	// 0x00584530 — khớp tuyệt đối với kết quả BSim.
-	private const int HandlerRva = 0x184530;
-	private const int InputObjectRva = 0x5228B8;
-	private const int ExpectedVtableRva = 0x489F20;
-	private const int InputClientXRva = 0x3BACA4;
-	private const int InputClientYRva = 0x3BACA8;
-	private const int InputLeftStateOffset = 0xFC;
+	private const int HandlerRva = GameAddresses.Functions.MouseHandler;
+	private const int InputObjectRva = GameAddresses.Globals.MouseInputObject;
+	private const int ExpectedVtableRva = GameAddresses.Vtables.MouseInputObject;
+	private const int InputClientXRva = GameAddresses.Globals.MouseInputClientX;
+	private const int InputClientYRva = GameAddresses.Globals.MouseInputClientY;
+	private const int InputLeftStateOffset = GameAddresses.MouseInput.LeftState;
 	private const int WmMouseMove = 0x0200;
 	private const int WmLeftButtonDown = 0x0201;
 	private const int WmLeftButtonUp = 0x0202;
@@ -56,7 +57,7 @@ public static class FullMouseHandlerPickupCommand {
 	private const int AttackClientYOffset = -70;
 	// Cập nhật sau bản game 2026-08-28: cùng hàm đã xác nhận qua BSim+byte thật cho RuntimeLayoutResolver.RepairConfirmationSignature. Chưa build/test runtime.
 	// Cập nhật lại sau bản update 2026-09-29: cùng hàm, cùng bằng chứng BSim (Similarity=1.0) với RuntimeLayoutResolver.RepairConfirmationSignature (xem đó).
-	private const int RepairConfirmationFunctionRva = 0x297D60;
+	private const int RepairConfirmationFunctionRva = GameAddresses.Functions.RepairConfirmation;
 	private const uint MinimumSystemModuleEip = 0x70000000;
 	private const int SafePointAttempts = 100;
 	private const int SafePointRetryMilliseconds = 2;

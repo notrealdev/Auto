@@ -53,8 +53,8 @@ internal static class PetHealthReader {
 	//
 	// Lưu ý +0x08 đang được GameAddresses.Entity đặt tên ClassPointer. Giá trị đọc được là 0x223C, không phải
 	// con trỏ hợp lệ, nên cái tên đó nhiều khả năng sai — không đổi ở đây vì ngoài phạm vi việc đang làm.
-	private const int OwnerCharacterId = 0x0008;
-	private const int PetOwnerCharacterId = 0x429C;
+	private const int OwnerCharacterId = GameAddresses.Entity.OwnerCharacterId;
+	private const int PetOwnerCharacterId = GameAddresses.Entity.PetOwnerCharacterId;
 
 	// Khối đầu bản ghi entity, gom hai trường phải đọc cho MỌI entity: EntityType (0x0028) và LifecycleStatus
 	// (0x01E8). Suy ra từ AutoFsClientProfile nên đổi offset bên đó là ở đây tự theo.
@@ -90,9 +90,13 @@ internal static class PetHealthReader {
 			// Đánh đổi đã biết: phép kiểm "hai Đệ cùng mã chủ" ở cuối hàm chỉ còn chạy trong lượt quét đầy đủ. Chấp
 			// nhận được vì tính tới 2026-09-08 đã 1294 lượt chưa lần nào chạm nhánh đó.
 			byte[] header = new byte[EntityHeaderSize];
+			// Why the remembered pet slot was rejected, kept for the "no pet" detail (owner 2026-10-15: find out why a live
+			// pet goes missing; buff.log 2026-10-15 had 648 cases of the same slot vanishing under 2 s with the same HP).
+			string cachedRejection = "ÔĐệĐãNhớ=không có";
 			if (cachedPetIndexByProcess.TryGetValue(processId, out int cachedIndex)) {
-				PetHealthReading cached = TryReadPetAt(reader, layout, entityTable, cachedIndex, ownerId, header);
+				PetHealthReading cached = TryReadPetAt(reader, layout, entityTable, cachedIndex, ownerId, header, true);
 				if (cached.Present) return cached;
+				cachedRejection = $"ÔĐệĐãNhớ=#{cachedIndex} bị loại vì {cached.Detail}";
 				cachedPetIndexByProcess.TryRemove(processId, out _);
 			}
 
@@ -101,13 +105,13 @@ internal static class PetHealthReader {
 			// Lượt quét ĐẦY ĐỦ: chỉ chạy khi chưa có cache hoặc ô cache không còn đúng.
 			// MỘT lần đọc lấy cả EntityType (0x0028) lẫn LifecycleStatus (0x01E8) — hai trường nằm gọn trong 456 byte.
 			for (int index = AutoFsClientProfile.FirstEntityIndex; index <= AutoFsClientProfile.LastEntityIndex; index++) {
-				PetHealthReading found = TryReadPetAt(reader, layout, entityTable, index, ownerId, header);
+				PetHealthReading found = TryReadPetAt(reader, layout, entityTable, index, ownerId, header, false);
 				if (found.Present) candidates.Add(found);
 				else if (found.EntityIndex == ForeignPetMarker) foreignPets++;
 			}
 			// Không con nào mang mã chủ của mình = coi như không có Đệ, để luồng Buff Đệ nhả quyền sạch sẽ.
 			// Nếu offset mã chủ sai thì nhánh này chạy suốt: Buff Đệ không kích, nhưng nhân vật KHÔNG bị treo.
-			if (candidates.Count == 0) return PetHealthReading.Missing($"Không entity type 6 nào mang mã chủ {ownerId}; đã bỏ qua {foreignPets} Đệ của người khác.");
+			if (candidates.Count == 0) return PetHealthReading.Missing($"Không entity type 6 nào mang mã chủ {ownerId}; đã bỏ qua {foreignPets} Đệ của người khác; {cachedRejection}.");
 			// Chủ dự án xác nhận 2026-09-08: mỗi nhân vật chỉ có ĐÚNG MỘT Đệ. Đây là luật của game, không đọc ra
 			// được từ code, nên ghi lại ở đây. Vì vậy hai con cùng mã chủ là chuyện KHÔNG được phép xảy ra: hoặc
 			// +0x429C không còn là mã chủ sau một bản client mới, hoặc bảng entity còn bản ghi cũ chưa dọn. Cả hai
@@ -128,24 +132,29 @@ internal static class PetHealthReader {
 	// Đọc và kiểm ĐỦ một ô entity xem có phải Đệ của mình không. Dùng chung cho cả đường nhanh lẫn lượt quét đầy đủ,
 	// nên hai đường KHÔNG THỂ lệch điều kiện nhau — đó là lý do tách hàm thay vì chép lại phép kiểm.
 	// Trả Present=true khi đúng là Đệ của mình; EntityIndex=ForeignPetMarker khi là Đệ của người khác.
-	private static PetHealthReading TryReadPetAt(MemoryReader reader, RuntimeLayout layout, IntPtr entityTable, int index, int ownerId, byte[] header) {
-		if (index < AutoFsClientProfile.FirstEntityIndex || index > AutoFsClientProfile.LastEntityIndex) return PetHealthReading.Missing();
+	// explain: put the rejection reason in Detail. Only for the remembered slot; the full scan passes false so it does not
+	// build a string for each of the 510 slots.
+	private static PetHealthReading TryReadPetAt(MemoryReader reader, RuntimeLayout layout, IntPtr entityTable, int index, int ownerId, byte[] header, bool explain) {
+		if (index < AutoFsClientProfile.FirstEntityIndex || index > AutoFsClientProfile.LastEntityIndex) return PetHealthReading.Missing(explain ? "ChỉSốNgoàiBảng" : "");
 		IntPtr entity = IntPtr.Add(entityTable, index * layout.EntityStride);
-		if (! reader.ReadInto(IntPtr.Add(entity, HeaderBase), header, EntityHeaderSize)) return PetHealthReading.Missing();
-		if (BitConverter.ToInt32(header, HeaderTypeOffset) != PetEntityType) return PetHealthReading.Missing();
-		if (BitConverter.ToInt32(header, HeaderStatusOffset) == AutoFsClientProfile.FinishedStatus) return PetHealthReading.Missing();
+		if (! reader.ReadInto(IntPtr.Add(entity, HeaderBase), header, EntityHeaderSize)) return PetHealthReading.Missing(explain ? "ĐọcHeaderLỗi" : "");
+		int entityType = BitConverter.ToInt32(header, HeaderTypeOffset);
+		if (entityType != PetEntityType) return PetHealthReading.Missing(explain ? $"EntityType={entityType}" : "");
+		int status = BitConverter.ToInt32(header, HeaderStatusOffset);
+		if (status == AutoFsClientProfile.FinishedStatus) return PetHealthReading.Missing(explain ? $"Status=Finished({status})" : "");
 		// Hp (0x27D0) và MaxHp (0x27D4) liền nhau nên gộp một lần đọc; vẫn kiểm liền kề vì hai offset này do
 		// RuntimeLayout cấp lúc chạy chứ không phải hằng số cứng.
 		int currentHp;
 		int maximumHp;
 		if (layout.MaxHpOffset == layout.HpOffset + sizeof(int)) {
-			if (! reader.TryReadInt32Pair(IntPtr.Add(entity, layout.HpOffset), out currentHp, out maximumHp)) return PetHealthReading.Missing();
+			if (! reader.TryReadInt32Pair(IntPtr.Add(entity, layout.HpOffset), out currentHp, out maximumHp)) return PetHealthReading.Missing(explain ? "ĐọcHpLỗi" : "");
 		} else {
 			currentHp = reader.ReadInt32(IntPtr.Add(entity, layout.HpOffset));
 			maximumHp = reader.ReadInt32(IntPtr.Add(entity, layout.MaxHpOffset));
 		}
-		if (currentHp <= 0 || maximumHp <= 0 || currentHp > maximumHp) return PetHealthReading.Missing();
-		if (reader.ReadInt32(IntPtr.Add(entity, PetOwnerCharacterId)) != ownerId) return new PetHealthReading(true, false, ForeignPetMarker, 0, 0, "");
+		if (currentHp <= 0 || maximumHp <= 0 || currentHp > maximumHp) return PetHealthReading.Missing(explain ? $"Hp={currentHp}/{maximumHp} không hợp lệ | Status={status}" : "");
+		int petOwnerId = reader.ReadInt32(IntPtr.Add(entity, PetOwnerCharacterId));
+		if (petOwnerId != ownerId) return new PetHealthReading(true, false, ForeignPetMarker, 0, 0, explain ? $"MãChủ={petOwnerId}≠{ownerId} | Hp={currentHp}/{maximumHp}" : "");
 		// Pet position, for walking closer when heals do not land. Same entity offsets as monsters; read on 6 clients
 		// 2026-09-27 each pet sat 92-855 raw units from its owner.
 		int rawX = reader.ReadInt32(IntPtr.Add(entity, layout.RawXOffset));

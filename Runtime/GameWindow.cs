@@ -83,6 +83,7 @@ public class GameWindow {
 
 	public Auto.Market.Settings MarketSettings { get; } = new();
 	internal Auto.Market.ChatEngine ChatEngine { get; }
+	internal Auto.Market.ChatInboxReader ChatInbox { get; } = new();
 
 	public Auto.Quest.Settings QuestSettings { get; } = new();
 

@@ -3,14 +3,14 @@ namespace Auto.Utils;
 using System.Text.RegularExpressions;
 
 // Reads the magic attribute lines of an item in the item table (the stat lines of the tooltip). Layout and ids are
-// documented at GameAddresses.Item.MagicAttributeArray and Globals.MagicAttributeDescriptorTable. Read-only.
+// documented in Utils/GameAddresses.md (Item.MagicAttributeArray, Globals.MagicAttributeDescriptorTable). Read-only.
 public static class ItemMagicAttributeReader {
 	// "Xuất chiêu (Vũ khí)" and "Xuất chiêu (bùa pháp)".
 	public const int AttackSpeedId = 115;
 	public const int CastSpeedId = 116;
 	private const int MaximumAttributeId = 400;
-	private const int DescriptorStride = 0xA4;
-	private const int DescriptorTemplateOffset = 4;
+	private const int DescriptorStride = GameAddresses.Item.MagicAttributeDescriptorStride;
+	private const int DescriptorTemplateOffset = GameAddresses.Item.MagicAttributeDescriptorTemplate;
 	private const int MaximumKeyLength = 32;
 	private const int MaximumTemplateLength = 0xA0;
 	private static readonly Regex ValuePlaceholder = new("#d1([+\\-~]?)", RegexOptions.Compiled);

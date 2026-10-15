@@ -10,7 +10,7 @@ internal static class AutoFsClientProfile {
 	public const int PlayerIndex = 1;
 	public const int EntityType = GameAddresses.Entity.Type;
 	public const int Level = GameAddresses.Entity.Level;
-	public const int LifecycleStatus = 0x01E8;
+	public const int LifecycleStatus = GameAddresses.Entity.LifecycleStatus;
 	public const int Name = GameAddresses.Entity.Name;
 	public const int Hp = GameAddresses.Entity.Hp;
 	public const int RawX = GameAddresses.Entity.RawX;

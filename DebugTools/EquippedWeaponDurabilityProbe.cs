@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using Auto.Utils;
 
 public static class EquippedWeaponDurabilityProbe {
 	public const string BuildStamp = "WEAPON-EQUIPPED-DURABILITY-20260817-12";
@@ -24,16 +25,16 @@ public static class EquippedWeaponDurabilityProbe {
 	private const int ChunkSize = 4 * 1024 * 1024;
 	private const int MaximumCandidates = 4000000;
 	private const int MaximumOutputCandidates = 40;
-	private const long EquippedMirrorDistance = 0x43C;
-	private const long ConfirmedEquippedRecordOffsetAddress = 0x001982EC;
-	private const long SupportingEquippedRecordOffsetAddress = 0x00197EB0;
-	private const uint ItemRecordStride = 0x17C0;
-	private const int GameRootPointerRva = 0x40EE1C;
-	private const int EquipmentManagerOffset = 0x3BCB4;
-	private const int EquipmentSlotArrayOffset = 0x0C;
-	private const int EquipmentSlotStride = 0x08;
+	private const long EquippedMirrorDistance = GameAddresses.Durability.LegacyEquippedMirrorDistance;
+	private const long ConfirmedEquippedRecordOffsetAddress = GameAddresses.Durability.LegacyConfirmedEquippedRecordOffsetAddress;
+	private const long SupportingEquippedRecordOffsetAddress = GameAddresses.Durability.LegacySupportingEquippedRecordOffsetAddress;
+	private const uint ItemRecordStride = GameAddresses.Durability.LegacyItemRecordStride;
+	private const int GameRootPointerRva = GameAddresses.Durability.LegacyGameRootPointer;
+	private const int EquipmentManagerOffset = GameAddresses.Durability.LegacyEquipmentManager;
+	private const int EquipmentSlotArrayOffset = GameAddresses.Durability.EquipmentSlotArray;
+	private const int EquipmentSlotStride = GameAddresses.Durability.EquipmentSlotStride;
 	private const int EquipmentSlotCount = 12;
-	private const uint CurrentClientItemRecordStride = 0x1800;
+	private const uint CurrentClientItemRecordStride = GameAddresses.Item.InventoryRecordStride;
 	// Cập nhật sau bản update 2026-09-29 (đây chính là nguyên nhân "mắc kẹt không quay lại bãi sau khi bán/sửa" —
 	// hằng số 0xA7FE24 bị bỏ sót, không theo cùng đợt sửa GameClientAddresses.h/GameAddresses.cs trước đó).
 	// Bằng chứng: 0xA7FE24 + 0x24060 (delta cụm A, cùng cụm EntityTable/ItemTable/InventoryRoot đã xác nhận trong
@@ -41,47 +42,47 @@ public static class EquippedWeaponDurabilityProbe {
 	// (2026-09-29): đọc ra con trỏ khác 0 (0x135B0048), và [root+0x41D44] (EquipmentManagerOffset) = 1, khớp đúng
 	// giá trị chỉ số nhân vật đọc từ chuỗi đã xác nhận [InventoryRoot+0x41D3C] = 1 trên cùng tiến trình — tức
 	// "game root" ở đây chính là InventoryRoot, chỉ đặt tên khác trong file debug cũ.
-	private const int CurrentClientGameRootPointerRva = 0xAA3E84;
+	private const int CurrentClientGameRootPointerRva = GameAddresses.Globals.InventoryRoot;
 	// Cập nhật sau bản update 2026-09-29: 0x541068 + 0x24060 (delta cụm A) = 0x5650C8, TRÙNG KHÍT
 	// GameAddresses.Globals.ItemTable đã xác nhận trong bản update này — cùng bị bỏ sót như GameRootPointerRva.
-	private const int CurrentClientItemTablePointerRva = 0x5650C8;
-	private const int CurrentClientEquipmentManagerOffset = 0x41D44;
-	private const int CurrentClientEquipmentSlotArrayOffset = 0x0C;
-	private const int CurrentClientEquipmentSlotStride = 0x08;
+	private const int CurrentClientItemTablePointerRva = GameAddresses.Globals.ItemTable;
+	private const int CurrentClientEquipmentManagerOffset = GameAddresses.Durability.EquipmentManager;
+	private const int CurrentClientEquipmentSlotArrayOffset = GameAddresses.Durability.EquipmentSlotArray;
+	private const int CurrentClientEquipmentSlotStride = GameAddresses.Durability.EquipmentSlotStride;
 	private const int CurrentClientEquipmentSlotCount = 12;
-	private const long CurrentClientDurabilityBias = 0x0AA4;
-	private const int CurrentClientCharacterStride = 0x35F60;
-	private const int CurrentClientCharacterClassRecordOffset = 0xBDDC;
-	private const int CurrentClientAlternateEquipmentStateOffset = 0x168E4;
+	private const long CurrentClientDurabilityBias = GameAddresses.Durability.Bias;
+	private const int CurrentClientCharacterStride = GameAddresses.Durability.CharacterStride;
+	private const int CurrentClientCharacterClassRecordOffset = GameAddresses.Durability.CharacterClassRecord;
+	private const int CurrentClientAlternateEquipmentStateOffset = GameAddresses.Durability.AlternateEquipmentState;
 	// Cập nhật sau bản update 2026-09-29: delta cụm A (+0x24060) áp cho 0x95FF60 đọc ra con trỏ NULL trên mọi PID
 	// (17268/20872/23128/27592) — cụm này KHÔNG áp dụng cho hằng số này. Bằng chứng thay thế: dùng thẳng
 	// GameAddresses.Globals.EntityTable (0x73A0C4, đã xác nhận trong bản update này) làm bảng, cho ClassStateIndex=0
 	// ỔN ĐỊNH và GIỐNG NHAU trên cả 4 tiến trình (4 nhân vật/class khác nhau) — khớp đúng ghi chú cũ "cùng field với
 	// EntityTable, stride 0xD87C khớp". Không phải suy đoán delta, là cùng bảng đã xác nhận ở nơi khác.
-	private const int CurrentClientClassRelationTableRva = 0x73A0C4;
-	private const int CurrentClientClassRelationStride = 0xD87C;
-	private const int CurrentClientClassRelationOffset = 0x27B8;
+	private const int CurrentClientClassRelationTableRva = GameAddresses.Globals.EntityTable;
+	private const int CurrentClientClassRelationStride = GameAddresses.Entity.Stride;
+	private const int CurrentClientClassRelationOffset = GameAddresses.Durability.ClassRelationOffset;
 	// Cập nhật sau bản update 2026-09-29: 0x9FA080 + 0x24060 (delta cụm A) = 0xA1E0E0, TRÙNG KHÍT
 	// GameAddresses.Globals.MapCoordinateRoot đã xác nhận trong bản update này (đúng như ghi chú cũ: cùng field).
-	private const int CurrentClientClassStateTablePointerRva = 0xA1E0E0;
-	private const int CurrentClientClassStateStride = 0x260;
-	private const int CurrentClientClassStateOffset = 0x08;
-	private const int CharacterStride = 0x2FF40;
-	private const int CharacterClassRecordOffset = 0xBD6C;
-	private const int AlternateEquipmentStateOffset = 0x107B8;
-	private const int CharacterClassTablePointerRva = 0x6611F0;
-	private const int CharacterClassStateRva = 0xB80D30;
+	private const int CurrentClientClassStateTablePointerRva = GameAddresses.Globals.MapCoordinateRoot;
+	private const int CurrentClientClassStateStride = GameAddresses.Durability.ClassStateStride;
+	private const int CurrentClientClassStateOffset = GameAddresses.Durability.ClassStateOffset;
+	private const int CharacterStride = GameAddresses.Durability.LegacyCharacterStride;
+	private const int CharacterClassRecordOffset = GameAddresses.Durability.LegacyCharacterClassRecord;
+	private const int AlternateEquipmentStateOffset = GameAddresses.Durability.LegacyAlternateEquipmentState;
+	private const int CharacterClassTablePointerRva = GameAddresses.Durability.LegacyCharacterClassTablePointer;
+	private const int CharacterClassStateRva = GameAddresses.Durability.LegacyCharacterClassState;
 	private const int CharacterClassEntryStride = 13627 * 4;
-	private const int CharacterClassTypeOffset = 0x27A4;
+	private const int CharacterClassTypeOffset = GameAddresses.Durability.LegacyCharacterClassType;
 	private const uint MaximumEquippedRecordIndex = (uint)((KnownItemRegionSize - ItemRecordFieldBias - 4) / ItemRecordStride);
-	private const long ItemRecordCurrentBias = 0x0A9C;
-	private const long ItemRecordCurrentMirrorBias = 0x0AA0;
-	private const long ItemRecordMaximumBias = 0x0AC8;
-	private const long ItemRecordHeaderBias = 0x0A98;
-	private const long ItemRecordDurabilityMarkerBias = 0x0AC4;
+	private const long ItemRecordCurrentBias = GameAddresses.Durability.LegacyItemRecordCurrent;
+	private const long ItemRecordCurrentMirrorBias = GameAddresses.Durability.LegacyItemRecordCurrentMirror;
+	private const long ItemRecordMaximumBias = GameAddresses.Durability.LegacyItemRecordMaximum;
+	private const long ItemRecordHeaderBias = GameAddresses.Durability.LegacyItemRecordHeader;
+	private const long ItemRecordDurabilityMarkerBias = GameAddresses.Durability.LegacyItemRecordDurabilityMarker;
 	private const uint ExpectedItemRecordHeader = 3;
 	private const uint ExpectedDurabilityMarker = 9;
-	private const long KnownItemRegionSize = 0x21BD000;
+	private const long KnownItemRegionSize = GameAddresses.Durability.LegacyKnownItemRegionSize;
 	private const long ItemRecordFieldBias = ItemRecordCurrentBias;
 	private static readonly object Sync = new();
 	private static readonly Dictionary<int, Session> Sessions = new();

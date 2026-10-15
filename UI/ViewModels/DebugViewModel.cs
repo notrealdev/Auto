@@ -29,6 +29,8 @@ public sealed class DebugViewModel : ViewModelBase {
 	private const string ToolInventoryInfo = "Trọng lượng từng món trong túi (đối chiếu với game)";
 	// Test the WHOLE low-hp doctor flow: walk to NPC -> open shop -> buy -> return. Runtime.DoctorPurchaseAutomation.
 	private const string ToolDoctorPurchaseFlow = "Đi tới Đại Phu, mở shop, mua đủ HP+MP rồi quay lại (GỬI LỆNH THẬT, TIÊU TIỀN)";
+	// Probes live in this tab, the Info tab only shows information (owner 2026-10-15).
+	private const string ToolIncomingChat = "Dò tin nhắn đến (gửi tin có chữ AUTOIN tới nhân vật này trước)";
 
 	// Trên mức này thì báo cáo đối chiếu không đọc được. Lấy rộng hơn DoctorRouteArrivalDistance (1,5 ô) của luồng
 	// Sửa đồ để lượt bấm ngay sát NPC vẫn được coi là hợp lệ.
@@ -67,7 +69,8 @@ public sealed class DebugViewModel : ViewModelBase {
 		ToolImmediateSale,
 		ToolInventoryStrength,
 		ToolInventoryInfo,
-		ToolDoctorPurchaseFlow
+		ToolDoctorPurchaseFlow,
+		ToolIncomingChat
 	];
 
 	public string SelectedTool {
@@ -122,6 +125,9 @@ public sealed class DebugViewModel : ViewModelBase {
 				return;
 			case ToolDoctorPurchaseFlow:
 				StartDoctorPurchaseFlow();
+				return;
+			case ToolIncomingChat:
+				StartIncomingChatProbe();
 				return;
 			default:
 				AccountInfoText = $"Không nhận diện được công cụ: {selectedTool}";
@@ -187,6 +193,19 @@ public sealed class DebugViewModel : ViewModelBase {
 		int processId = game.ProcessId;
 		AccountInfoText = $"PID={processId} | Đang đọc popup... Giữ nguyên popup, đừng đóng.";
 		string result = await Task.Run(() => ModalVtableProbe.Run(processId));
+		DebugLog.AddDebugForProcess(processId, result);
+		AccountInfoText = $"PID={processId} | {result}";
+	}
+
+	// Read only memory scan for received chat text, see DebugTools/IncomingChatProbe.cs.
+	private async void StartIncomingChatProbe() {
+		if (game == null) {
+			AccountInfoText = "Không có account game đang được chọn.";
+			return;
+		}
+		int processId = game.ProcessId;
+		AccountInfoText = $"PID={processId} | Đang quét bộ nhớ tìm chữ {IncomingChatProbe.Marker} và dò chuỗi con trỏ... (có thể mất 1-2 phút)";
+		string result = await Task.Run(() => IncomingChatProbe.Run(processId));
 		DebugLog.AddDebugForProcess(processId, result);
 		AccountInfoText = $"PID={processId} | {result}";
 	}

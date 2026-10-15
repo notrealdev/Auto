@@ -32,7 +32,7 @@ public sealed class MonsterFinder {
 	private const int RawXScale = 256;
 	private const int RawYScale = 512;
 
-	private const int EntityReadSize = 0x70B8;
+	private const int EntityReadSize = GameAddresses.Entity.ReadSize;
 	private const int MaximumNameLength = 32;
 
 	private const long MinimumLikelyAddress = 0x01000000;

@@ -66,10 +66,10 @@ public sealed class LoginAutomation {
 	// chuẩn nằm ở đó, sửa bên đó thì phải sửa cả hai chỗ.
 	private const int DiagnoseDialogCommand = 294;
 	// Client 1.34 (2026-10-10), see GameClientAddresses.h.
-	private const int NoticeDialogRva = 0x00522D7C;
-	private const int VersionDialogRva = 0x00512D38;
+	private const int NoticeDialogRva = GameAddresses.Globals.LoginNoticeDialog;
+	private const int VersionDialogRva = GameAddresses.Globals.LoginVersionDialog;
 	// LoginServerDialogRva ("Chọn máy chủ"), used only to tell which screen a retried client is on.
-	private const int ServerDialogRva = 0x005287E4;
+	private const int ServerDialogRva = GameAddresses.Globals.LoginServerDialog;
 	private const int DialogAliveResult = 3;
 	private const int DialogGoneResult = -2;
 	private const int StatusMessageMaxLength = 128;

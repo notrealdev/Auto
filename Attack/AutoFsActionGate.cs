@@ -34,9 +34,22 @@ internal sealed class AutoFsActionGate {
 		lock (suspensionSyncRoot) return lootSuspensionOwners.Count == 0 ? "NONE" : string.Join(",", lootSuspensionOwners.OrderBy(owner => owner, StringComparer.Ordinal));
 	}
 
+	// Loot only, while a boss is in range: the attack worker that runs the boss retreat waits on the same lock, so a loot
+	// chase after a far item kept the retreat from sending anything (PhâyKer 2026-10-13: no retreat command 22:18:13-22:18:42
+	// with the boss at 750-757 while the loot engine had taken an item 1994 away). IsLootSuspended cannot be used for this:
+	// it blocks TryRunAttack too, and with it the retreat. Set every coordinator tick; a pause lapses after one second
+	// without being renewed, so a tick path that never reaches the setter cannot leave loot paused for good.
+	public void SetLootPausedForElite(bool paused) {
+		Interlocked.Exchange(ref lootPausedForEliteUntilTicks, paused ? DateTime.UtcNow.AddSeconds(1).Ticks : 0);
+	}
+
+	public bool LootPausedForElite => DateTime.UtcNow.Ticks < Interlocked.Read(ref lootPausedForEliteUntilTicks);
+
+	private long lootPausedForEliteUntilTicks;
+
 	public void RunLoot(Action action) {
 		lock (syncRoot) {
-			if (AutomationEnabled && ! IsLootSuspended) action();
+			if (AutomationEnabled && ! IsLootSuspended && ! LootPausedForElite) action();
 		}
 	}
 

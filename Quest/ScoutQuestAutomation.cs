@@ -20,8 +20,9 @@ using Auto.Utils;
 //   - Popup sau xác nhận ghi: "Lần này ta cần ngươi đi ⟦<tên map>⟧ tìm Đại phu thu thập tin tức."
 //     Tên map được tô màu, bọc giữa byte 0x01 + 4 byte màu và byte 0x02. NPC đích LUÔN là "Đại phu".
 //
-// Không lưu tiến trình ra đĩa. Đọc không ra map đích thì DỪNG và ghi log, không đi mò — xem ghi chú ở
-// ReadQuestDestination.
+// Tiến trình (số lượt đã xong hôm nay, đích của lượt đang dở) được lưu ra đĩa theo tên nhân vật, xem
+// ScoutQuestProgressStore. Đọc không ra map đích mà cũng không có bản lưu thì DỪNG và ghi log, không đi mò — xem ghi
+// chú ở ReadQuestDestination.
 public sealed class ScoutQuestAutomation {
 	private const int QuestNpcMapId = 21;
 	private const int QuestNpcRawX = 54923;
@@ -34,8 +35,8 @@ public sealed class ScoutQuestAutomation {
 	private const double ApproachArrivalDistance = 0.5;
 	private const int ApproachTimeoutMilliseconds = 30000;
 	private const int ApproachResendMilliseconds = 3000;
-	private const int MenuTextOffset = 0x7EC;
-	private const int MenuOptionStride = 0x69C;
+	private const int MenuTextOffset = GameAddresses.NpcMenu.TextOffset;
+	private const int MenuOptionStride = GameAddresses.NpcMenu.OptionStride;
 	private const int MenuOptionCount = 8;
 	private const int MaximumMenuTextLength = 128;
 	private const int DialogOptionCommand = 7;
@@ -76,7 +77,7 @@ public sealed class ScoutQuestAutomation {
 	// Phải khớp DoctorShopSemanticCommand.ExpectedDialogVtableRva — sửa một bên mà quên bên kia thì hai nơi nhận
 	// diện popup xác nhận khác nhau.
 	// Cập nhật lại sau bản update 2026-09-29: 0x46AF3C -> 0x48CF3C, xem GameClientAddresses.h::NpcConfirmModalVtableRva.
-	private const int DoctorConfirmModalVtableRva = 0x48CF3C;
+	private const int DoctorConfirmModalVtableRva = GameAddresses.Vtables.DoctorConfirmModal;
 	// ĐIỂM CHUYỂN TIẾP. Popup tự hiện khi nhân vật đứng lên điểm, chọn mục bằng cùng command 7 của menu NPC.
 	// Toạ độ điểm và bảng điểm đến nằm ở Utils/TransitGateDestinationCatalog.cs.
 	//
@@ -119,7 +120,7 @@ public sealed class ScoutQuestAutomation {
 	// map tô màu, nên chặng NHẬN FAIL vĩnh viễn. Bằng chứng (quest.log 2026-09-11, PID=32196): 13:49:00 đọc được
 	// "ĐÍCH = Đại phu ở 'Hoang mạc' | MapId=22 | Raw=51963/104343"; sau khi tick lại, 13:49:53 và 13:50:19 đều ra
 	// "đoạn tô màu trong popup | []" rồi "ĐÍCH KHÔNG ĐỌC ĐƯỢC". Số đích đã nằm sẵn trong bộ nhớ mà bị vứt đi.
-	// App không hề tắt giữa chừng nên không cần ghi ra đĩa, chỉ cần đừng xoá.
+	// Also written to disk (ScoutQuestProgressStore) since 2026-10-13: a dropped connection rebuilds the GameWindow.
 	private bool npcCoordinateFallbackUsed;
 	private string pendingMapName = "";
 	private int pendingMapId;
@@ -129,6 +130,14 @@ public sealed class ScoutQuestAutomation {
 	private int destinationRawX;
 	private int destinationRawY;
 	private bool destinationRead;
+	// Text of the popup read on entering ClosingPopup, and whether a popup was open then at all.
+	private string popupText = "";
+	private bool popupSeen;
+	// Hoàng Thiên Hóa's line when the Đại phu was never met (quest.log 2026-10-13: TiểuHồngĐơn 22:20:54, QuyTinh 22:44:15
+	// and 22:45:52, BốCủaPhiDương 22:47:38).
+	private const string DoctorNotMetText = "chưa tìm được Đại phu";
+	// Character whose saved progress (ScoutQuestProgressStore) is loaded into completedRounds/pending*; "" = load on Start.
+	private string progressCharacter = "";
 	// Chữ tô màu đọc được nhưng không tra ra map. Rỗng nghĩa là popup thật sự không kèm nhiệm vụ mới.
 	private string unmatchedSegments = "";
 	private int escapeAttempts;
@@ -138,6 +147,8 @@ public sealed class ScoutQuestAutomation {
 	private int talismanUsedIndex = -1;
 	private int talismanSourceMapId;
 	private int talismanExpectedMapId;
+	// ESC was sent to an unusable talisman menu; UsingTalisman waits for it to close before falling back.
+	private bool talismanMenuClosing;
 	// Trạng thái của chặng đi qua Điểm chuyển tiếp. Chỉ dùng ở chặng ĐI.
 	private bool transitGateTried;
 	private int transitGateOptionIndex = -1;
@@ -156,10 +167,36 @@ public sealed class ScoutQuestAutomation {
 	public bool IsBusy => state != ScoutState.Idle;
 
 	// Gọi khi người dùng bỏ tick "Làm nhiệm vụ", để lần bật lại còn chạy được.
+	// Progress is not zeroed: it is reloaded from ScoutQuestProgressStore on the next Start, so rounds already done today
+	// and a round in the middle survive the untick, a reconnect and an Auto restart.
 	public void ResetSession() {
 		roundFinished = false;
-		completedRounds = 0;
+		progressCharacter = "";
 		Cancel();
+	}
+
+	private void LoadProgress(string characterName, Action<string>? log) {
+		ScoutQuestProgress progress = ScoutQuestProgressStore.Get(characterName);
+		progressCharacter = characterName;
+		completedRounds = progress.CompletedRounds;
+		pendingMapName = progress.PendingMapName;
+		pendingMapId = progress.PendingMapId;
+		pendingRawX = progress.PendingRawX;
+		pendingRawY = progress.PendingRawY;
+		pendingDoctorVisited = progress.PendingDoctorVisited;
+		log?.Invoke($"Thám quân | tiến độ đã lưu | Ngày={progress.Day} | ĐãXong={completedRounds}/{MaximumRounds} | ĐangDở={(HasPendingQuest() ? $"Map{pendingMapId} '{pendingMapName}' ĐãGặpĐạiPhu={pendingDoctorVisited}" : "không")}");
+	}
+
+	private void SaveProgress() {
+		ScoutQuestProgressStore.Save(progressCharacter, new ScoutQuestProgress {
+			Day = ScoutQuestProgressStore.Today,
+			CompletedRounds = completedRounds,
+			PendingMapName = pendingMapName,
+			PendingMapId = pendingMapId,
+			PendingRawX = pendingRawX,
+			PendingRawY = pendingRawY,
+			PendingDoctorVisited = pendingDoctorVisited
+		});
 	}
 
 	public bool Tick(GameWindow game, GameSnapshot snapshot, Action<string>? log) {
@@ -267,6 +304,19 @@ public sealed class ScoutQuestAutomation {
 					break;
 				}
 				IntPtr talismanMenu = ReadMenu(game.ProcessId);
+				// The talisman menu was dismissed with ESC: wait until it is really gone before the transit gate step,
+				// which treats any open menu as its own popup (quest.log 2026-10-14 20:52:25, QuyTinh: "popup Điểm chuyển
+				// tiếp đã hiện | ViTri=54932/94563" about 9 cells from the gate, then 7/3 went into the talisman menu).
+				if (talismanMenuClosing) {
+					if (talismanMenu != IntPtr.Zero && ! HasTimedOut()) {
+						nextActionUtc = DateTime.UtcNow.AddMilliseconds(ConfirmPollMilliseconds);
+						break;
+					}
+					talismanMenuClosing = false;
+					string closeState = talismanMenu == IntPtr.Zero ? "menu phù đã đóng" : $"menu phù vẫn mở sau {TalismanMenuTimeoutMilliseconds}ms";
+					BeginWalkingOrTransitGate(game, log, $"Map{targetMapId} không có trong menu Di ngoại phù và không có điểm đến gần hơn | {closeState}");
+					break;
+				}
 				if (talismanMenu == IntPtr.Zero) {
 					if (HasTimedOut()) {
 						BeginWalkingOrTransitGate(game, log, $"dùng phù nhưng không thấy menu điểm đến trong {TalismanMenuTimeoutMilliseconds}ms");
@@ -280,20 +330,29 @@ public sealed class ScoutQuestAutomation {
 				// Đã thử ba cách đọc và cả ba thất bại (xem ghi chú đầu TalismanDestinationCatalog.cs). Chủ dự án
 				// chép tay 23 dòng menu ngày 2026-09-10, đó là nguồn duy nhất còn lại.
 				//
-				// CHỈ dùng phù khi menu có ĐÚNG map đích. Không nhảy tới map trung gian rồi đi bộ nốt (chủ dự án
-				// chốt 2026-09-11), vì chuyến trung gian đưa nhân vật sang một map khác hẳn rồi mới đi bộ ngược lại.
-				// Bằng chứng hỏng (quest.log 2026-09-11 13:49:02, PID=32196): đích là Map22 'Hoang mạc' nhưng Auto bấm
-				// điểm đến #2 với "ĐíchNgoàiMenu | ĐiQuaMap=20 | CònLại=1 chặng đi bộ | ChờTới=Map20" — phù đưa sang
-				// Map20 chứ không tới Map22.
-				if (! TalismanDestinationCatalog.TryGetMenuIndex(targetMapId, out int destinationIndex)) {
-					BeginWalkingOrTransitGate(game, log, $"Map{targetMapId} không có trong menu Di ngoại phù");
-					// Menu đã mở (đọc được ở trên) nhưng không có điểm đến khớp — phải ESC đóng lại, không thì menu
-					// còn treo trên màn hình chặn thao tác kế tiếp (chủ dự án chốt 2026-09-21).
-					string closeResult = BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
-					log?.Invoke($"Thám quân | đóng menu Di ngoại phù bằng ESC vì không có điểm đến khớp | {closeResult.Replace("\r\n", " | ")}");
-					break;
+				// Target not in the menu (maze maps 22-51): jump to the menu entry with the fewest walking transitions
+				// left, then walk on. Owner decided 2026-10-14 (QuyTinh, Map22 'Hoang mạc': the owner had to pick Tây Kỳ by
+				// hand), replacing the 2026-09-11 rule "talisman only when the target itself is in the menu". Same guard
+				// as TransitGateDestinationCatalog.TryGetNearestOptionIndex: only when it is shorter than walking from here.
+				string destinationEvidence;
+				if (TalismanDestinationCatalog.TryGetMenuIndex(targetMapId, out int destinationIndex)) {
+					destinationEvidence = $"ĐíchNằmTrongMenu | Map={targetMapId}";
+				} else {
+					int walkingTransitions = GameMapRoutePlanner.FindRoute(game.LastObservedMapId, targetMapId).Count;
+					bool hubFound = TalismanDestinationCatalog.TryGetNearestMenuIndex(targetMapId, out destinationIndex, out int hubMapId, out int remainingTransitions);
+					if (! hubFound || (walkingTransitions > 0 && remainingTransitions >= walkingTransitions)) {
+						// Menu đã mở (đọc được ở trên) nhưng không có điểm đến khớp — phải ESC đóng lại, không thì menu
+						// còn treo trên màn hình chặn thao tác kế tiếp (chủ dự án chốt 2026-09-21).
+						string closeResult = BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
+						string hubText = hubFound ? $"gần nhất Map{hubMapId} còn {remainingTransitions} chặng, đi bộ thẳng {walkingTransitions} chặng" : "không điểm đến nào đi bộ được tới đích";
+						log?.Invoke($"Thám quân | đóng menu Di ngoại phù bằng ESC vì không có điểm đến phù hợp | Map{targetMapId} | {hubText} | {closeResult.Replace("\r\n", " | ")}");
+						talismanMenuClosing = true;
+						nextActionUtc = DateTime.UtcNow.AddMilliseconds(ConfirmPollMilliseconds);
+						deadlineUtc = DateTime.UtcNow.AddMilliseconds(TalismanMenuTimeoutMilliseconds);
+						break;
+					}
+					destinationEvidence = $"ĐíchNgoàiMenu | Nhảy tới Map{hubMapId} còn {remainingTransitions} chặng, đi bộ thẳng từ Map{game.LastObservedMapId} mất {walkingTransitions} chặng";
 				}
-				string destinationEvidence = $"ĐíchNằmTrongMenu | Map={targetMapId}";
 				string destinationName = GameMapCatalog.TryGetName(targetMapId, out string resolvedName) ? resolvedName : $"Map{targetMapId}";
 				if (! game.AutoFsTransport.TrySendCommand(game.Handle, DialogOptionCommand, destinationIndex, out string travelResult)) {
 					BackgroundEscapeCommand.Run(game.ProcessId, game.Handle);
@@ -565,8 +624,22 @@ public sealed class ScoutQuestAutomation {
 				if (DateTime.UtcNow < nextActionUtc) break;
 				if (! destinationRead) {
 					destinationRead = true;
-					log?.Invoke($"Thám quân | popup của chặng {DescribePhase(phase)} | {DescribeModalVtable(game.ProcessId, out _, out _)}");
-					foreach (string line in DumpModalText(game.ProcessId)) log?.Invoke("Thám quân | chữ popup | " + line);
+					log?.Invoke($"Thám quân | popup của chặng {DescribePhase(phase)} | {DescribeModalVtable(game.ProcessId, out _, out popupSeen)}");
+					List<string> popupLines = DumpModalText(game.ProcessId);
+					popupText = string.Join(" ", popupLines);
+					foreach (string line in popupLines) log?.Invoke("Thám quân | chữ popup | " + line);
+					// No popup after clicking the Đại phu means the talk did not happen. It used to count as met: the click
+					// at 1/6 found Modal=0, the stage was closed "after 0 ESC", and Hoàng Thiên Hóa then answered "Ngươi
+					// chưa tìm được Đại phu sao?" (TiểuHồngĐơn 22:19:40, QuyTinh 22:43:52, BốCủaPhiDương 22:47:11). Click
+					// again instead, as the menu stage does when no dialog opens.
+					if (phase == ScoutPhase.MeetingDoctor && ! popupSeen) {
+						if (npcClickAttempts >= MaximumNpcClickAttempts) return Fail($"Click {targetNpcName} {npcClickAttempts} lần mà không hiện popup nào", log);
+						log?.Invoke($"Thám quân | click {targetNpcName} không hiện popup, click lại | Lần={npcClickAttempts}/{MaximumNpcClickAttempts}");
+						state = ScoutState.ClickingNpc;
+						nextActionUtc = DateTime.UtcNow.AddMilliseconds(1000);
+						deadlineUtc = DateTime.UtcNow.AddMilliseconds(NpcEntityLoadTimeoutMilliseconds);
+						break;
+					}
 					// Đọc đích ở CẢ chặng NHẬN lẫn chặng TRẢ. Bằng chứng (quest.log 2026-09-09 21:55:25, PID 22056):
 					// popup ngay sau khi trả đã mang chữ giao nhiệm vụ mới (" tìm Đại phu thu thập tin tức."), tức
 					// trả và nhận diễn ra trong CÙNG một lần nói chuyện. Bản trước chỉ đọc ở chặng NHẬN nên vứt mất
@@ -606,8 +679,30 @@ public sealed class ScoutQuestAutomation {
 			log?.Invoke("Thám quân bỏ qua | " + game.RuntimeLayout.DescribeUnavailable(RuntimeSubsystem.MovementTransport, RuntimeSubsystem.Map));
 			return false;
 		}
+		// The saved progress is keyed by character name; without it a reconnect would start over at round 1.
+		if (game.CharacterName.Length == 0) return false;
+		if (progressCharacter != game.CharacterName) LoadProgress(game.CharacterName, log);
+		if (completedRounds >= MaximumRounds) {
+			log?.Invoke($"Thám quân HOÀN TẤT | Hôm nay đã làm đủ {completedRounds}/{MaximumRounds} lượt (tiến độ đã lưu).");
+			CompleteRound($"HOÀN TẤT | Đã làm đủ {completedRounds}/{MaximumRounds} lượt");
+			roundFinished = true;
+			return false;
+		}
 		lastLoggedState = ScoutState.Idle;
 		log?.Invoke($"Thám quân bắt đầu | Level={snapshot.Level} | Lượt={completedRounds + 1}/{MaximumRounds} | HiệnTại=Map{game.LastObservedMapId}/{snapshot.X}/{snapshot.Y}");
+		// A round accepted before the disconnect goes on from where it stopped instead of asking Hoàng Thiên Hóa first.
+		if (HasPendingQuest()) {
+			if (pendingDoctorVisited) {
+				BeginPhase(ScoutPhase.ReturningQuest, log);
+				return true;
+			}
+			destinationMapName = pendingMapName;
+			destinationMapId = pendingMapId;
+			destinationRawX = pendingRawX;
+			destinationRawY = pendingRawY;
+			BeginDoctorPhase(log);
+			return true;
+		}
 		BeginPhase(ScoutPhase.ReceivingQuest, log);
 		return true;
 	}
@@ -617,15 +712,16 @@ public sealed class ScoutQuestAutomation {
 		log?.Invoke($"Thám quân | xong chặng {DescribePhase(phase)} sau {escapeAttempts} lần ESC");
 		switch (phase) {
 			case ScoutPhase.ReceivingQuest:
-				// Đọc không ra map đích thì DỪNG, không đi mò. Auto không lưu tiến trình ra đĩa, nên nếu người dùng
-				// tắt Auto giữa chừng rồi bật lại, chặng nhận sẽ gặp popup "sao chưa làm việc ta giao" thay vì popup
-				// giao nhiệm vụ, và popup đó KHÔNG nhắc lại map đích (chủ dự án xác nhận 2026-09-09). Lúc đó không
-				// có cách nào biết phải đi đâu; báo rõ còn hơn đưa nhân vật tới map sai.
+				// Đọc không ra map đích thì DỪNG, không đi mò. Popup "sao chưa làm việc ta giao" KHÔNG nhắc lại map đích
+				// (chủ dự án xác nhận 2026-09-09); đích của lượt đang dở nay được lưu ra đĩa (ScoutQuestProgressStore),
+				// chỉ khi không còn bản lưu nào mới không biết phải đi đâu — báo rõ còn hơn đưa nhân vật tới map sai.
 				if (! HasDestination()) {
 					// Popup không kèm đích NHƯNG phiên chạy này đã từng đọc được đích của một lượt chưa trả xong:
 					// chính là ca bỏ tick/tick lại. Game vừa xác nhận nhiệm vụ còn dở bằng câu nhắc, nên đi tiếp
 					// theo đích đã nhớ thay vì FAIL. Không có cái nhớ này thì chỉ còn nước mò, nên vẫn FAIL như cũ.
 					if (HasPendingQuest()) {
+						// The NPC says the Đại phu was not met yet: go there, whatever this run believed.
+						if (popupText.Contains(DoctorNotMetText, StringComparison.Ordinal)) pendingDoctorVisited = false;
 						destinationMapName = pendingMapName;
 						destinationMapId = pendingMapId;
 						destinationRawX = pendingRawX;
@@ -638,18 +734,34 @@ public sealed class ScoutQuestAutomation {
 						BeginDoctorPhase(log);
 						return true;
 					}
-					return Fail($"Không đọc được map đích từ popup | Đang có nhiệm vụ dở từ trước? | Tên đọc được='{destinationMapName}' | MapId={destinationMapId}", log);
+					return Fail($"Không đọc được map đích từ popup | Đang có nhiệm vụ dở từ trước? | Tên đọc được='{destinationMapName}' | MapId={destinationMapId} | Chữ popup='{popupText}'", log);
 				}
 				BeginDoctorPhase(log);
 				return true;
 			case ScoutPhase.MeetingDoctor:
 				pendingDoctorVisited = true;
+				SaveProgress();
 				BeginPhase(ScoutPhase.ReturningQuest, log);
 				return true;
 			default:
+				// "Ngươi chưa tìm được Đại phu sao?" is not a hand-in: the round is still open and its Đại phu still has to be
+				// met. It used to count as a finished round with no new quest, so Auto reported "HOÀN TẤT" and wiped the
+				// remembered destination; the next start then failed with "Không đọc được map đích" (QuyTinh 22:44:16 ->
+				// 22:45:52).
+				if (popupText.Contains(DoctorNotMetText, StringComparison.Ordinal)) {
+					if (! HasPendingQuest()) return Fail("Hoàng Thiên Hóa báo chưa gặp Đại phu nhưng không còn nhớ map đích của lượt này", log);
+					destinationMapName = pendingMapName;
+					destinationMapId = pendingMapId;
+					destinationRawX = pendingRawX;
+					destinationRawY = pendingRawY;
+					log?.Invoke($"Thám quân | Hoàng Thiên Hóa báo chưa gặp Đại phu, quay lại Đại phu | Map{pendingMapId} '{pendingMapName}' | Raw={pendingRawX}/{pendingRawY}");
+					BeginDoctorPhase(log);
+					return true;
+				}
 				// Trả xong nghĩa là lượt đó khép lại: phải quên đích đã nhớ, không thì lượt sau lấy nhầm đích cũ.
 				ClearPendingQuest();
 				completedRounds++;
+				SaveProgress();
 				if (completedRounds >= MaximumRounds) {
 					log?.Invoke($"Thám quân HOÀN TẤT | Đã làm đủ {completedRounds}/{MaximumRounds} lượt.");
 					CompleteRound($"HOÀN TẤT | Đã làm đủ {completedRounds}/{MaximumRounds} lượt");
@@ -663,12 +775,6 @@ public sealed class ScoutQuestAutomation {
 					BeginDoctorPhase(log);
 					return true;
 				}
-				// Trả xong mà popup KHÔNG kèm nhiệm vụ mới thì coi là hết lượt trong ngày và dừng hẳn.
-				//
-				// Bằng chứng (quest.log 2026-09-09 PID 21768): hai lượt đầu popup trả đều kèm đích mới ngay
-				// ("ĐÍCH = Đại phu ở 'Trần Đường'"), tức game luôn giao tiếp nhiệm vụ trong cùng lần nói chuyện.
-				// Tới lượt cuối thì không đọc ra đích nào, và popup lần đó cần TỚI HAI lần ESC thay vì một — khớp
-				// mô tả của chủ dự án về lượt cuối. Quay lại hỏi NPC thêm một chuyến chỉ tốn thời gian rồi cũng FAIL.
 				// Popup CÓ giao nhiệm vụ mới nhưng Auto không tra được tên map thì đây là LỖI, không phải hết lượt.
 				// Báo ra nguyên chữ trong popup để bổ sung vào GameMapCatalog.ClientAliasMapIdByName.
 				// Bằng chứng vì sao tách (quest.log 2026-09-10 00:52:58, PID 22056): popup ghi "Tầng 1 Hiên Viên động"
@@ -680,8 +786,12 @@ public sealed class ScoutQuestAutomation {
 					Reset();
 					return false;
 				}
-				log?.Invoke($"Thám quân HOÀN TẤT | Đã làm {completedRounds}/{MaximumRounds} lượt | Popup trả không kèm nhiệm vụ mới, coi là hết lượt.");
-				CompleteRound($"HOÀN TẤT | Đã làm {completedRounds}/{MaximumRounds} lượt (hết nhiệm vụ trong ngày)");
+				// A hand-in popup without a new quest ("Quân tình ngươi mang tới rất kịp thời...") means the 3rd round of the
+				// day is handed in (owner 2026-10-13), even when Auto counted fewer: rounds done by hand are not counted.
+				log?.Invoke($"Thám quân HOÀN TẤT | Popup trả không kèm nhiệm vụ mới = đã đủ {MaximumRounds} lượt hôm nay | Auto đếm được {completedRounds}/{MaximumRounds} | Chữ popup='{popupText}'");
+				completedRounds = MaximumRounds;
+				SaveProgress();
+				CompleteRound($"HOÀN TẤT | Đã làm đủ {MaximumRounds}/{MaximumRounds} lượt");
 				roundFinished = true;
 				Reset();
 				return false;
@@ -736,8 +846,8 @@ public sealed class ScoutQuestAutomation {
 	// Mọi lối "thôi đi bộ" của CHẶNG ĐI đều đi qua đây, không gọi thẳng BeginWalking nữa.
 	//
 	// Điểm chuyển tiếp là phương án DỰ PHÒNG sau Di ngoại phù, nên chỉ được thử ở đúng lúc phù đã hỏng hoặc bị tắt.
-	// Đây cũng là đường duy nhất đưa nhân vật tới các map Mê cung: đo trên Data\Maps thì map 22-26 và 32-36 KHÔNG có
-	// trong menu Di ngoại phù, trước đây rơi thẳng xuống BeginWalking nên phải đi bộ 9 chặng.
+	// Maze maps (22-51) are not in the Di ngoại phù menu; since 2026-10-14 the talisman jumps to the nearest menu entry
+	// first, so this only runs when the talisman is off, missing, or no menu entry is closer than walking.
 	private void BeginWalkingOrTransitGate(GameWindow game, Action<string>? log, string reason) {
 		if (! transitGateTried && TryBeginTransitGate(game, log)) {
 			log?.Invoke($"Thám quân | không dùng được Di ngoại phù nên chuyển sang Điểm chuyển tiếp | {reason}");
@@ -809,6 +919,7 @@ public sealed class ScoutQuestAutomation {
 		pendingRawX = destinationRawX;
 		pendingRawY = destinationRawY;
 		pendingDoctorVisited = false;
+		SaveProgress();
 		BeginPhase(ScoutPhase.MeetingDoctor, log);
 	}
 
@@ -846,6 +957,7 @@ public sealed class ScoutQuestAutomation {
 		talismanUsedIndex = -1;
 		talismanSourceMapId = 0;
 		talismanExpectedMapId = 0;
+		talismanMenuClosing = false;
 		ResetTransitGate();
 		nextActionUtc = DateTime.MinValue;
 		deadlineUtc = DateTime.UtcNow.AddMilliseconds(TalismanMenuTimeoutMilliseconds);
@@ -856,6 +968,8 @@ public sealed class ScoutQuestAutomation {
 	private void BeginClosingPopup() {
 		state = ScoutState.ClosingPopup;
 		destinationRead = false;
+		popupText = "";
+		popupSeen = false;
 		escapeAttempts = 0;
 		nextActionUtc = DateTime.UtcNow.AddMilliseconds(ClosePopupDelayMilliseconds);
 	}
@@ -1105,6 +1219,7 @@ public sealed class ScoutQuestAutomation {
 		talismanUsedIndex = -1;
 		talismanSourceMapId = 0;
 		talismanExpectedMapId = 0;
+		talismanMenuClosing = false;
 		ResetTransitGate();
 		travelQueue.Reset();
 	}

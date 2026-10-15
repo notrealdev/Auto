@@ -9,19 +9,20 @@ internal sealed class ChatEngine {
 	// Khác với DelaySeconds của từng kênh — cái đó do chủ dự án đặt trong giao diện và không bị chỗ này đụng tới.
 	// Hạ 5000 -> 1000 ngày 2026-09-17 theo yêu cầu của chủ dự án.
 	private const int InterChannelDelayMilliseconds = 1000;
-	private const int MaximumMessageLength = 199;
+	// Same limit as the client chat input box (0x190) and the native buffer (SystemUint MaximumScriptLength).
+	internal const int MaximumMessageLength = 400;
 	// Cập nhật sau bản update 2026-09-29: hằng số này bị bỏ sót y hệt DebugTools/EquippedWeaponDurabilityProbe.cs
 	// (lần cuối cùng cập nhật là bản 2026-08-28). Delta cụm B (+0x24068, cùng cụm MapId/ModalState/ShopState) áp cho
 	// 0x4F5174 -> 0x5191DC cho Count=7 hợp lệ trên PID 17268/20872 (cụm A cho con trỏ rác 0x4E20, Count=0 — SAI).
 	// ChannelCodeTableRva cùng cụm B -> 0x519220, xác nhận sống trên PID 17268: cả 4 mã kênh (Cận/Giao/Khu vực/Lãnh
 	// địa) đọc ra khớp tuyệt đối byte-for-byte với 4 hằng số bên dưới (áẵẵỹ/ẵằềì/±ắàỉ/ạỳẳề).
-	private const int ChannelManagerRva = 0x005191DC;
-	private const int ChannelCodeTableRva = 0x00519220;
-	private const int ChannelCountOffset = 0x00008E4C;
-	private const int ChannelListOffset = 0x00008E50;
-	private const int ChannelEntryStride = 0x00002818;
-	private const int ChannelNameIndexOffset = 0x00000008;
-	private const int ChannelCodeStride = 0x00000264;
+	internal const int ChannelManagerRva = GameAddresses.Globals.ChatChannelManager;
+	private const int ChannelCodeTableRva = GameAddresses.Globals.ChatChannelCodeTable;
+	private const int ChannelCountOffset = GameAddresses.Chat.ChannelCount;
+	private const int ChannelListOffset = GameAddresses.Chat.ChannelList;
+	private const int ChannelEntryStride = GameAddresses.Chat.ChannelEntryStride;
+	private const int ChannelNameIndexOffset = GameAddresses.Chat.ChannelNameIndex;
+	private const int ChannelCodeStride = GameAddresses.Chat.ChannelCodeStride;
 	private const int MaximumChannelCount = 64;
 	private const string NearbyChannelCode = "áẵẵỹ";
 	private const string AreaChannelCode = "±ắàỉ";
@@ -86,7 +87,7 @@ internal sealed class ChatEngine {
 				LogFailureOnce(log, $"CHAT_CHANNEL_NOT_FOUND | Channel={channel.Name} | Reason={resolveError}");
 				return;
 			}
-			if (! TryBuildMessage(settings.AdvertiseText, out byte[] message, out string buildError)) {
+			if (! TryBuildMessage(processId, settings.AdvertiseText, settings.CapturedLinks, out byte[] message, out string buildError)) {
 				LogFailureOnce(log, $"CHAT_BUILD_FAILED | Channel={channel.Name} | Reason={buildError}");
 				return;
 			}
@@ -106,20 +107,52 @@ internal sealed class ChatEngine {
 
 	// Native tự lấy mã kênh và channel type từ chỉ số kênh rồi chạy đúng chuỗi gửi chat của client,
 	// nên ở đây chỉ cần mã hóa nội dung thô sang bảng mã legacy mà client dùng cho khung nhập chat.
-	private static bool TryBuildMessage(string content, out byte[] message, out string error) {
+	// Each "{item:XXXXXXXX:name}" placeholder is replaced by the item's 152-byte link (ChatItemLink), read at send time,
+	// and each "{toado:id:name}" by a map link at position [0,0] (ChatItemLink.TryBuildMapLink). "{link:KEY:label}" is a
+	// link captured from the client's sent-message history and is copied byte for byte from capturedLinks.
+	private static bool TryBuildMessage(int processId, string content, string capturedLinks, out byte[] message, out string error) {
+		message = [];
+		Dictionary<string, byte[]>? captured = null;
 		string singleLineContent = content.Replace("\r\n", " ", StringComparison.Ordinal)
 			.Replace("\n", " ", StringComparison.Ordinal)
 			.Replace("\r", " ", StringComparison.Ordinal);
-		if (! LegacyVietnameseText.TryEncode(singleLineContent, out byte[] messageBytes, out char unsupportedCharacter)) {
-			message = [];
+		List<byte> messageBytes = [];
+		int textStart = 0;
+		foreach (System.Text.RegularExpressions.Match placeholder in ChatItemLink.PlaceholderPattern().Matches(singleLineContent)) {
+			if (! TryAppendText(messageBytes, singleLineContent[textStart..placeholder.Index], out error)) return false;
+			byte[] link;
+			if (placeholder.Groups[6].Success) {
+				captured ??= ChatHistoryReader.ParseCaptured(capturedLinks);
+				if (! captured.TryGetValue(placeholder.Groups[6].Value, out byte[]? capturedLink)) {
+					error = $"Không còn dữ liệu của link \"{placeholder.Groups[7].Value}\" ({placeholder.Groups[6].Value}); lấy lại từ Lịch sử.";
+					return false;
+				}
+				link = capturedLink;
+			} else if (placeholder.Groups[1].Success) {
+				uint uniqueId = Convert.ToUInt32(placeholder.Groups[1].Value, 16);
+				if (! ChatItemLink.TryBuild(processId, uniqueId, placeholder.Groups[2].Value, out link, out error)) return false;
+			} else if (! ChatItemLink.TryBuildMapLink(placeholder, out link, out error)) {
+				return false;
+			}
+			messageBytes.AddRange(link);
+			textStart = placeholder.Index + placeholder.Length;
+		}
+		if (! TryAppendText(messageBytes, singleLineContent[textStart..], out error)) return false;
+		message = [.. messageBytes];
+		if (message.Length > MaximumMessageLength) {
+			error = $"Nội dung dài {message.Length} byte, giới hạn ô chat của client là {MaximumMessageLength} byte.";
+			return false;
+		}
+		error = "";
+		return true;
+	}
+
+	private static bool TryAppendText(List<byte> messageBytes, string text, out string error) {
+		if (! LegacyVietnameseText.TryEncode(text, out byte[] textBytes, out char unsupportedCharacter)) {
 			error = $"Ký tự không được client hỗ trợ: U+{(int)unsupportedCharacter:X4}.";
 			return false;
 		}
-		message = messageBytes;
-		if (message.Length > MaximumMessageLength) {
-			error = $"Nội dung dài {message.Length} byte, giới hạn AutoFS là {MaximumMessageLength} byte.";
-			return false;
-		}
+		messageBytes.AddRange(textBytes);
 		error = "";
 		return true;
 	}

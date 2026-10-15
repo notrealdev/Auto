@@ -113,6 +113,25 @@ internal sealed class DoctorPurchaseAutomation {
 		return "Mua ở Đại Phu (tự động) đã xếp lịch cho account đang chọn.";
 	}
 
+	// Automatic trip walking back to the training area; same exclusion of the Debug tab run as CancelAutomatic.
+	public bool IsReturningAutomatically => state == DoctorPurchaseState.Returning && IsAutomaticRun && !IsDebugRun;
+
+	// Ends the walk back early as a completed trip (owner rule 2026-10-11, see WeaponRepairAutomation.FinishReturnAtTraining).
+	public void FinishReturnAtTraining(GameWindow game, Action<string>? log, string reason) {
+		if (!IsReturningAutomatically) return;
+		log?.Invoke($"Mua ở Đại Phu | dừng quay lại bãi sớm | {reason}");
+		Complete(game, log);
+	}
+
+	// Master switch turned off (owner 2026-10-11: stop the automatic trip at once). A run started from the Debug tab is the
+	// owner's own command and keeps going. Returns whether a trip was dropped.
+	public bool CancelAutomatic(Action<string>? log, string reason) {
+		if (!IsAutomaticRun || IsDebugRun) return false;
+		log?.Invoke($"Mua ở Đại Phu (tự động) huỷ | {reason} | Trạng thái={state}");
+		Reset();
+		return true;
+	}
+
 	public bool Tick(GameWindow game, GameSnapshot snapshot, Action<string>? log) {
 		if (state == DoctorPurchaseState.Idle) {
 			if (!debugRunRequested && !automaticRunRequested) return false;

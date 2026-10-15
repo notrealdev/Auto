@@ -1,4 +1,4 @@
-﻿namespace Auto.Attack;
+namespace Auto.Attack;
 
 using Auto.Movement;
 using Auto.Runtime;
@@ -34,7 +34,8 @@ public sealed class Engine {
 	// Băng Linh xoay quanh gần đích trốn.
 	private const int EliteRetreatMinimumHoldMilliseconds = 2000;
 	// Trốn xong phải dư ra bao nhiêu so với bán kính cấm, để boss nhích nhẹ là chưa phải chạy lại ngay. 1 ô = 256 raw.
-	private const int EliteRetreatMarginRaw = 256;
+	// Shared with the monster filter in AutoFsEntityScanner, see EliteAvoidance.RetreatMarginRaw.
+	private const int EliteRetreatMarginRaw = EliteAvoidance.RetreatMarginRaw;
 	// Cách đích đang giữ trong chừng này thì coi như đã tới nơi. Nửa ô trục X (1 ô = 256 raw): client tự tìm đường
 	// nên hiếm khi dừng đúng ô yêu cầu, đòi trùng khít thì không bao giờ tính là tới.
 	private const int EliteRetreatArrivalRaw = 128;
@@ -89,6 +90,30 @@ public sealed class Engine {
 	// Trong khoảng này coi như đã tới nơi, không xét kẹt. 300 raw ~ 1,2 ô theo trục X. Lấy từ phân bố đo được:
 	// 62/75 dòng báo nhầm nằm dưới mức này, 13 dòng còn lại từ 556 tới 823 raw mới là lúc đang thật sự đi tới.
 	private const int StuckArrivalDistanceRaw = 300;
+	// Wall bypass (owner request 2026-10-11, plan simulated 2026-10-09): when the stuck check above fires, step sideways
+	// from the stuck point instead of dropping the monster at once, then try the monster again. Sides alternate
+	// left 1, right 1, left 2, right 2, left 3, right 3 cells, measured perpendicular to the player->monster line from the
+	// stuck point. The simulation reached the monster past a short wall only with alternating sides; committing to one
+	// side failed there. A long wall is not passed: after the 6 steps the monster is dropped as before.
+	// The simulation also showed the outer loop (give up -> 20 s cooldown -> same monster -> bypass again) never ends on a
+	// long wall, so episodes are capped per account. All numbers below are the simulated plan, not measured in game.
+	private const int WallBypassSteps = 6;
+	private const int WallBypassWalkTimeoutMilliseconds = 2000;
+	private const int WallBypassArrivalRaw = 128;
+	private const int WallBypassMaximumEpisodes = 3;
+	// Without a training area ("Quanh điểm" dropped while bosses surround it) the character roams wider and meets more
+	// walls, so the cap is doubled (plan approved 2026-10-13).
+	private const int WallBypassMaximumEpisodesRoaming = 6;
+	private int CurrentWallBypassMaximumEpisodes => settings.TrainingEnabled || settings.TeachingEnabled || settings.ContinueEnabled || settings.UseCenterPosition
+		? WallBypassMaximumEpisodes
+		: WallBypassMaximumEpisodesRoaming;
+	// Monsters standing within one cell of a monster given up as unreachable are skipped as well for the same cooldown:
+	// they stand behind the same wall. Before, only that one Index was skipped and the next pick was its neighbour.
+	private readonly List<(int X, int Y, int Radius, DateTime UntilUtc)> unreachableZones = [];
+	private static readonly TimeSpan WallBypassEpisodeWindow = TimeSpan.FromMinutes(2);
+	// Game cell scale: 256 raw on X, 512 raw on Y.
+	private const int CellRawX = 256;
+	private const int CellRawY = 512;
 	private readonly Settings settings;
 	private readonly AutoFsEntityScanner scanner = new();
 	private readonly AutoFsAttackTransport transport;
@@ -129,6 +154,21 @@ public sealed class Engine {
 	// Thời điểm đích hiện tại được CHỐT (gán cùng lúc với eliteWalkDestinationX/Y). Dùng để chặn vòng lặp bắn lại
 	// liên tục khi nhiều thủ lĩnh xoay quanh sát đích trốn — xem EliteRetreatMinimumHoldMilliseconds bên dưới.
 	private DateTime eliteWalkCommittedUtc = DateTime.MinValue;
+	// Directions (scaled-Y space) a retreat could not walk along, and the side steps tried once every direction was
+	// blocked; both cleared when the retreat ends. movement.log 2026-10-13: 910 ĐỨNG_IM resends always went to the same
+	// held destination, e.g. 1đêm2nháy 16:32:35-16:32:40 stood at 61508/88906 while three resends asked for 62561/91167.
+	// Owner 2026-10-13: never stand still near a boss, so one stall is enough to turn away (no second resend).
+	private readonly List<(double X, double Y)> eliteBlockedDirections = [];
+	private int eliteSideStepCount;
+	// Where the last blocked direction was recorded; ELITE_RETREAT_UNSTUCK fires two cells away from it.
+	private int eliteBlockedAtX;
+	private int eliteBlockedAtY;
+	private DateTime eliteBlockedAtUtc = DateTime.MinValue;
+	// Walls do not move, but the character may come back to the same spot much later with the boss elsewhere.
+	private static readonly TimeSpan EliteBlockedDirectionLifetime = TimeSpan.FromSeconds(60);
+	private const int EliteMaximumBlockedDirections = 6;
+	// Side steps 1, 1, 2, 2, 3, 3 cells (left/right alternating), then the blocked list is cleared and tried again.
+	private const int EliteMaximumSideSteps = 6;
 	// Tên cổng làm TryRetreatFromElitesCore trả false. Chỉ dùng để ghi log chẩn đoán ở TryRetreatFromElites; đọc và
 	// ghi đều trong cùng một lượt quét của worker nên không cần đồng bộ.
 	private string retreatExitGate = "";
@@ -149,6 +189,21 @@ public sealed class Engine {
 	private int lastScannedPlayerY;
 	private long lastScannedPlayerUtcTicks;
 	private DateTime stuckSinceUtc = DateTime.MinValue;
+	// Wall bypass state, worker thread only. bypassTargetIndex < 0 = no episode running.
+	private enum WallBypassPhase { NeedWalk, Walking, Probing }
+	private int bypassTargetIndex = -1;
+	private int bypassStep;
+	private WallBypassPhase bypassPhase;
+	private int bypassAnchorX;
+	private int bypassAnchorY;
+	private int bypassStepX;
+	private int bypassStepY;
+	private DateTime bypassPhaseUntilUtc;
+	private double bypassProbeStartDistance;
+	private int bypassProbeStartHp;
+	// Start times of recent episodes; kept across Stop on purpose, like bossPatrolVisitedCorners, because the worker is
+	// recreated often (anti-AFK) and the cap must still hold.
+	private readonly Queue<DateTime> bypassEpisodeStartsUtc = new();
 	private readonly object eliteProbeSyncRoot = new();
 	private DateTime nextEliteProbeUtc = DateTime.MinValue;
 	private bool lastEliteProbeResult;
@@ -187,8 +242,8 @@ public sealed class Engine {
 	//
 	// Có chốt giãn nhịp: coordinator gọi mỗi 100ms, quét đầy đủ từng nhịp là thừa.
 	public bool IsInsideEliteZoneNow(int checkProcessId) {
+		// No "around point" condition any more: the retreat also runs while "Quanh điểm" is dropped (2026-10-13).
 		if (checkProcessId <= 0 || !settings.DoNotAttackBoss || settings.ElitePlayerRetreatRadius <= 0) return false;
-		if (!(settings.TrainingEnabled || settings.TeachingEnabled || settings.ContinueEnabled || settings.UseCenterPosition)) return false;
 		DateTime now = DateTime.UtcNow;
 		lock (eliteProbeSyncRoot) {
 			if (now < nextEliteProbeUtc) return lastEliteProbeResult;
@@ -200,7 +255,7 @@ public sealed class Engine {
 			List<AutoFsEntity> probeElites = [];
 			scanner.Scan(probeReader, settings, out int playerX, out int playerY, out _, eliteCollector: probeElites);
 			if (playerX > 0 && playerY > 0 && probeElites.Count > 0) {
-				inside = EliteAvoidance.IsNearAnyElite(playerX, playerY, probeElites.Select(elite => (elite.RawX, elite.RawY)).ToList(), settings.ElitePlayerRetreatRadius);
+				inside = EliteAvoidance.IsNearAnyElite(playerX, playerY, EliteZones(probeElites));
 			}
 		} catch {
 			inside = false;
@@ -208,6 +263,10 @@ public sealed class Engine {
 		lock (eliteProbeSyncRoot) lastEliteProbeResult = inside;
 		return inside;
 	}
+
+	// Elites with the radius the character runs from: 3 cells for a "<c=" boss, 1 cell for a "(" enhanced monster.
+	private List<(int X, int Y, int Radius)> EliteZones(IEnumerable<AutoFsEntity> elites)
+		=> elites.Select(elite => (elite.RawX, elite.RawY, AutoFsEntityScanner.GetPlayerRetreatRadius(settings, elite.NameBytes))).ToList();
 
 	// Reports whether the worker recently posted an attack command successfully.
 	public bool HasRecentAttack(TimeSpan maximumAge) {
@@ -222,7 +281,7 @@ public sealed class Engine {
 		if (currentTargetMovementLog == null || eliteBuffer.Count == 0) return;
 		foreach (AutoFsEntity elite in eliteBuffer) {
 			if (!loggedEliteNames.Add(elite.Name)) continue;
-			currentTargetMovementLog($"ELITE_DETECTED | PID={currentProcessId} | Name={elite.Name} | Hp={elite.Hp} | Level={elite.Level} | Raw={elite.RawX}/{elite.RawY} | ToPlayer={elite.Distance:F0} | ToCenter={elite.DistanceToCenter:F0} | Range={settings.Range} | AvoidRadius={settings.EliteAvoidRadius} | RetreatRadius={settings.ElitePlayerRetreatRadius}");
+			currentTargetMovementLog($"ELITE_DETECTED | PID={currentProcessId} | Name={elite.Name} | Hp={elite.Hp} | Level={elite.Level} | Raw={elite.RawX}/{elite.RawY} | ToPlayer={elite.Distance:F0} | ToCenter={elite.DistanceToCenter:F0} | Range={settings.Range} | Loại={(EliteAvoidance.IsColorTagBoss(elite.NameBytes) ? "BOSS" : "CƯỜNG_HOÁ")} | BánKínhTránh={AutoFsEntityScanner.GetPlayerRetreatRadius(settings, elite.NameBytes)}");
 		}
 	}
 
@@ -286,8 +345,11 @@ public sealed class Engine {
 			eliteWalkObservedY = 0;
 			eliteWalkProgressUtc = DateTime.MinValue;
 			eliteWalkCommittedUtc = DateTime.MinValue;
+			// Blocked directions survive Stop() too (anti-AFK and Buff restart the worker while it is stuck); see the
+			// retreat end in TryRetreatFromElites.
 			eliteBuffer.Clear();
 			loggedEliteNames.Clear();
+			bypassTargetIndex = -1;
 		}
 		Interlocked.Exchange(ref lastAttackPostedUtcTicks, 0);
 		cancellation?.Cancel();
@@ -386,12 +448,17 @@ public sealed class Engine {
 						// Chỉ nhả khi con đó KHÔNG CÒN trong danh sách ứng viên: chết, ra khỏi tầm, hoặc bị vùng cấm
 						// quanh thủ lĩnh loại. Không cần địa chỉ mới nào của client.
 						if (preferredTargetIndex >= 0 && ! candidates.Any(candidate => candidate.Index == preferredTargetIndex)) preferredTargetIndex = -1;
-						AutoFsEntity? target = PickReachableTarget(candidates, currentProcessId, playerX, playerY, currentTargetMovementLog);
+						AutoFsEntity? target = PickReachableTarget(candidates, currentGame.LastObservedMapId, currentProcessId, playerX, playerY, currentTargetMovementLog);
 						if (TryRetreatFromElites(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog)) {
+							lastLoggedTargetIndex = -1;
+							if (bypassTargetIndex >= 0) EndWallBypass(currentProcessId, playerX, playerY, "TRỐN_BOSS", currentTargetMovementLog);
+						} else if (target != null && target.Index == bypassTargetIndex && HoldForWallBypass(currentGame, currentProcessId, target, playerX, playerY, currentTargetMovementLog)) {
 							lastLoggedTargetIndex = -1;
 						} else if (target == null) {
 							lastLoggedTargetIndex = -1;
 							TryWanderTrainingCorners(currentGame, currentProcessId, playerX, playerY, playerLifecycleStatus, currentTargetMovementLog);
+						} else if (TryLeavePetLagCluster(currentGame, currentProcessId, target, playerX, playerY, currentTargetMovementLog)) {
+							lastLoggedTargetIndex = -1;
 						} else if (!transport.TrySend(currentWindow, target.Index, out string error)) {
 							LogErrorOnce(currentLog, currentProcessId, error);
 						} else {
@@ -469,15 +536,24 @@ public sealed class Engine {
 	//   - vẫn đúng con đó
 	//   - toạ độ nhân vật không đổi   (đứng yên)
 	//   - máu con đó không đổi        (đứng yên mà máu tụt là đang đánh bình thường, không phải kẹt)
-	private AutoFsEntity? PickReachableTarget(IReadOnlyList<AutoFsEntity> candidates, int currentProcessId, int playerX, int playerY, Action<string>? currentTargetMovementLog) {
+	private AutoFsEntity? PickReachableTarget(IReadOnlyList<AutoFsEntity> candidates, int mapId, int currentProcessId, int playerX, int playerY, Action<string>? currentTargetMovementLog) {
 		DateTime now = DateTime.UtcNow;
+		// A bypass episode keeps its monster; the stuck check below does not run on it until the episode ends.
+		if (bypassTargetIndex >= 0) {
+			AutoFsEntity? held = candidates.FirstOrDefault(candidate => candidate.Index == bypassTargetIndex);
+			if (held != null) return held;
+			EndWallBypass(currentProcessId, playerX, playerY, "QUÁI_MẤT_HOẶC_CHẾT", currentTargetMovementLog);
+		}
 		AutoFsEntity? target = null;
+		unreachableZones.RemoveAll(zone => now >= zone.UntilUtc);
 		foreach (AutoFsEntity candidate in candidates) {
 			if (unreachableTargetsUntilUtc.TryGetValue(candidate.Index, out DateTime until)) {
 				if (now >= until) unreachableTargetsUntilUtc.Remove(candidate.Index);
 				// Ở chế độ chỉ quan sát, bảng này chỉ để KHỎI ghi lặp log, không dùng để loại mục tiêu.
 				else if (BlacklistUnreachableTargets) continue;
 			}
+			if (BlacklistUnreachableTargets && unreachableZones.Any(zone => EliteAvoidance.Distance(candidate.RawX, candidate.RawY, zone.X, zone.Y) <= zone.Radius)) continue;
+			if (BlacklistUnreachableTargets && StuckSpotStore.IsNearStoredSpot(mapId, candidate.RawX, candidate.RawY)) continue;
 			target = candidate;
 			break;
 		}
@@ -513,6 +589,16 @@ public sealed class Engine {
 			stuckSinceUtc = now;
 			return target;
 		}
+		// Inside the elite zone the retreat takes over right after this call (RunWorker), so standing still is not a sign
+		// of a wall. Without this the stuck check started a wall bypass that the retreat aborted in the same millisecond:
+		// 563 of 1106 WALL_BYPASS_START were ABORTED "TRỐN_BOSS" (auto-runtime.log 2026-10-13), each one using one of the
+		// three episodes per 2 minutes, followed by 970 WALL_BYPASS_SKIPPED.
+		if (settings.DoNotAttackBoss && settings.ElitePlayerRetreatRadius > 0 && eliteBuffer.Count > 0
+			&& EliteAvoidance.IsNearAnyElite(playerX, playerY, EliteZones(eliteBuffer))) {
+			stuckTargetIndex = -1;
+			stuckBestDistance = double.MaxValue;
+			return target;
+		}
 		// Ba đường reset đồng hồ, mỗi đường ứng với một kiểu "vẫn ổn":
 		//   đổi con           -> đợt đuổi mới
 		//   máu con đó đổi    -> đang đánh được nó, đứng yên là bình thường
@@ -542,7 +628,13 @@ public sealed class Engine {
 		}
 		if ((now - stuckSinceUtc).TotalMilliseconds < StuckTargetMilliseconds) return target;
 
+		if (BlacklistUnreachableTargets && TryStartWallBypass(target, currentProcessId, playerX, playerY, now, currentTargetMovementLog)) {
+			stuckTargetIndex = -1;
+			stuckBestDistance = double.MaxValue;
+			return target;
+		}
 		unreachableTargetsUntilUtc[target.Index] = now.AddMilliseconds(UnreachableTargetCooldownMilliseconds);
+		unreachableZones.Add((target.RawX, target.RawY, CellRawX, now.AddMilliseconds(UnreachableTargetCooldownMilliseconds)));
 		string stuckAction = BlacklistUnreachableTargets ? "Bỏ qua con này và chọn con khác" : "CHỈ GHI LOG, vẫn đánh con này";
 		currentTargetMovementLog?.Invoke($"TARGET_UNREACHABLE_SKIPPED | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | Player={playerX}/{playerY} | Target={target.RawX}/{target.RawY} | Distance={target.Distance:F0} | GầnNhấtĐạtĐược={stuckBestDistance:F0} | TargetHp={target.Hp} | StuckMs={(int)(now - stuckSinceUtc).TotalMilliseconds} | CooldownMs={UnreachableTargetCooldownMilliseconds} | Action={stuckAction}");
 		stuckTargetIndex = -1;
@@ -551,7 +643,173 @@ public sealed class Engine {
 		if (!BlacklistUnreachableTargets) return target;
 		// Hết ứng viên thì nơi gọi rơi vào nhánh target == null -> TryWanderTrainingCorners đưa nhân vật đi chỗ khác.
 		// Đó chính là bước "lùi lại", tái dùng đường đi sẵn có chứ không thêm luồng di chuyển mới.
-		return PickReachableTarget(candidates, currentProcessId, playerX, playerY, currentTargetMovementLog);
+		return PickReachableTarget(candidates, mapId, currentProcessId, playerX, playerY, currentTargetMovementLog);
+	}
+
+	// Starts a bypass episode on a monster the stuck check just flagged, unless the per-account cap is used up.
+	private bool TryStartWallBypass(AutoFsEntity target, int currentProcessId, int playerX, int playerY, DateTime now, Action<string>? currentTargetMovementLog) {
+		if (playerX <= 0 || playerY <= 0) return false;
+		while (bypassEpisodeStartsUtc.Count > 0 && now - bypassEpisodeStartsUtc.Peek() > WallBypassEpisodeWindow) bypassEpisodeStartsUtc.Dequeue();
+		if (bypassEpisodeStartsUtc.Count >= CurrentWallBypassMaximumEpisodes) {
+			currentTargetMovementLog?.Invoke($"WALL_BYPASS_SKIPPED | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | Player={playerX}/{playerY} | Target={target.RawX}/{target.RawY} | SốĐợt={bypassEpisodeStartsUtc.Count}/{CurrentWallBypassMaximumEpisodes} trong {WallBypassEpisodeWindow.TotalMinutes:F0} phút | Action=Không lách, bỏ qua con này như cũ");
+			return false;
+		}
+		bypassEpisodeStartsUtc.Enqueue(now);
+		bypassTargetIndex = target.Index;
+		bypassStep = 0;
+		bypassPhase = WallBypassPhase.NeedWalk;
+		bypassAnchorX = playerX;
+		bypassAnchorY = playerY;
+		currentTargetMovementLog?.Invoke($"WALL_BYPASS_START | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | Player={playerX}/{playerY} | Target={target.RawX}/{target.RawY} | Distance={target.Distance:F0} | Đợt={bypassEpisodeStartsUtc.Count}/{CurrentWallBypassMaximumEpisodes}");
+		return true;
+	}
+
+	// Runs the episode on the worker's scan. Returns true while the character is walking a side step (no attack command
+	// this scan); false while probing, so the caller sends the normal attack command at the monster.
+	private bool HoldForWallBypass(GameWindow currentGame, int currentProcessId, AutoFsEntity target, int playerX, int playerY, Action<string>? currentTargetMovementLog) {
+		DateTime now = DateTime.UtcNow;
+		if (bypassPhase == WallBypassPhase.NeedWalk) return StartWallBypassStep(currentGame, currentProcessId, target, playerX, playerY, now, currentTargetMovementLog);
+		if (bypassPhase == WallBypassPhase.Walking) {
+			double toStep = EliteAvoidance.Distance(playerX, playerY, bypassStepX, bypassStepY);
+			if (toStep > WallBypassArrivalRaw && now < bypassPhaseUntilUtc) return true;
+			bypassPhase = WallBypassPhase.Probing;
+			bypassPhaseUntilUtc = now.AddMilliseconds(StuckTargetMilliseconds);
+			bypassProbeStartDistance = target.Distance;
+			bypassProbeStartHp = target.Hp;
+			currentTargetMovementLog?.Invoke($"WALL_BYPASS_STEP_DONE | PID={currentProcessId} | Bước={bypassStep + 1}/{WallBypassSteps} | {(toStep <= WallBypassArrivalRaw ? "TỚI_NƠI" : "HẾT_GIỜ")} | Player={playerX}/{playerY} | Đích={bypassStepX}/{bypassStepY} | CònCáchĐích={toStep:F0} | CáchQuái={target.Distance:F0} | Action=Thử đánh lại con này");
+			return false;
+		}
+		// Probing: the attack command goes out as usual. Only reaching the monster or its HP moving means the way is open.
+		// Closing in by 60 raw used to count as well, but walking back from a side step always closes in that much before
+		// the same wall stops it again: XinLỗiEm 2026-10-13 23:50:19-23:50:33 had two such "SUCCEEDED" (192->159,
+		// 475->413) on one monster behind a wall, each restarting the 1.5 s stuck check, 14 s in all. Closing in now only
+		// extends the probe.
+		if (target.Distance <= bypassProbeStartDistance - StuckDistanceProgressRaw && target.Distance > StuckArrivalDistanceRaw) {
+			bypassProbeStartDistance = target.Distance;
+			bypassPhaseUntilUtc = now.AddMilliseconds(StuckTargetMilliseconds);
+			return false;
+		}
+		bool progressed = target.Distance <= StuckArrivalDistanceRaw || target.Hp != bypassProbeStartHp;
+		if (progressed) {
+			currentTargetMovementLog?.Invoke($"WALL_BYPASS_SUCCEEDED | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | Bước={bypassStep + 1}/{WallBypassSteps} | Player={playerX}/{playerY} | CáchQuái={bypassProbeStartDistance:F0}->{target.Distance:F0} | HP={bypassProbeStartHp}->{target.Hp}");
+			bypassTargetIndex = -1;
+			// Fresh baseline for the normal stuck check.
+			stuckTargetIndex = target.Index;
+			stuckTargetHp = target.Hp;
+			stuckBestDistance = target.Distance;
+			stuckSinceUtc = now;
+			return false;
+		}
+		if (now < bypassPhaseUntilUtc) return false;
+		bypassStep++;
+		if (bypassStep >= WallBypassSteps) {
+			unreachableTargetsUntilUtc[target.Index] = now.AddMilliseconds(UnreachableTargetCooldownMilliseconds);
+			unreachableZones.Add((target.RawX, target.RawY, CellRawX, now.AddMilliseconds(UnreachableTargetCooldownMilliseconds)));
+			int mapId = currentGame.LastObservedMapId;
+			string stored = StuckSpotStore.Add(mapId, target.RawX, target.RawY) ? $"ĐÃ_LƯU config.ini Map{mapId}" : mapId <= 0 ? "KHÔNG_LƯU(chưa biết map)" : $"ĐÃ_CÓ_TRONG config.ini Map{mapId}";
+			currentTargetMovementLog?.Invoke($"WALL_BYPASS_GAVE_UP | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | Player={playerX}/{playerY} | ĐiểmKẹt={bypassAnchorX}/{bypassAnchorY} | Quái={target.RawX}/{target.RawY} | CáchQuái={target.Distance:F0} | ChỗKẹt={stored} | Action=Hết {WallBypassSteps} bước, bỏ qua con này và mọi con quanh chỗ này");
+			bypassTargetIndex = -1;
+			stuckTargetIndex = -1;
+			stuckBestDistance = double.MaxValue;
+			return true;
+		}
+		return StartWallBypassStep(currentGame, currentProcessId, target, playerX, playerY, now, currentTargetMovementLog);
+	}
+
+	// One side step: left/right alternating, 1..3 cells from the stuck point, perpendicular to the line to the monster.
+	// Same move as the boss retreat: switch the client's own attack order off first (it overrides a walk), then the
+	// unflagged walk 0/321. Never the flagged route inside the training area (owner rule 2026-10-11).
+	private bool StartWallBypassStep(GameWindow currentGame, int currentProcessId, AutoFsEntity target, int playerX, int playerY, DateTime now, Action<string>? currentTargetMovementLog) {
+		bool left = bypassStep % 2 == 0;
+		int cells = bypassStep / 2 + 1;
+		double towardX = (double)(target.RawX - bypassAnchorX) / CellRawX;
+		double towardY = (double)(target.RawY - bypassAnchorY) / CellRawY;
+		double length = Math.Sqrt(towardX * towardX + towardY * towardY);
+		if (length <= 0) {
+			EndWallBypass(currentProcessId, playerX, playerY, "TRÙNG_TOẠ_ĐỘ_QUÁI", currentTargetMovementLog);
+			return false;
+		}
+		double sideX = left ? -towardY / length : towardY / length;
+		double sideY = left ? towardX / length : -towardX / length;
+		bypassStepX = bypassAnchorX + (int)Math.Round(sideX * cells * CellRawX);
+		bypassStepY = bypassAnchorY + (int)Math.Round(sideY * cells * CellRawY);
+		string clientMoveState = ReadClientMoveState(currentGame);
+		string cancelAttack = ClientAttackCanceller.Cancel(currentGame);
+		bool walked = AutoFsMovementCommand.TryWalkTo(currentGame, bypassStepX, bypassStepY, out string walkResult);
+		bypassPhase = WallBypassPhase.Walking;
+		bypassPhaseUntilUtc = now.AddMilliseconds(WallBypassWalkTimeoutMilliseconds);
+		currentTargetMovementLog?.Invoke($"WALL_BYPASS_STEP | PID={currentProcessId} | Bước={bypassStep + 1}/{WallBypassSteps} | Hướng={(left ? "TRÁI" : "PHẢI")} | Ô={cells} | Player={playerX}/{playerY} | ĐiểmKẹt={bypassAnchorX}/{bypassAnchorY} | Đích={bypassStepX}/{bypassStepY} | Quái={target.RawX}/{target.RawY} | {clientMoveState} | {cancelAttack} | Walked={walked} | {walkResult}");
+		return true;
+	}
+
+	// Pet position lag (owner 2026-10-13): the pet's damage stops reaching the monster when its position desyncs, and the
+	// owner's own damage is small. The other causes the owner named: the pet is dead, or a wall stands between the pet
+	// and the monster. A monster still alive PetLagAttackMilliseconds after the character reached it means the spot is
+	// bad, not the monster (owner 2026-10-14: a whole cluster there can have the position error), so every monster within
+	// PetLagClusterRadiusRaw of it is skipped for a while and the next pick lies elsewhere: the character walks there.
+	// Fixed 10 s instead of the per-account learned threshold: that one sank to its 3000 ms floor on most accounts
+	// (auto-runtime.log 2026-10-13 23:37-00:03), because slow kills were stepped away from and so never sampled, and it
+	// then fired on monsters that were losing HP normally (TiểuHồngĐơn Index=6: 3053 HP at 3.1 s, 1006 at 7.2 s).
+	private const int PetLagAttackMilliseconds = 10000;
+	// Three X cells (1.5 Y cells) around the monster, for the same 20 s as an unreachable monster.
+	private const int PetLagClusterRadiusRaw = 3 * CellRawX;
+	private const int PetLagKillSamples = 30;
+	// A kill counts only when the target was still being fought this recently before the next target came up; longer gaps
+	// mean a boss retreat, a wall bypass or no target in between, so the time would not be a clean kill time.
+	private const int PetLagKillGapMilliseconds = 1500;
+	private const int PetLagStatsEveryKills = 20;
+	private int petLagTargetIndex = -1;
+	private DateTime petLagEngagedUtc = DateTime.MinValue;
+	private DateTime petLagLastSeenUtc = DateTime.MinValue;
+	private readonly Queue<int> petLagKillMilliseconds = new();
+	private int petLagKillCount;
+
+	// Called when the target changes: logs this account's kill times, for reference only.
+	private void NotePetLagKill(int currentProcessId, DateTime now, Action<string>? currentTargetMovementLog) {
+		if (petLagTargetIndex < 0 || petLagEngagedUtc == DateTime.MinValue) return;
+		if ((now - petLagLastSeenUtc).TotalMilliseconds > PetLagKillGapMilliseconds) return;
+		if (petLagKillMilliseconds.Count >= PetLagKillSamples) petLagKillMilliseconds.Dequeue();
+		petLagKillMilliseconds.Enqueue((int)(petLagLastSeenUtc - petLagEngagedUtc).TotalMilliseconds);
+		petLagKillCount++;
+		if (petLagKillCount % PetLagStatsEveryKills != 0) return;
+		int[] sorted = petLagKillMilliseconds.Order().ToArray();
+		currentTargetMovementLog?.Invoke($"PET_LAG_KILL_STATS | PID={currentProcessId} | SốConĐãTính={petLagKillCount} | Mẫu={sorted.Length} | NhanhNhất={sorted[0]} | TrungVị={sorted[sorted.Length / 2]} | ChậmNhất={sorted[^1]}");
+	}
+
+	// true = the cluster was given up this tick; no attack order is sent.
+	private bool TryLeavePetLagCluster(GameWindow currentGame, int currentProcessId, AutoFsEntity target, int playerX, int playerY, Action<string>? currentTargetMovementLog) {
+		DateTime now = DateTime.UtcNow;
+		if (target.Index != petLagTargetIndex) {
+			NotePetLagKill(currentProcessId, now, currentTargetMovementLog);
+			petLagTargetIndex = target.Index;
+			petLagEngagedUtc = DateTime.MinValue;
+		}
+		if (settings.OnlyAttackBoss || target.Hp <= 0 || playerX <= 0 || playerY <= 0) return false;
+		// The clock starts once the character stands next to the monster, so walking there does not count.
+		if (petLagEngagedUtc == DateTime.MinValue) {
+			if (target.Distance <= StuckArrivalDistanceRaw) petLagEngagedUtc = now;
+			petLagLastSeenUtc = now;
+			return false;
+		}
+		petLagLastSeenUtc = now;
+		if ((now - petLagEngagedUtc).TotalMilliseconds < PetLagAttackMilliseconds) return false;
+		if (settings.DoNotAttackBoss && settings.ElitePlayerRetreatRadius > 0 && eliteBuffer.Count > 0
+			&& EliteAvoidance.IsNearAnyElite(playerX, playerY, EliteZones(eliteBuffer))) return false;
+		Auto.Support.PetHealthReading pet = Auto.Support.PetHealthReader.Read(currentProcessId);
+		string petState = ! pet.Success ? "ĐệHp=?" : ! pet.Present ? "ĐệHp=KHÔNG_CÓ" : $"ĐệHp={pet.CurrentHp}/{pet.MaximumHp} | ĐệRaw={pet.RawX}/{pet.RawY}";
+		DateTime until = now.AddMilliseconds(UnreachableTargetCooldownMilliseconds);
+		unreachableTargetsUntilUtc[target.Index] = until;
+		unreachableZones.Add((target.RawX, target.RawY, PetLagClusterRadiusRaw, until));
+		string cancelAttack = ClientAttackCanceller.Cancel(currentGame);
+		currentTargetMovementLog?.Invoke($"PET_LAG_LEAVE_CLUSTER | PID={currentProcessId} | Index={target.Index} | Name={target.Name} | TargetHp={target.Hp} | ĐánhMs={(int)(now - petLagEngagedUtc).TotalMilliseconds} | Player={playerX}/{playerY} | Quái={target.RawX}/{target.RawY} | BánKính={PetLagClusterRadiusRaw} | {petState} | {cancelAttack} | Action=Bỏ cụm quái quanh đây {UnreachableTargetCooldownMilliseconds}ms, sang chỗ khác");
+		// Forget the monster: when it comes back after the cooldown its clock starts over.
+		petLagTargetIndex = -1;
+		return true;
+	}
+
+	private void EndWallBypass(int currentProcessId, int playerX, int playerY, string reason, Action<string>? currentTargetMovementLog) {
+		currentTargetMovementLog?.Invoke($"WALL_BYPASS_ABORTED | PID={currentProcessId} | Index={bypassTargetIndex} | Bước={bypassStep + 1}/{WallBypassSteps} | Player={playerX}/{playerY} | LýDo={reason}");
+		bypassTargetIndex = -1;
 	}
 
 	private bool TryRetreatFromElites(GameWindow currentGame, int currentProcessId, int playerX, int playerY, int playerLifecycleStatus, Action<string>? currentTargetMovementLog) {
@@ -588,6 +846,10 @@ public sealed class Engine {
 			eliteWalkObservedY = 0;
 			eliteWalkProgressUtc = DateTime.MinValue;
 			eliteWalkCommittedUtc = DateTime.MinValue;
+			// The blocked directions are kept: they belong to the stuck spot, not to this retreat. A boss stepping past the
+			// exit radius for a moment ended the retreat and wiped them, and the next retreat hit the same wall again
+			// (PhâyKer 2026-10-13 22:18:10 dropped at 900 > 896). They go once the character is two cells away or after
+			// EliteBlockedDirectionLifetime (TryRetreatFromElitesCore).
 		}
 		retreatingFromElite = retreating;
 		return retreating;
@@ -603,19 +865,27 @@ public sealed class Engine {
 			retreatExitGate = $"KHÔNG_ĐỌC_ĐƯỢC_VỊ_TRÍ ({playerX}/{playerY})";
 			return false;
 		}
+		// No "around point" gate any more: with "Quanh điểm" dropped because bosses surround the area (owner 2026-10-13) the
+		// character still has to run from them. Without a training area the destination is not held inside any field.
 		bool aroundPoint = settings.TrainingEnabled || settings.TeachingEnabled || settings.ContinueEnabled || settings.UseCenterPosition;
-		if (!aroundPoint) {
-			retreatExitGate = "KHÔNG_BẬT_CHẾ_ĐỘ_QUANH_ĐIỂM";
-			return false;
-		}
 		if (currentGame.ReturnToTrainingAutomation.IsBusy || currentGame.ConfiguredTrainingMovementAutomation.IsBusy || currentGame.WeaponRepairAutomation.IsBusy) {
 			retreatExitGate = $"LUỒNG_KHÁC_ĐANG_CHẠY (LênBãi={currentGame.ReturnToTrainingAutomation.IsBusy}, ĐiBãiCấuHình={currentGame.ConfiguredTrainingMovementAutomation.IsBusy}, SửaĐồ={currentGame.WeaponRepairAutomation.IsBusy})";
 			return false;
 		}
 
-		List<(int X, int Y)> elites = eliteBuffer.Select(elite => (elite.RawX, elite.RawY)).ToList();
-		if (!EliteAvoidance.IsNearAnyElite(playerX, playerY, elites, settings.ElitePlayerRetreatRadius)) {
-			retreatExitGate = $"ĐÃ_RA_KHỎI_VÙNG_CẤM (gầnNhất={EliteAvoidance.NearestEliteDistance(playerX, playerY, elites):F0} > bánKính={settings.ElitePlayerRetreatRadius})";
+		List<(int X, int Y, int Radius)> elites = EliteZones(eliteBuffer);
+		// Exit with a margin while a destination is held: leave only at radius + half the margin, or once the held
+		// destination is reached outside the radius. With one threshold for entering and leaving, 1đêm2nháy 2026-10-13
+		// 18:20:07-18:20:19 dropped the destination at 769-776 and was back inside 0.7-1.5 s later, six times in a row;
+		// 1283 of 1737 re-entries (74%) after the 16:46 build came within 5 s.
+		// Clearance = distance minus that elite's own radius (3 cells for a boss, 1 cell for an enhanced monster).
+		double nearestClearance = EliteAvoidance.NearestEliteClearance(playerX, playerY, elites);
+		bool holdingDestination = eliteWalkDestinationX > 0 && eliteWalkDestinationY > 0;
+		bool reachedHeldDestination = holdingDestination
+			&& EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY) <= EliteRetreatArrivalRaw;
+		int exitClearance = holdingDestination && ! reachedHeldDestination ? EliteRetreatMarginRaw / 2 : 0;
+		if (nearestClearance > exitClearance) {
+			retreatExitGate = $"ĐÃ_RA_KHỎI_VÙNG_CẤM (khoảngHở={nearestClearance:F0} > ngưỡngThoát={exitClearance})";
 			return false;
 		}
 
@@ -625,7 +895,8 @@ public sealed class Engine {
 		if (centerX <= 0 || centerY <= 0) return true;
 		if (playerLifecycleStatus == AutoFsBusyLifecycleStatus) return true;
 
-		int range = Math.Max(settings.Range, 1);
+		// Range 0 = no field to stay inside (EliteAvoidance never calls a candidate "leaving the field").
+		int range = aroundPoint ? Math.Max(settings.Range, 1) : 0;
 		// BỎ HẲN 4 góc cố định cho luồng tránh boss (chủ dự án chốt 2026-09-11). Đích trốn giờ tính theo KHOẢNG CÁCH:
 		// đẩy nhân vật ra tới khi cách mọi thủ lĩnh quá radius + margin, hướng đẩy là tổng vector đẩy từ từng con.
 		//
@@ -634,8 +905,15 @@ public sealed class Engine {
 		// góc đều bẩn và nhân vật đứng chết: movement.log 2026-09-11 PID=34032 có bốn dòng ELITE_NO_SAFE_CORNER lúc
 		// 14:50:38 / 14:50:48 / 14:50:58 / 14:51:09 đều cùng một toạ độ Player=63631/90321.
 		// Luật mới không có trạng thái "không tìm được chỗ": boss đuổi tới thì lượt quét sau cho ra đích xa hơn.
+		// Two cells away from where the last wall was met the character is out of that pocket (owner 2026-10-13: once unstuck,
+		// move on elsewhere): the blocked directions were measured from the old spot, so drop them and retreat normally.
+		bool blockedExpired = DateTime.UtcNow - eliteBlockedAtUtc > EliteBlockedDirectionLifetime;
+		if (eliteBlockedDirections.Count > 0 && (blockedExpired || EliteAvoidance.Distance(playerX, playerY, eliteBlockedAtX, eliteBlockedAtY) >= 2 * CellRawX)) {
+			currentTargetMovementLog?.Invoke($"ELITE_RETREAT_UNSTUCK | PID={currentProcessId} | Player={playerX}/{playerY} | ChỗBịKẹt={eliteBlockedAtX}/{eliteBlockedAtY} | SốHướngĐãXoá={eliteBlockedDirections.Count} | LýDo={(blockedExpired ? "HẾT_HẠN" : "ĐÃ_RA_XA_2_Ô")}");
+			ClearEliteBlockedDirection();
+		}
 		if (!EliteAvoidance.TryGetRetreatDestination(playerX, playerY, centerX, centerY, range, elites,
-			settings.ElitePlayerRetreatRadius, EliteRetreatMarginRaw, out int destinationX, out int destinationY)) {
+			EliteRetreatMarginRaw, out int destinationX, out int destinationY, out _, eliteBlockedDirections)) {
 			// Chỉ xảy ra khi không tính được hướng đẩy (trùng toạ độ mọi con). Giữ lượt để khỏi quay ra đánh con quái
 			// cạnh thủ lĩnh, lượt sau boss nhích một chút là có hướng.
 			return true;
@@ -669,12 +947,14 @@ public sealed class Engine {
 		double retreatRemaining = -1;
 		if (eliteWalkDestinationX > 0 && eliteWalkDestinationY > 0) {
 			retreatRemaining = EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY);
-			if (playerX != eliteWalkObservedX || playerY != eliteWalkObservedY) {
+			// Progress = moved StuckDistanceProgressRaw from the last progress point, as for monsters. Any coordinate change
+			// used to count, and a character turning in place against a wall changes coordinates all the time.
+			if (EliteAvoidance.Distance(playerX, playerY, eliteWalkObservedX, eliteWalkObservedY) >= StuckDistanceProgressRaw) {
 				eliteWalkObservedX = playerX;
 				eliteWalkObservedY = playerY;
 				eliteWalkProgressUtc = now;
 			}
-			bool committedDestinationDirty = EliteAvoidance.IsNearAnyElite(eliteWalkDestinationX, eliteWalkDestinationY, elites, settings.ElitePlayerRetreatRadius);
+			bool committedDestinationDirty = EliteAvoidance.IsNearAnyElite(eliteWalkDestinationX, eliteWalkDestinationY, elites);
 			bool arrived = EliteAvoidance.Distance(playerX, playerY, eliteWalkDestinationX, eliteWalkDestinationY) <= EliteRetreatArrivalRaw;
 			bool stalled = now - eliteWalkProgressUtc >= TimeSpan.FromMilliseconds(EliteWalkStallMilliseconds);
 			// Chỉ huỷ vì "bẩn" nếu đích đã được giữ đủ EliteRetreatMinimumHoldMilliseconds — chặn vòng lặp bắn lại
@@ -682,14 +962,27 @@ public sealed class Engine {
 			bool destinationDirtyAndReady = committedDestinationDirty
 				&& now - eliteWalkCommittedUtc >= TimeSpan.FromMilliseconds(EliteRetreatMinimumHoldMilliseconds);
 			if (!destinationDirtyAndReady && !arrived && !stalled) return true;
-			retreatReason = destinationDirtyAndReady ? "ĐÍCH_BẨN" : arrived ? "ĐÃ_TỚI" : "ĐỨNG_IM";
+			// Stalled is checked first: with the boss closing in every resend was "ĐÍCH_BẨN", which skipped the wall handling
+			// below, and PhâyKer 2026-10-13 22:18:42-52 got four destinations into the same south-west wall without moving
+			// from 62881/100134 while the boss came from 750 to 381.
+			retreatReason = stalled ? "ĐỨNG_IM" : destinationDirtyAndReady ? "ĐÍCH_BẨN" : "ĐÃ_TỚI";
 			// Còn đi dở tới một đích vẫn sạch (hoặc mới bẩn nhưng chưa đủ thời gian giữ) mà phải bắn lại vì đứng im:
 			// giữ nguyên đích cũ thay vì lấy đích mới đã trôi theo nhân vật, để lệnh thứ hai là đi tiếp đúng chỗ cũ
 			// chứ không phải đổi hướng giữa đường.
-			if (!destinationDirtyAndReady && !arrived) {
+			if (retreatReason == "ĐỨNG_IM") {
+				// The held destination did not move the character: that way is walled off. Turn away at once (owner
+				// 2026-10-13: never stand still near a boss) instead of resending the same destination.
+				(destinationX, destinationY) = PickRetreatAroundWall(currentProcessId, playerX, playerY, centerX, centerY, range, elites, currentTargetMovementLog);
+			} else if (!destinationDirtyAndReady && !arrived) {
 				destinationX = eliteWalkDestinationX;
 				destinationY = eliteWalkDestinationY;
 			}
+		}
+		// A fresh destination that points into a known wall means EliteAvoidance found no opening and fell back: keep stepping
+		// out through the most open side (boss side included) instead of walking back into the wall and stalling next to the
+		// boss again.
+		if (retreatReason != "ĐỨNG_IM" && eliteBlockedDirections.Count > 0 && IsTowardBlockedDirection(playerX, playerY, destinationX, destinationY)) {
+			(destinationX, destinationY) = StepTowardOpenDirection(currentProcessId, playerX, playerY, destinationX, destinationY, elites, currentTargetMovementLog);
 		}
 		// Read BEFORE resending: shows what the client did with the previous retreat command. Equal to the held destination
 		// = client accepted it but is not walking; 135/-1 = the client is casting skill 135 at its attack target (measured
@@ -712,12 +1005,111 @@ public sealed class Engine {
 		if (destinationX != eliteWalkDestinationX || destinationY != eliteWalkDestinationY) eliteWalkCommittedUtc = now;
 		eliteWalkDestinationX = destinationX;
 		eliteWalkDestinationY = destinationY;
-		eliteWalkObservedX = playerX;
-		eliteWalkObservedY = playerY;
-		eliteWalkProgressUtc = now;
-		(int nearestX, int nearestY) = elites.OrderBy(elite => EliteAvoidance.Distance(playerX, playerY, elite.X, elite.Y)).First();
-		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={settings.ElitePlayerRetreatRadius} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | LýDoBắn={retreatReason} | CònCáchĐíchCũ={(retreatRemaining < 0 ? "chưa có đích" : retreatRemaining.ToString("F0"))} | {clientMoveState} | {cancelAttack} | {walkResult}");
+		// A "dirty" or "arrived" resend keeps the stall clock running: restarting it on every resend is what let the boss
+		// keep the character against the wall, since a dirty resend came every 2-4 s and never reached the stall limit.
+		if (retreatReason is "ĐÍCH_MỚI" or "ĐỨNG_IM") {
+			eliteWalkObservedX = playerX;
+			eliteWalkObservedY = playerY;
+			eliteWalkProgressUtc = now;
+		}
+		(int nearestX, int nearestY, int nearestRadius) = elites.OrderBy(elite => EliteAvoidance.Distance(playerX, playerY, elite.X, elite.Y) - elite.Radius).First();
+		currentTargetMovementLog?.Invoke($"ELITE_RETREAT | PID={currentProcessId} | Player={playerX}/{playerY} | Elite={nearestX}/{nearestY} | Distance={EliteAvoidance.Distance(playerX, playerY, nearestX, nearestY):F0} | Radius={nearestRadius} | KhoảngHở={EliteAvoidance.NearestEliteClearance(playerX, playerY, elites):F0} | SauKhiTới={EliteAvoidance.NearestEliteDistance(destinationX, destinationY, elites):F0} | KhoảngHởSauKhiTới={EliteAvoidance.NearestEliteClearance(destinationX, destinationY, elites):F0} | Destination={destinationX}/{destinationY} | LýDoBắn={retreatReason} | CònCáchĐíchCũ={(retreatRemaining < 0 ? "chưa có đích" : retreatRemaining.ToString("F0"))} | {clientMoveState} | {cancelAttack} | {walkResult}");
+		// Diagnostic only. XinLỗiEm 2026-10-14 00:28:42-00:30:27 stood on 62355/88219 for 100 s next to a boss and died:
+		// every retreat walk was CONFIRMED, D7A0 was already 0 (HuỷĐánh=KHÔNG_CẦN), yet the client destination stayed on
+		// 135/-1 then 454/-1 (skill cast state) and the position did not change by 1 raw. Which client field holds that
+		// lock is unknown, so dump the player record around the attack and movement fields: once on a fresh retreat as the
+		// baseline, and on every stalled resend while the destination shows the cast state.
+		if (retreatReason == "ĐÍCH_MỚI" || (retreatReason == "ĐỨNG_IM" && clientMoveState.EndsWith("/-1", StringComparison.Ordinal))) {
+			currentTargetMovementLog?.Invoke($"CLIENT_CAST_LOCK_DUMP | PID={currentProcessId} | LýDoBắn={retreatReason} | Player={playerX}/{playerY} | {clientMoveState} | {DumpPlayerLockFields(currentGame)}");
+		}
 		return true;
+	}
+
+	private static string DumpPlayerLockFields(GameWindow game) {
+		try {
+			RuntimeLayout layout = game.RuntimeLayout;
+			using MemoryReader reader = new(game.ProcessId);
+			IntPtr moduleBase = reader.GetModuleBase(GameAddresses.ModuleName);
+			IntPtr entityTable = reader.ReadPointer32(IntPtr.Add(moduleBase, layout.EntityTableRva));
+			if (entityTable == IntPtr.Zero) return "Dump=KHÔNG_ĐỌC_ĐƯỢC";
+			IntPtr player = IntPtr.Add(entityTable, layout.PlayerRecordOffset);
+			string Hex(int offset, int size) => $"+0x{offset:X}={Convert.ToHexString(reader.ReadBytes(IntPtr.Add(player, offset), size))}";
+			return $"{Hex(0x42C0, 0x40)} | {Hex(0xD780, 0x40)} | {Hex(0x2CD0, 0x20)}";
+		} catch (Exception ex) {
+			return $"Dump=LỖI({ex.GetType().Name})";
+		}
+	}
+
+	// Adds the walled-off direction to the blocked list and asks EliteAvoidance for a destination outside 45 degrees of every
+	// blocked direction. When every direction is blocked it steps 1, 2, 3, 3, 3, 3 cells toward the most open direction,
+	// boss side included, then clears the list and starts over.
+	private (int X, int Y) PickRetreatAroundWall(int currentProcessId, int playerX, int playerY, int centerX, int centerY, int range,
+		List<(int X, int Y, int Radius)> elites, Action<string>? currentTargetMovementLog) {
+		int blockedX = eliteWalkDestinationX;
+		int blockedY = eliteWalkDestinationY;
+		if (eliteBlockedDirections.Count >= EliteMaximumBlockedDirections) eliteBlockedDirections.RemoveAt(0);
+		eliteBlockedDirections.Add((blockedX - (double)playerX, (blockedY - (double)playerY) * EliteAvoidance.RawYToRawXScale));
+		eliteBlockedAtX = playerX;
+		eliteBlockedAtY = playerY;
+		eliteBlockedAtUtc = DateTime.UtcNow;
+		if (EliteAvoidance.TryGetRetreatDestination(playerX, playerY, centerX, centerY, range, elites,
+				EliteRetreatMarginRaw, out int otherX, out int otherY, out _, eliteBlockedDirections)
+			&& ! IsTowardBlockedDirection(playerX, playerY, otherX, otherY)) {
+			currentTargetMovementLog?.Invoke($"ELITE_RETREAT_BLOCKED_DIRECTION | PID={currentProcessId} | Player={playerX}/{playerY} | ĐíchBịChặn={blockedX}/{blockedY} | ĐíchMới={otherX}/{otherY} | SốHướngBịChặn={eliteBlockedDirections.Count}");
+			return (otherX, otherY);
+		}
+		return StepTowardOpenDirection(currentProcessId, playerX, playerY, blockedX, blockedY, elites, currentTargetMovementLog);
+	}
+
+	// Getting unstuck comes before avoiding the boss (owner 2026-10-13): walls on three sides and the boss on the fourth
+	// means walking out past the boss. Pick the one of 16 directions farthest from every blocked direction, even when it
+	// points at the boss; the next stall adds it to the list, so each step tries a fresh opening.
+	private (int X, int Y) StepTowardOpenDirection(int currentProcessId, int playerX, int playerY, int blockedX, int blockedY,
+		List<(int X, int Y, int Radius)> elites, Action<string>? currentTargetMovementLog) {
+		double openX = 1;
+		double openY = 0;
+		double openWorstCosine = double.PositiveInfinity;
+		for (int index = 0; index < 16; index++) {
+			double angle = index * Math.PI / 8;
+			double unitX = Math.Cos(angle);
+			double unitY = Math.Sin(angle);
+			double worstCosine = -1;
+			foreach ((double directionX, double directionY) in eliteBlockedDirections) {
+				double directionLength = Math.Sqrt(directionX * directionX + directionY * directionY);
+				if (directionLength >= 1e-6) worstCosine = Math.Max(worstCosine, (unitX * directionX + unitY * directionY) / directionLength);
+			}
+			if (worstCosine < openWorstCosine) {
+				openWorstCosine = worstCosine;
+				openX = unitX;
+				openY = unitY;
+			}
+		}
+		int cells = Math.Min(eliteSideStepCount + 1, 3);
+		// Scaled space; one cell is 256 scaled units on both axes (256 raw X, 512 raw Y).
+		int stepX = playerX + (int)Math.Round(openX * cells * CellRawX);
+		int stepY = playerY + (int)Math.Round(openY * cells * CellRawX / EliteAvoidance.RawYToRawXScale);
+		eliteSideStepCount++;
+		currentTargetMovementLog?.Invoke($"ELITE_RETREAT_SIDE_STEP | PID={currentProcessId} | Player={playerX}/{playerY} | ĐíchBịChặn={blockedX}/{blockedY} | Ô={cells} | Góc={Math.Atan2(openY, openX) * 180 / Math.PI:F0} | KhoảngCáchBossTạiĐích={EliteAvoidance.NearestEliteDistance(stepX, stepY, elites):F0} | Đích={stepX}/{stepY} | SốHướngBịChặn={eliteBlockedDirections.Count} | Lần={eliteSideStepCount}/{EliteMaximumSideSteps}");
+		if (eliteSideStepCount >= EliteMaximumSideSteps) ClearEliteBlockedDirection();
+		return (stepX, stepY);
+	}
+
+	private bool IsTowardBlockedDirection(int playerX, int playerY, int destinationX, int destinationY) {
+		double towardX = destinationX - (double)playerX;
+		double towardY = (destinationY - (double)playerY) * EliteAvoidance.RawYToRawXScale;
+		double towardLength = Math.Sqrt(towardX * towardX + towardY * towardY);
+		if (towardLength < 1) return true;
+		foreach ((double blockedX, double blockedY) in eliteBlockedDirections) {
+			double blockedLength = Math.Sqrt(blockedX * blockedX + blockedY * blockedY);
+			if (blockedLength < 1e-6) continue;
+			if ((towardX * blockedX + towardY * blockedY) / (towardLength * blockedLength) > 0.7071) return true;
+		}
+		return false;
+	}
+
+	private void ClearEliteBlockedDirection() {
+		eliteBlockedDirections.Clear();
+		eliteSideStepCount = 0;
 	}
 
 	private static string ReadClientMoveState(GameWindow game) {
